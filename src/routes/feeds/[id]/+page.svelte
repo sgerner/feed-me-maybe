@@ -26,10 +26,12 @@
     if (syncing) return;
     syncing = true;
     try {
-      const res = await fetch(`/api/feeds/${pageData.feedId}/refresh`, { method: 'POST' });
+      const res = await fetch(`/api/feeds/${pageData.feedId}/refresh`, {
+        method: 'POST',
+      });
       if (res.ok) {
         addToast('Syncing feed...', 'success');
-        // Refresh article list could be done here if needed, 
+        // Refresh article list could be done here if needed,
         // but background sync doesn't return articles.
       }
     } catch {
@@ -46,7 +48,12 @@
       const res = await fetch(`/api/feeds/${pageData.feedId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, category, enabled, open_mode: openMode || null })
+        body: JSON.stringify({
+          title,
+          category,
+          enabled,
+          open_mode: openMode || null,
+        }),
       });
       if (res.ok) {
         saveSuccess = true;
@@ -58,7 +65,9 @@
           enabled = !!data.feed.enabled;
           openMode = data.feed.open_mode ?? '';
         }
-        setTimeout(() => { saveSuccess = false; }, 2000);
+        setTimeout(() => {
+          saveSuccess = false;
+        }, 2000);
       } else {
         throw new Error();
       }
@@ -132,14 +141,29 @@
     <div class="flex items-center gap-4">
       <h1 class="section-title">{feed.title || 'Untitled Feed'}</h1>
       {#if !feed.enabled}
-        <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider" style="background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300); border-radius: 2px;">Disabled</span>
+        <span
+          class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+          style="background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300); border-radius: 2px;"
+          >Disabled</span
+        >
       {/if}
     </div>
-    <button 
+    <button
       class="btn preset-filled-surface-200-800 flex items-center gap-2"
-      onclick={() => showSettings = !showSettings}
+      onclick={() => (showSettings = !showSettings)}
     >
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        ><path
+          d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+        /><circle cx="12" cy="12" r="3" /></svg
+      >
       Settings
     </button>
   </div>
@@ -153,7 +177,12 @@
         </label>
         <label class="label">
           <span class="mb-1 block text-sm font-medium">Category</span>
-          <input class="input glass-input" type="text" bind:value={category} placeholder="e.g., Technology, News" />
+          <input
+            class="input glass-input"
+            type="text"
+            bind:value={category}
+            placeholder="e.g., Technology, News"
+          />
         </label>
         <label class="label">
           <span class="mb-1 block text-sm font-medium">Open Mode Override</span>
@@ -161,6 +190,7 @@
             <option value="">Use Global Default</option>
             <option value="app">Fetch & Render (In-App)</option>
             <option value="iframe">Iframe (In-App)</option>
+            <option value="proxy">Iframe via Proxy (Bypass Blocks)</option>
             <option value="tab">New Tab</option>
           </select>
         </label>
@@ -170,7 +200,11 @@
         </label>
       </div>
       <div class="mt-6 flex items-center gap-4">
-        <button class="btn preset-filled-primary-500" onclick={saveSettings} disabled={saving}>
+        <button
+          class="btn preset-filled-primary-500"
+          onclick={saveSettings}
+          disabled={saving}
+        >
           {saving ? 'Saving...' : 'Save Changes'}
         </button>
         {#if saveSuccess}
@@ -180,9 +214,9 @@
     </div>
   {/if}
 
-  <ArticleList 
-    bind:articles={articles} 
-    totalPages={pageData.totalPages} 
-    feedId={pageData.feedId} 
+  <ArticleList
+    bind:articles
+    totalPages={pageData.totalPages}
+    feedId={pageData.feedId}
   />
 </div>

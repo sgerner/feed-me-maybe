@@ -12,6 +12,18 @@
   let disliked = $state(!!article.thumbs_down);
   let saved = $state(!!article.saved);
   let hidden = $state(!!article.hidden);
+  let iframeLoading = $state(true);
+
+  // Prevent main scroll when in iframe/proxy mode
+  $effect(() => {
+    if (mode === 'iframe' || mode === 'proxy') {
+      const main = document.querySelector('main');
+      if (main) main.style.overflow = 'hidden';
+      return () => {
+        if (main) main.style.overflow = '';
+      };
+    }
+  });
 
   // Check if the hero image is already the first thing in the content to avoid duplicates
   const contentFirstImg = $derived(() => {
@@ -95,35 +107,67 @@
       addToast('Action failed', 'error');
     }
   }
+
+  const iframeUrl = $derived(
+    mode === 'proxy'
+      ? `/api/proxy?url=${encodeURIComponent(article.url)}`
+      : article.url,
+  );
 </script>
 
-<div class="mx-auto max-w-4xl">
-  <div class="mb-4 flex items-center justify-between">
-    <a
-      href="/today"
-      class="inline-flex items-center gap-1.5 text-sm no-underline transition-colors hover:text-primary-400"
-      style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"><path d="m15 18-6-6 6-6" /></svg
+<div
+  class={mode === 'iframe' || mode === 'proxy'
+    ? 'absolute inset-0 z-0 bg-surface-950'
+    : 'mx-auto max-w-4xl'}
+>
+  {#if mode === 'app'}
+    <div class="mb-4 flex items-center justify-between">
+      <a
+        href="/today"
+        class="inline-flex items-center gap-1.5 text-sm no-underline transition-colors hover:text-primary-400"
+        style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
       >
-      Back
-    </a>
-  </div>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"><path d="m15 18-6-6 6-6" /></svg
+        >
+        Back
+      </a>
+    </div>
+  {/if}
 
-  {#if mode === 'iframe'}
-    <div class="glass-card flex flex-col overflow-hidden h-[80vh]" in:fade>
+  {#if mode === 'iframe' || mode === 'proxy'}
+    <div class="relative h-full w-full overflow-hidden" in:fade>
+      {#if iframeLoading}
+        <div
+          class="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-surface-950/50 backdrop-blur-sm z-10"
+        >
+          <div
+            class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
+          ></div>
+          <p class="text-sm font-medium text-surface-200">
+            {mode === 'proxy' ? 'Fetching via Proxy...' : 'Loading Article...'}
+          </p>
+          {#if mode === 'iframe'}
+            <p class="max-w-xs text-center text-xs text-surface-400">
+              If the site remains blank, it may be blocking iframes. Try
+              switching to <strong>Proxy</strong> mode in settings.
+            </p>
+          {/if}
+        </div>
+      {/if}
       <iframe
-        src={article.url}
+        src={iframeUrl}
         title={article.title}
-        class="w-full flex-1 border-none bg-white"
-        sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+        class="h-full w-full border-none"
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+        referrerpolicy="no-referrer"
+        onload={() => (iframeLoading = false)}
       ></iframe>
     </div>
   {:else}
@@ -296,10 +340,30 @@
 
   <!-- Floating Action Bar -->
   <div
-    class="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full border p-1.5 shadow-2xl backdrop-blur-xl"
+    class="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border p-1.5 shadow-2xl backdrop-blur-xl"
     style="background: color-mix(in oklch, var(--color-surface-900) 80%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
     in:fly={{ y: 20, duration: 400, delay: 400 }}
   >
+    <button
+      type="button"
+      class="action-btn h-9 px-3 rounded-full"
+      onclick={() => window.history.back()}
+      title="Back"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"><path d="m15 18-6-6 6-6" /></svg
+      >
+      <span class="ml-1.5 hidden sm:inline">Back</span>
+    </button>
+
+    <div class="w-px h-6 bg-surface-100/10 mx-1"></div>
+
     <div
       class="flex items-center gap-1 border-r pr-1.5 mr-0.5"
       style="border-color: color-mix(in oklch, var(--color-surface-100) 10%, transparent);"
