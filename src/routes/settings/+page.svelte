@@ -63,6 +63,33 @@
     </p>
   </div>
 
+  <div class="glass-card glass-card-hover p-5" in:fly={{ y: 12, duration: 300, delay: 100 }}>
+    <h2 class="mb-4 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+      Article Reading
+    </h2>
+    <form method="POST" action="?/updateArticleSettings" use:enhance class="space-y-4">
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <label class="label">
+          <span class="mb-1 block text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);">Default Article Open Mode</span>
+          <select name="openMode" class="select glass-input text-sm" value={data.articleOpenMode}>
+            <option value="app">Fetch & Render (In-App)</option>
+            <option value="iframe">Iframe (In-App)</option>
+            <option value="tab">New Tab</option>
+          </select>
+        </label>
+        <div class="flex items-center gap-3 pt-5">
+          <input type="checkbox" name="hideOnOpen" checked={data.hideOnOpen} class="checkbox" id="hideOnOpen" />
+          <label for="hideOnOpen" class="text-sm">Hide article after opening</label>
+        </div>
+      </div>
+      <button type="submit" class="btn preset-filled-primary-500 inline-flex items-center gap-2 text-sm">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save Reading Settings
+      </button>
+    </form>
+  </div>
+
   <div class="glass-card p-5" in:fly={{ y: 12, duration: 300, delay: 120 }}>
     <h2 class="mb-2 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>

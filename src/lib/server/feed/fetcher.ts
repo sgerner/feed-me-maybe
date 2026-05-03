@@ -96,13 +96,29 @@ export async function fetchFeed(url: string, options: { etag?: string, lastModif
         imageUrl = mediaThumbnail.url;
       }
 
+      // Fallback: extract first img src from HTML content
+      if (!imageUrl) {
+        const fullContent = (item['content:encoded'] as string) || (item.content as string) || (item.contentSnippet as string) || '';
+        const imgMatch = fullContent.match(/<img[^>]+src=["']([^"']+)["']/i);
+        if (imgMatch) {
+          imageUrl = imgMatch[1];
+          // Handle potential HTML entities in URL
+          if (imageUrl.includes('&amp;')) {
+            imageUrl = imageUrl.replace(/&amp;/g, '&');
+          }
+          if (imageUrl.includes('&#038;')) {
+            imageUrl = imageUrl.replace(/&#038;/g, '&');
+          }
+        }
+      }
+
       return {
         guid: String(item.guid || item.link || ''),
         url: String(item.link || ''),
         title: String((item.title as string)?.trim() || 'Untitled'),
         author: (item.creator as string) || (item['dc:creator'] as string) || undefined,
         summary: (item.contentSnippet as string)?.trim()?.substring(0, 500) || undefined,
-        content: (item.content as string)?.trim() || (item.contentSnippet as string)?.trim() || undefined,
+        content: (item['content:encoded'] as string)?.trim() || (item.content as string)?.trim() || (item.contentSnippet as string)?.trim() || undefined,
         imageUrl: imageUrl || undefined,
         categories: (item.categories as string[]) || [],
         publishedAt: item.pubDate ? new Date(item.pubDate as string) : item.isoDate ? new Date(item.isoDate as string) : undefined

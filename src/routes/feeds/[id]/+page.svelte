@@ -15,6 +15,7 @@
   let title = $state(String(pageData.feed.title ?? ''));
   let category = $state(String(pageData.feed.category ?? ''));
   let enabled = $state(!!pageData.feed.enabled);
+  let openMode = $state(pageData.feed.open_mode ?? '');
 
   let pullDistance = $state(0);
   let isPulling = $state(false);
@@ -45,11 +46,18 @@
       const res = await fetch(`/api/feeds/${pageData.feedId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, category, enabled })
+        body: JSON.stringify({ title, category, enabled, open_mode: openMode || null })
       });
       if (res.ok) {
         saveSuccess = true;
-        feed.title = title;
+        const data = await res.json();
+        if (data.feed) {
+          feed = data.feed;
+          title = data.feed.title || '';
+          category = data.feed.category || '';
+          enabled = !!data.feed.enabled;
+          openMode = data.feed.open_mode ?? '';
+        }
         setTimeout(() => { saveSuccess = false; }, 2000);
       } else {
         throw new Error();
@@ -147,7 +155,16 @@
           <span class="mb-1 block text-sm font-medium">Category</span>
           <input class="input glass-input" type="text" bind:value={category} placeholder="e.g., Technology, News" />
         </label>
-        <label class="flex items-center gap-3">
+        <label class="label">
+          <span class="mb-1 block text-sm font-medium">Open Mode Override</span>
+          <select class="select glass-input" bind:value={openMode}>
+            <option value="">Use Global Default</option>
+            <option value="app">Fetch & Render (In-App)</option>
+            <option value="iframe">Iframe (In-App)</option>
+            <option value="tab">New Tab</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-3 pt-5">
           <input type="checkbox" bind:checked={enabled} class="checkbox" />
           <span class="text-sm">Feed enabled</span>
         </label>

@@ -3,12 +3,41 @@
   import { onMount } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
+  import { page as pageStore } from '$app/stores';
 
   let { articles = $bindable(), totalPages, feedId = null } = $props<{
     articles: any[];
     totalPages: number;
     feedId?: string | null;
   }>();
+
+  async function openArticle(article: any) {
+    // Determine mode: feed override or global default
+    const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
+    const mode = article.feed_open_mode || globalMode;
+
+    // Record interaction
+    try {
+      fetch('/api/interactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ articleId: article.id, type: 'open' }),
+      });
+      
+      // If "hide on open" is active, remove from local list
+      if ($pageStore.data.globalSettings?.hideOnOpen) {
+        articles = articles.filter((a: any) => a.id !== article.id);
+      }
+    } catch (err) {
+      console.error('Failed to record open interaction', err);
+    }
+
+    if (mode === 'tab') {
+      window.open(article.url, '_blank', 'noopener,noreferrer');
+    } else {
+      goto(`/articles/${article.id}?mode=${mode}`);
+    }
+  }
 
   let page = $state(1);
   let loadingMore = $state(false);
@@ -68,8 +97,8 @@
     }
     if (e.key === 'o' || e.key === 'O') {
       e.preventDefault();
-      if (articleIds[focusedIndex])
-        goto(`/articles/${articleIds[focusedIndex]}`);
+      if (articles[focusedIndex])
+        openArticle(articles[focusedIndex]);
     }
     if (e.key === 'h') {
       e.preventDefault();
@@ -212,12 +241,12 @@
               (e.target as HTMLElement).closest('button')
             )
           ) {
-            goto(`/articles/${article.id}`);
+            openArticle(article);
           }
         }}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
-            goto(`/articles/${article.id}`);
+            openArticle(article);
           }
         }}
       >

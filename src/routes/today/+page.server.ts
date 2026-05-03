@@ -21,7 +21,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const articles = db.prepare(`
     SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url, a.categories,
            a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.heuristic_score, a.combined_score,
-           f.title as feed_title, f.url as feed_url
+           f.title as feed_title, f.url as feed_url, f.open_mode as feed_open_mode
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
     WHERE a.hidden = 0

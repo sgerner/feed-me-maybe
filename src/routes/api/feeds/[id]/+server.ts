@@ -36,17 +36,25 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   // Build update SET clause dynamically
-  const allowedFields = ['title', 'category', 'enabled'];
+  const allowedFields = ['title', 'category', 'enabled', 'open_mode'];
   const updates: string[] = [];
-  const values: (string | number | boolean)[] = [];
+  const values: (string | number | boolean | null)[] = [];
 
   for (const field of allowedFields) {
     if (body[field] !== undefined) {
       if (field === 'enabled' && typeof body[field] !== 'boolean') {
         return json({ error: 'enabled must be a boolean' }, { status: 400 });
       }
-      updates.push(`${field} = ?`);
-      values.push(field === 'enabled' ? (body[field] ? 1 : 0) : (body[field] as string | number));
+      updates.push(`${field === 'open_mode' ? 'open_mode' : field} = ?`);
+      let val: string | number | boolean | null = body[field] as any;
+      if (field === 'enabled') val = body[field] ? 1 : 0;
+      if (field === 'open_mode' && val === '') val = null;
+      values.push(val);
+
+      // If user is setting a custom title, flag it so it won't be overwritten by ingester
+      if (field === 'title') {
+        updates.push('custom_title = 1');
+      }
     }
   }
 

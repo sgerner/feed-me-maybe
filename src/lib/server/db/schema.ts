@@ -19,6 +19,7 @@ export const feeds = sqliteTable('feeds', {
   id: text('id').primaryKey(),
   url: text('url').notNull().unique(),
   title: text('title').default(''),
+  customTitle: integer('custom_title', { mode: 'boolean' }).notNull().default(false),
   description: text('description').default(''),
   siteUrl: text('site_url').default(''),
   category: text('category').default(''),
@@ -31,6 +32,7 @@ export const feeds = sqliteTable('feeds', {
   etag: text('etag'),
   lastModifiedHeader: text('last_modified_header'),
   pollIntervalMins: integer('poll_interval_mins').default(15),
+  openMode: text('open_mode'), // null = use global, 'app', 'iframe', 'tab'
   lastChangedAt: integer('last_changed_at', { mode: 'timestamp' }),
   fetchCountSinceChange: integer('fetch_count_since_change').default(0),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),

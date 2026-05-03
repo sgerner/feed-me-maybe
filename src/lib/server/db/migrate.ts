@@ -10,8 +10,16 @@ export function initializeDatabase(): void {
     'CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)'
   ).run();
   db.prepare(
-    'CREATE TABLE IF NOT EXISTS feeds (id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT DEFAULT \'\', description TEXT DEFAULT \'\', site_url TEXT DEFAULT \'\', category TEXT DEFAULT \'\', icon_url TEXT DEFAULT \'\', enabled INTEGER NOT NULL DEFAULT 1, error_count INTEGER NOT NULL DEFAULT 0, last_fetch_status TEXT DEFAULT \'never\', last_fetch_at INTEGER, last_error TEXT DEFAULT \'\', etag TEXT, last_modified_header TEXT, poll_interval_mins INTEGER DEFAULT 15, last_changed_at INTEGER, fetch_count_since_change INTEGER DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
+    'CREATE TABLE IF NOT EXISTS feeds (id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT DEFAULT \'\', custom_title INTEGER NOT NULL DEFAULT 0, description TEXT DEFAULT \'\', site_url TEXT DEFAULT \'\', category TEXT DEFAULT \'\', icon_url TEXT DEFAULT \'\', enabled INTEGER NOT NULL DEFAULT 1, error_count INTEGER NOT NULL DEFAULT 0, last_fetch_status TEXT DEFAULT \'never\', last_fetch_at INTEGER, last_error TEXT DEFAULT \'\', etag TEXT, last_modified_header TEXT, poll_interval_mins INTEGER DEFAULT 15, open_mode TEXT, last_changed_at INTEGER, fetch_count_since_change INTEGER DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
   ).run();
+
+  try {
+    db.prepare('ALTER TABLE feeds ADD COLUMN open_mode TEXT').run();
+  } catch { /* ignore */ }
+
+  try {
+    db.prepare('ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0').run();
+  } catch { /* ignore */ }
   db.prepare(
     'CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT \'\', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT \'Untitled\', author TEXT DEFAULT \'\', summary TEXT DEFAULT \'\', content TEXT DEFAULT \'\', image_url TEXT DEFAULT \'\', categories TEXT DEFAULT \'\', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
   ).run();
@@ -45,8 +53,10 @@ export function initializeDatabase(): void {
 
   const row = db.prepare("SELECT value FROM app_settings WHERE key = 'setup_complete'").get() as { value: string } | undefined;
   
-  // Ensure default poll interval
+  // Ensure default settings
   db.prepare("INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('poll_interval_mins', '15', ?)").run(Date.now());
+  db.prepare("INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('article_open_mode', 'app', ?)").run(Date.now());
+  db.prepare("INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('hide_on_open', 'true', ?)").run(Date.now());
 
   console.log('[db] Database initialized. First run:', !row);
 }

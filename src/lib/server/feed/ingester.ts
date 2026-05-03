@@ -28,7 +28,7 @@ export async function ingestFeed(options: IngestOptions): Promise<IngestResult> 
   const logId = crypto.randomUUID();
 
   // Get current caching headers and state
-  const feedRecord = db.prepare('SELECT etag, last_modified_header, fetch_count_since_change FROM feeds WHERE id = ?').get(feedId) as { etag: string | null, last_modified_header: string | null, fetch_count_since_change: number } | undefined;
+  const feedRecord = db.prepare('SELECT etag, last_modified_header, fetch_count_since_change, custom_title FROM feeds WHERE id = ?').get(feedId) as { etag: string | null, last_modified_header: string | null, fetch_count_since_change: number, custom_title: number } | undefined;
 
   // Record fetch start
   db.prepare(
@@ -65,7 +65,7 @@ export async function ingestFeed(options: IngestOptions): Promise<IngestResult> 
   // Update feed metadata
   const updates: string[] = [];
   const values: (string | number)[] = [];
-  if (fetchResult.title) { updates.push('title = ?'); values.push(fetchResult.title); }
+  if (fetchResult.title && !feedRecord?.custom_title) { updates.push('title = ?'); values.push(fetchResult.title); }
   if (fetchResult.description) { updates.push('description = ?'); values.push(fetchResult.description); }
   if (fetchResult.link) { updates.push('site_url = ?'); values.push(fetchResult.link); }
   if (fetchResult.imageUrl) { updates.push('icon_url = ?'); values.push(fetchResult.imageUrl); }
@@ -90,14 +90,31 @@ export async function ingestFeed(options: IngestOptions): Promise<IngestResult> 
 
       const articleId = generateArticleId(item.url, item.title);
 
-      // Skip duplicate or update missing image
-      const existing = db.prepare('SELECT id, image_url FROM articles WHERE id = ?').get(articleId) as { id: string, image_url: string } | undefined;
+      // Skip duplicate or update missing data
+      const existing = db.prepare('SELECT id, image_url, content FROM articles WHERE id = ?').get(articleId) as { id: string, image_url: string, content: string } | undefined;
       if (existing) {
+        let needsUpdate = false;
+        const updates: string[] = [];
+        const params: any[] = [];
+
         if (!existing.image_url && item.imageUrl) {
-          db.prepare('UPDATE articles SET image_url = ? WHERE id = ?').run(
-            item.imageUrl,
-            articleId
-          );
+          updates.push('image_url = ?');
+          params.push(item.imageUrl);
+          needsUpdate = true;
+        }
+
+        // If the new content is significantly longer, it's likely a transition from snippet to full content
+        const currentLen = existing.content?.length || 0;
+        const newLen = item.content?.length || 0;
+        if (newLen > currentLen + 50 || (newLen > 0 && !existing.content)) {
+          updates.push('content = ?, summary = ?');
+          params.push(item.content, item.summary || '');
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          params.push(articleId);
+          db.prepare(`UPDATE articles SET ${updates.join(', ')} WHERE id = ?`).run(...params);
         }
         continue;
       }

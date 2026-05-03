@@ -15,7 +15,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   const { articleId, type } = body as { articleId?: string; type?: string };
-  const validTypes: InteractionType[] = ['read', 'hide', 'save', 'thumbs_up', 'thumbs_down', 'unhide', 'unsave'];
+  const validTypes: InteractionType[] = ['read', 'hide', 'save', 'thumbs_up', 'thumbs_down', 'unhide', 'unsave', 'open'];
 
   if (!articleId || !type || !validTypes.includes(type as InteractionType)) {
     return json({ error: 'articleId and valid type are required' }, { status: 400 });

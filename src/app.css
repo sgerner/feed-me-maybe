@@ -322,26 +322,52 @@
 
 /* ── Prose Override for Article Content ── */
 .prose-glass {
-	color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);
+	color: color-mix(in oklch, var(--color-surface-100) 88%, transparent);
+	font-size: 1.125rem;
+	line-height: 1.75;
+}
+.prose-glass p {
+	margin-bottom: 1.5rem;
 }
 .prose-glass h1, .prose-glass h2, .prose-glass h3, .prose-glass h4 {
 	color: var(--color-surface-50);
 	font-weight: 700;
+	margin-top: 2rem;
+	margin-bottom: 1rem;
 }
+.prose-glass h2 { font-size: 1.5rem; }
+.prose-glass h3 { font-size: 1.25rem; }
+
 .prose-glass a {
 	color: var(--color-primary-400);
-	text-decoration: none;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	transition: color 0.2s ease;
 }
 .prose-glass a:hover {
-	text-decoration: underline;
+	color: var(--color-primary-300);
 }
 .prose-glass blockquote {
 	border-left: 3px solid var(--color-primary-500);
 	background: color-mix(in oklch, var(--color-primary-500) 5%, transparent);
-	padding: 0.75rem 1rem;
-	border-radius: 0 var(--radius-base) var(--radius-base) 0;
+	padding: 1rem 1.5rem;
+	margin: 2rem 0;
+	font-style: italic;
+	color: color-mix(in oklch, var(--color-surface-100) 95%, transparent);
+}
+.prose-glass figure {
+	margin: 2rem 0;
+}
+.prose-glass figcaption {
+	font-size: 0.875rem;
+	color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);
+	margin-top: 0.75rem;
+	text-align: center;
+	line-height: 1.4;
 }
 .prose-glass img {
+	max-width: 100%;
+	height: auto;
 	border-radius: 2px;
 	box-shadow: 0 4px 16px -2px rgba(0,0,0,0.3);
 }
@@ -349,15 +375,28 @@
 	background: color-mix(in oklch, var(--color-surface-950) 80%, transparent);
 	border: 1px solid color-mix(in oklch, var(--color-surface-100) 8%, transparent);
 	border-radius: 2px;
+	padding: 1rem;
+	overflow-x: auto;
+	margin: 1.5rem 0;
 }
 .prose-glass code {
 	background: color-mix(in oklch, var(--color-surface-100) 10%, transparent);
 	padding: 0.125rem 0.375rem;
 	border-radius: 2px;
 	font-size: 0.875em;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 .prose-glass hr {
-	border-color: color-mix(in oklch, var(--color-surface-100) 10%, transparent);
+	border: 0;
+	border-top: 1px solid color-mix(in oklch, var(--color-surface-100) 10%, transparent);
+	margin: 2.5rem 0;
+}
+.prose-glass ul, .prose-glass ol {
+	margin-bottom: 1.5rem;
+	padding-left: 1.5rem;
+}
+.prose-glass li {
+	margin-bottom: 0.5rem;
 }
 
 /* ── Settings Nav Tab ── */

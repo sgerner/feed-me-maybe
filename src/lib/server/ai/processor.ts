@@ -1,39 +1,44 @@
 import { getDb } from '$lib/server/db';
 import { createAiClient, createNullAiClient } from '$lib/server/ai/client';
+import { getProvider } from '$lib/server/ai/models-dev';
+import { decrypt } from './crypto';
 import crypto from 'node:crypto';
-
-const APP_SECRET = process.env.APP_SECRET || 'dev-secret-key-32-chars-min!!';
-
-function decrypt(encrypted: string, nonceHex: string): string {
-  try {
-    const key = crypto.createHash('sha256').update(APP_SECRET).digest();
-    const nonce = Buffer.from(nonceHex, 'hex');
-    const authTag = Buffer.from(encrypted.slice(-32), 'hex');
-    const ciphertext = encrypted.slice(0, -32);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
-    decipher.setAuthTag(authTag);
-    let dec = decipher.update(ciphertext, 'hex', 'utf8');
-    dec += decipher.final('utf8');
-    return dec;
-  } catch {
-    return '';
-  }
-}
 
 export async function processArticle(articleId: string): Promise<void> {
   const db = getDb();
 
-  const config = db.prepare('SELECT * FROM provider_configs WHERE enabled = 1 LIMIT 1').get() as Record<string, string> | undefined;
+  const config = db.prepare('SELECT * FROM provider_configs WHERE enabled = 1 LIMIT 1').get() as Record<string, any> | undefined;
   if (!config) return;
 
   const article = db.prepare('SELECT title, summary, content FROM articles WHERE id = ?').get(articleId) as Record<string, string> | undefined;
   if (!article) return;
 
-  const apiKey = decrypt(config.api_key_encrypted || '', config.api_key_nonce || '');
-  if (!apiKey) return;
+  const decryptedConfigRaw = decrypt(config.api_key_encrypted || '', config.api_key_nonce || '');
+  if (!decryptedConfigRaw) return;
+
+  let decryptedConfig: Record<string, string> = {};
+  try {
+    decryptedConfig = JSON.parse(decryptedConfigRaw);
+  } catch {
+    // Fallback for old single-key configs
+    decryptedConfig = { apiKey: decryptedConfigRaw };
+  }
+
+  const providerInfo = await getProvider(config.provider_id);
+  const baseUrl = config.custom_base_url || providerInfo?.baseUrl || '';
+  
+  // Try to find an API key. Prefer the first required one, or any key if none specified.
+  let apiKey = '';
+  if (providerInfo?.requiredEnvVars?.length) {
+    apiKey = decryptedConfig[providerInfo.requiredEnvVars[0]] || Object.values(decryptedConfig)[0] || '';
+  } else {
+    apiKey = decryptedConfig.apiKey || Object.values(decryptedConfig)[0] || '';
+  }
+
+  if (!apiKey || !baseUrl) return;
 
   const client = createAiClient({
-    baseUrl: config.custom_base_url || `https://api.${config.provider_id}.com/v1`,
+    baseUrl,
     apiKey,
     model: config.model_id
   });

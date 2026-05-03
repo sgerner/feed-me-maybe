@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
+import { recordInteraction } from '$lib/server/interactions';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
   if (!locals.sessionId) {
@@ -21,8 +22,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     throw error(404, 'Article not found');
   }
 
-  // Mark as read
-  db.prepare('UPDATE articles SET read = 1 WHERE id = ?').run(params.id);
+  // Mark as opened
+  recordInteraction(params.id, 'open');
 
   return { article };
 };
