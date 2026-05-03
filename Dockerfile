@@ -32,14 +32,15 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/build ./build
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Create data directory for SQLite
 RUN mkdir -p /data && chown -R node:node /data
-
-USER node
 ENV NODE_ENV=production
 ENV DATABASE_URL=/data/feed-me-maybe.db
 
 EXPOSE 3000
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "build/index.js"]
