@@ -2,7 +2,29 @@ node_modules/
 build/
 .svelte-kit/
 dist/
+
+# Environment
 .env
-.env.local
+.env.*
+!.env.example
+
+# Database and user data
+data/
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
+
+# IDEs and Tools
+.vscode/
+.opencode/
+.swarm/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
