@@ -36,7 +36,7 @@ cp .env.example .env
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser. You'll be prompted to log in with the password you set in `.env`.
+Open [http://localhost:5373](http://localhost:5373) in your browser. You'll be prompted to log in with the password you set in `.env`.
 
 ## Docker Deployment
 
@@ -74,16 +74,16 @@ The application will be available at `http://localhost:3000`.
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `APP_PASSWORD` | **Yes** | — | Password for application access |
-| `DATABASE_URL` | No | `./data/feed-me-maybe.db` | Path to the SQLite database file |
-| `HOST` | No | `0.0.0.0` | Server bind address |
-| `PORT` | No | `3000` | Server port |
-| `APP_SECRET` | No | — | Session encryption secret (generate with `openssl rand -hex 32`) |
-| `PROVIDER` | No | — | AI provider ID (e.g., `openai`, `anthropic`, `openrouter`, `groq`) |
-| `MODEL` | No | — | AI model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`) |
-| `API_KEY` | No | — | AI provider API key |
+| Variable       | Required | Default                   | Description                                                        |
+| -------------- | -------- | ------------------------- | ------------------------------------------------------------------ |
+| `APP_PASSWORD` | **Yes**  | —                         | Password for application access                                    |
+| `DATABASE_URL` | No       | `./data/feed-me-maybe.db` | Path to the SQLite database file                                   |
+| `HOST`         | No       | `0.0.0.0`                 | Server bind address                                                |
+| `PORT`         | No       | `3000`                    | Server port                                                        |
+| `APP_SECRET`   | No       | —                         | Session encryption secret (generate with `openssl rand -hex 32`)   |
+| `PROVIDER`     | No       | —                         | AI provider ID (e.g., `openai`, `anthropic`, `openrouter`, `groq`) |
+| `MODEL`        | No       | —                         | AI model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`)       |
+| `API_KEY`      | No       | —                         | AI provider API key                                                |
 
 ## Project Structure
 
@@ -132,36 +132,36 @@ feed-me-maybe/
 
 ## Development Commands
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start development server with hot reload |
-| `npm run build` | Build for production |
-| `npm run preview` | Preview the production build locally |
-| `npm run check` | Run TypeScript type checking |
-| `npm run check:watch` | TypeScript type checking in watch mode |
-| `npm run lint` | Run Prettier and ESLint |
-| `npm run format` | Auto-format code with Prettier |
-| `npm run test` | Run test suite with Vitest |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run db:push` | Push schema changes to database (development) |
-| `npm run db:generate` | Generate Drizzle migration files |
-| `npm run db:migrate` | Run pending migrations (production) |
+| Command               | Description                                   |
+| --------------------- | --------------------------------------------- |
+| `npm run dev`         | Start development server with hot reload      |
+| `npm run build`       | Build for production                          |
+| `npm run preview`     | Preview the production build locally          |
+| `npm run check`       | Run TypeScript type checking                  |
+| `npm run check:watch` | TypeScript type checking in watch mode        |
+| `npm run lint`        | Run Prettier and ESLint                       |
+| `npm run format`      | Auto-format code with Prettier                |
+| `npm run test`        | Run test suite with Vitest                    |
+| `npm run test:watch`  | Run tests in watch mode                       |
+| `npm run db:push`     | Push schema changes to database (development) |
+| `npm run db:generate` | Generate Drizzle migration files              |
+| `npm run db:migrate`  | Run pending migrations (production)           |
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Framework | SvelteKit 2 with Svelte 5 (runes) |
-| Styling | Tailwind CSS v4 + Skeleton UI v4 (Cerberus theme) |
-| Database | SQLite via better-sqlite3 |
-| ORM | Drizzle ORM |
-| Feed Parsing | rss-parser |
-| Validation | Zod |
-| Testing | Vitest |
-| PWA | @vite-pwa/sveltekit |
-| Deployment | @sveltejs/adapter-node |
-| Linting | ESLint 9 + Prettier 3 |
+| Layer        | Technology                                        |
+| ------------ | ------------------------------------------------- |
+| Framework    | SvelteKit 2 with Svelte 5 (runes)                 |
+| Styling      | Tailwind CSS v4 + Skeleton UI v4 (Cerberus theme) |
+| Database     | SQLite via better-sqlite3                         |
+| ORM          | Drizzle ORM                                       |
+| Feed Parsing | rss-parser                                        |
+| Validation   | Zod                                               |
+| Testing      | Vitest                                            |
+| PWA          | @vite-pwa/sveltekit                               |
+| Deployment   | @sveltejs/adapter-node                            |
+| Linting      | ESLint 9 + Prettier 3                             |
 
 ## License
 
-Private — self-hosted application.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
