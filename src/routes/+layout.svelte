@@ -1,7 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import { page } from '$app/stores';
-  import { getToasts } from '$lib/stores/toast.svelte';
+  import { subscribeToasts, type Toast } from '$lib/stores/toast.svelte';
   import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
 
@@ -10,6 +10,7 @@
   let addingFeed = $state(false);
   let showAddFeedModal = $state(false);
   let newFeedUrl = $state('');
+  let toasts = $state<Toast[]>([]);
   let { children, data } = $props();
 
   async function syncFeeds() {
@@ -89,6 +90,14 @@
     if ($page.url.pathname) {
       sidebarOpen = false;
     }
+  });
+
+  $effect(() => {
+    const unsubscribe = subscribeToasts((value) => {
+      toasts = value;
+    });
+
+    return unsubscribe;
   });
 </script>
 
@@ -313,7 +322,7 @@
 
   <!-- Toast container -->
   <div class="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5">
-    {#each getToasts() as toast (toast.id)}
+    {#each toasts as toast (toast.id)}
       <div
         in:fly={{ y: 12, duration: 280, delay: 60 }}
         out:fly={{ y: 8, duration: 200 }}

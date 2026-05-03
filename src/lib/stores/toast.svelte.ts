@@ -1,17 +1,33 @@
-// Toast notification system using Svelte 5 runes
 type ToastType = 'success' | 'error' | 'info' | 'warning';
 
-interface Toast {
+export interface Toast {
   id: number;
   message: string;
   type: ToastType;
 }
 
 let nextId = 0;
-const toasts = $state<Toast[]>([]);
+const toasts: Toast[] = [];
+const listeners = new Set<(value: Toast[]) => void>();
+
+function notify() {
+  const snapshot = [...toasts];
+  for (const listener of listeners) {
+    listener(snapshot);
+  }
+}
+
+export function subscribeToasts(listener: (value: Toast[]) => void) {
+  listeners.add(listener);
+  listener([...toasts]);
+
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 export function getToasts() {
-  return toasts;
+  return [...toasts];
 }
 
 export function addToast(
@@ -21,8 +37,12 @@ export function addToast(
 ) {
   const id = nextId++;
   toasts.push({ id, message, type });
+  notify();
   setTimeout(() => {
-    const idx = toasts.findIndex((t) => t.id === id);
-    if (idx !== -1) toasts.splice(idx, 1);
+    const index = toasts.findIndex((toast) => toast.id === id);
+    if (index !== -1) {
+      toasts.splice(index, 1);
+      notify();
+    }
   }, duration);
 }
