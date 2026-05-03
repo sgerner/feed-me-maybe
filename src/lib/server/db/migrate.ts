@@ -50,6 +50,8 @@ export function initializeDatabase(): void {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_fetch_logs_status ON feed_fetch_logs(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, scheduled_at)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_interactions_article ON user_interactions(article_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_pref_type_label ON user_preference_memory(type, label)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_pref_last_reinforced ON user_preference_memory(last_reinforced)').run();
 
   const row = db.prepare("SELECT value FROM app_settings WHERE key = 'setup_complete'").get() as { value: string } | undefined;
   

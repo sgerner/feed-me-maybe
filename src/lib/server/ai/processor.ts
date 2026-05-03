@@ -2,6 +2,7 @@ import { getDb } from '$lib/server/db';
 import { createAiClient, createNullAiClient } from '$lib/server/ai/client';
 import { getProvider } from '$lib/server/ai/models-dev';
 import { decrypt } from './crypto';
+import { incorporateAiClassificationIntoMemory } from '$lib/server/preferences';
 import crypto from 'node:crypto';
 
 export async function processArticle(articleId: string): Promise<void> {
@@ -43,16 +44,60 @@ export async function processArticle(articleId: string): Promise<void> {
     model: config.model_id
   });
 
+  const classification = await client.classifyArticle(article.title, article.summary || article.content || '');
   const score = await client.scoreArticle(article.title, article.summary || article.content || '');
   const now = Date.now();
+  const topicsJson = JSON.stringify(classification.topics || []);
+  const entitiesJson = JSON.stringify(classification.entities || []);
+  const contentType = String(classification.contentType || '');
+  const aiSummary = String(classification.summary || '');
+  const noveltyScore = typeof classification.noveltyScore === 'number' ? classification.noveltyScore : 0;
+  const qualityScore = typeof classification.qualityScore === 'number' ? classification.qualityScore : 0;
+  const likelyInterest = String(classification.likelyUserInterest || '');
 
   const existing = db.prepare('SELECT id FROM article_ai_metadata WHERE article_id = ?').get(articleId);
   if (existing) {
-    db.prepare('UPDATE article_ai_metadata SET ai_relevance_score = ?, explanation = ?, processed_at = ? WHERE article_id = ?')
-      .run(score.relevanceScore || 0, score.explanation || '', now, articleId);
+    db.prepare(`
+      UPDATE article_ai_metadata
+      SET summary = ?, topics = ?, entities = ?, content_type = ?,
+          ai_relevance_score = ?, novelty_score = ?, quality_score = ?, likely_user_interest = ?,
+          explanation = ?, processed_at = ?
+      WHERE article_id = ?
+    `).run(
+      aiSummary,
+      topicsJson,
+      entitiesJson,
+      contentType,
+      score.relevanceScore || 0,
+      noveltyScore,
+      qualityScore,
+      likelyInterest,
+      score.explanation || '',
+      now,
+      articleId
+    );
   } else {
-    db.prepare('INSERT INTO article_ai_metadata (id, article_id, ai_relevance_score, explanation, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(crypto.randomUUID(), articleId, score.relevanceScore || 0, score.explanation || '', now, now);
+    db.prepare(`
+      INSERT INTO article_ai_metadata (
+        id, article_id, summary, topics, entities, content_type,
+        ai_relevance_score, novelty_score, quality_score, likely_user_interest,
+        explanation, processed_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      articleId,
+      aiSummary,
+      topicsJson,
+      entitiesJson,
+      contentType,
+      score.relevanceScore || 0,
+      noveltyScore,
+      qualityScore,
+      likelyInterest,
+      score.explanation || '',
+      now,
+      now
+    );
   }
 
   // Combined score: 40% AI + 60% heuristic
@@ -61,4 +106,6 @@ export async function processArticle(articleId: string): Promise<void> {
   const ai = (score.relevanceScore || 0) * 100;
   const combined = Math.round(heuristic * 0.6 + ai * 0.4);
   db.prepare('UPDATE articles SET combined_score = ? WHERE id = ?').run(Math.max(0, Math.min(100, combined)), articleId);
+
+  incorporateAiClassificationIntoMemory(articleId, classification);
 }

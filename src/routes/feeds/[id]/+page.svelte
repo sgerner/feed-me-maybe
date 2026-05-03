@@ -11,6 +11,7 @@
   let showSettings = $state(false);
   let saving = $state(false);
   let deleting = $state(false);
+  let clearing = $state(false);
   let saveSuccess = $state(false);
 
   // Settings form state
@@ -100,6 +101,33 @@
       addToast('Failed to delete feed', 'error');
     } finally {
       deleting = false;
+    }
+  }
+
+  async function clearFeedItems() {
+    if (
+      !confirm(
+        'Remove all current articles from this feed? This will not clear your learned preferences.'
+      )
+    ) {
+      return;
+    }
+
+    clearing = true;
+    try {
+      const res = await fetch(`/api/feeds/${pageData.feedId}/clear`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        addToast('Feed items cleared', 'success');
+        window.location.reload();
+      } else {
+        throw new Error();
+      }
+    } catch {
+      addToast('Failed to clear feed items', 'error');
+    } finally {
+      clearing = false;
     }
   }
 
@@ -237,13 +265,23 @@
             <span class="text-sm text-success-400" in:fade>Settings saved!</span>
           {/if}
         </div>
-        <button
-          class="btn preset-tonal-error"
-          onclick={deleteFeed}
-          disabled={deleting}
-        >
-          {deleting ? 'Deleting...' : 'Delete Feed'}
-        </button>
+        <div class="flex items-center gap-3">
+          <button
+            class="btn action-btn"
+            style="border-color: color-mix(in oklch, var(--color-warning-500) 20%, transparent); background: color-mix(in oklch, var(--color-warning-500) 10%, transparent); color: var(--color-warning-300);"
+            onclick={clearFeedItems}
+            disabled={clearing}
+          >
+            {clearing ? 'Clearing...' : 'Clear Items'}
+          </button>
+          <button
+            class="btn preset-tonal-error"
+            onclick={deleteFeed}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting...' : 'Delete Feed'}
+          </button>
+        </div>
       </div>
     </div>
   {/if}
