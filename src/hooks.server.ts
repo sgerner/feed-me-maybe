@@ -29,6 +29,21 @@ function isSetupComplete(): boolean {
 
 const loginAttempts = new Map<string, number>();
 
+function isOnboardingBypassPath(pathname: string): boolean {
+  return (
+    pathname === '/settings' ||
+    pathname.startsWith('/settings/') ||
+    pathname === '/api/settings' ||
+    pathname.startsWith('/api/settings/') ||
+    pathname === '/api/feeds' ||
+    pathname.startsWith('/api/feeds/') ||
+    pathname === '/api/opml' ||
+    pathname.startsWith('/api/opml/') ||
+    pathname === '/api/ai' ||
+    pathname.startsWith('/api/ai/')
+  );
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
   // Session validation
   const sessionId = event.cookies.get(getSessionCookieName());
@@ -85,7 +100,11 @@ export const handle: Handle = async ({ event, resolve }) => {
   // First-run detection: if logged in but setup not complete, redirect to onboarding
   if (event.locals.sessionId && !isPublicPath) {
     const setupComplete = isSetupComplete();
-    if (!setupComplete && event.url.pathname !== '/onboarding') {
+    if (
+      !setupComplete &&
+      event.url.pathname !== '/onboarding' &&
+      !isOnboardingBypassPath(event.url.pathname)
+    ) {
       throw redirect(302, '/onboarding');
     }
   }

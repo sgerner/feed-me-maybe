@@ -4,9 +4,10 @@
   const totalSteps = 4;
   let feedUrl = $state('');
   let feedTitle = $state('');
-  let skipAi = $state(false);
   let loading = $state(false);
+  let importing = $state(false);
   let error = $state('');
+  let opmlMessage = $state('');
 
   function nextStep() {
     if (step < totalSteps) {
@@ -39,12 +40,48 @@
     }
   }
 
-  function skipFeeds() {
-    nextStep();
+  async function importOpml() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.opml,.xml';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      importing = true;
+      error = '';
+      opmlMessage = '';
+
+      try {
+        const text = await file.text();
+        const res = await fetch('/api/opml/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ opml: text }),
+        });
+
+        if (!res.ok) {
+          const d = await res.json();
+          error = d.error || 'Failed to import OPML';
+          return;
+        }
+
+        const result = await res.json();
+        opmlMessage =
+          result.imported > 0
+            ? `Imported ${result.imported} feed${result.imported === 1 ? '' : 's'}.`
+            : 'No new feeds were imported.';
+        nextStep();
+      } catch {
+        error = 'Connection error';
+      } finally {
+        importing = false;
+      }
+    };
+    input.click();
   }
 
-  function handleAiChoice(skip: boolean) {
-    skipAi = skip;
+  function skipFeeds() {
     nextStep();
   }
 
@@ -124,7 +161,8 @@
         class="mt-2 text-sm"
         style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);"
       >
-        Enter an RSS or Atom feed URL to get started.
+        Enter an RSS or Atom feed URL to get started, or import an OPML file
+        from another reader.
       </p>
       <div class="mt-5 space-y-3">
         <input
@@ -162,14 +200,33 @@
             {error}
           </div>
         {/if}
+        {#if opmlMessage}
+          <div
+            class="flex items-center gap-2 px-3 py-2 text-sm"
+            style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); color: var(--color-success-300); border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent); border-radius: 2px;"
+          >
+            {opmlMessage}
+          </div>
+        {/if}
       </div>
-      <div class="mt-6 flex gap-3">
+      <div class="mt-6 flex flex-wrap gap-3">
         <button
           class="action-btn px-4 py-2"
           onclick={skipFeeds}
           disabled={loading}
         >
           Skip
+        </button>
+        <button
+          class="action-btn px-4 py-2"
+          onclick={importOpml}
+          disabled={loading || importing}
+        >
+          {#if importing}
+            Importing...
+          {:else}
+            Import OPML
+          {/if}
         </button>
         <button
           class="btn preset-filled-primary-500 inline-flex items-center gap-2"
@@ -221,19 +278,16 @@
         Optionally configure an AI provider to get article summaries, scoring,
         and personalized recommendations.
       </p>
-      <div class="mt-6 flex gap-3">
-        <button
-          class="action-btn px-4 py-2"
-          onclick={() => handleAiChoice(true)}
-        >
-          Skip AI for now
+      <div class="mt-6 flex flex-wrap gap-3">
+        <button class="action-btn px-4 py-2" onclick={nextStep}>
+          Skip for now
         </button>
-        <button
-          class="btn preset-filled-primary-500"
-          onclick={() => handleAiChoice(false)}
+        <a
+          href="/settings/ai"
+          class="btn preset-filled-primary-500 inline-flex items-center gap-2 no-underline"
         >
-          Configure later
-        </button>
+          Configure AI in Settings
+        </a>
       </div>
     </div>
   {:else if step === 4}

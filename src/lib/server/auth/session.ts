@@ -2,7 +2,7 @@ import { getDb } from '$lib/server/db';
 import crypto from 'node:crypto';
 
 const SESSION_COOKIE_NAME = 'feed-me-maybe-session';
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const SESSION_MAX_AGE_MS = 10 * 365 * 24 * 60 * 60 * 1000; // 10 years
 
 export interface Session {
   id: string;
@@ -40,8 +40,12 @@ export function validateSession(sessionId: string): Session | null {
   };
 
   if (session.expiresAt < new Date()) {
-    destroySession(session.id);
-    return null;
+    const refreshedExpiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS);
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(
+      refreshedExpiresAt.getTime(),
+      session.id,
+    );
+    session.expiresAt = refreshedExpiresAt;
   }
 
   return session;

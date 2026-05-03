@@ -4,10 +4,9 @@ import { verifyPassword } from '$lib/server/auth/password';
 import {
   createSession,
   getSessionCookieName,
+  SESSION_MAX_AGE_MS,
   validateSession,
 } from '$lib/server/auth/session';
-
-const SESSION_MAX_AGE_SECONDS = 24 * 60 * 60;
 
 export const load: PageServerLoad = async ({ cookies }) => {
   const sessionId = cookies.get(getSessionCookieName());
@@ -35,7 +34,7 @@ export const actions: Actions = {
       path: '/',
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: SESSION_MAX_AGE_SECONDS,
+      maxAge: SESSION_MAX_AGE_MS / 1000,
       secure: process.env.NODE_ENV === 'production',
     });
 
