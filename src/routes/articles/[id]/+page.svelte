@@ -7,6 +7,12 @@
   const article = $derived(pageData.article);
   const mode = $derived($page.url.searchParams.get('mode') || 'app');
 
+  // Reactive interaction state
+  let liked = $state(!!article.thumbs_up);
+  let disliked = $state(!!article.thumbs_down);
+  let saved = $state(!!article.saved);
+  let hidden = $state(!!article.hidden);
+
   // Check if the hero image is already the first thing in the content to avoid duplicates
   const contentFirstImg = $derived(() => {
     if (!article.content) return null;
@@ -30,22 +36,62 @@
   });
 
   async function interact(type: string) {
+    // Optimistic UI updates
+    const prevLiked = liked;
+    const prevDisliked = disliked;
+    const prevSaved = saved;
+    const prevHidden = hidden;
+
+    if (type === 'thumbs_up') {
+      liked = !liked;
+      if (liked) disliked = false;
+    } else if (type === 'thumbs_down') {
+      disliked = !disliked;
+      if (disliked) liked = false;
+    } else if (type === 'save') {
+      saved = !saved;
+    } else if (type === 'hide') {
+      hidden = true;
+    }
+
     try {
+      const actualType =
+        type === 'save' && prevSaved
+          ? 'unsave'
+          : type === 'hide' && prevHidden
+            ? 'unhide'
+            : type;
+
       const res = await fetch('/api/interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ articleId: article.id, type }),
+        body: JSON.stringify({ articleId: article.id, type: actualType }),
       });
       if (res.ok) {
         const labels: Record<string, string> = {
           hide: 'Hidden',
           save: 'Saved',
+          unsave: 'Removed from Saved',
           thumbs_up: 'Liked',
           thumbs_down: 'Disliked',
         };
-        addToast(labels[type] || type, 'success');
+        addToast(labels[actualType] || type, 'success');
+
+        if (type === 'hide') {
+          // If hidden, go back after a delay
+          setTimeout(() => {
+            window.history.back();
+          }, 800);
+        }
+      } else {
+        throw new Error();
       }
     } catch {
+      // Revert on failure
+      liked = prevLiked;
+      disliked = prevDisliked;
+      saved = prevSaved;
+      hidden = prevHidden;
       addToast('Action failed', 'error');
     }
   }
@@ -244,25 +290,13 @@
             </p>
           {/if}
         </div>
-
-        <div
-          class="mt-8 border-t pt-5"
-          style="border-color: color-mix(in oklch, var(--color-surface-100) 8%, transparent);"
-        >
-          <p
-            class="text-xs italic"
-            style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);"
-          >
-            End of article.
-          </p>
-        </div>
       </div>
     </article>
   {/if}
 
   <!-- Floating Action Bar -->
   <div
-    class="fixed bottom-2 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border p-1.5 shadow-2xl backdrop-blur-xl"
+    class="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full border p-1.5 shadow-2xl backdrop-blur-xl"
     style="background: color-mix(in oklch, var(--color-surface-900) 80%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
     in:fly={{ y: 20, duration: 400, delay: 400 }}
   >
@@ -271,7 +305,10 @@
       style="border-color: color-mix(in oklch, var(--color-surface-100) 10%, transparent);"
     >
       <button
-        class="action-btn h-9 w-9 rounded-full !p-0"
+        type="button"
+        class="action-btn h-9 w-9 rounded-full !p-0 {liked
+          ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
+          : ''}"
         onclick={() => interact('thumbs_up')}
         title="Like"
       >
@@ -280,7 +317,7 @@
           width="16"
           height="16"
           viewBox="0 0 24 24"
-          fill="none"
+          fill={liked ? 'currentColor' : 'none'}
           stroke="currentColor"
           stroke-width="2"
           ><path d="M7 10v12" /><path
@@ -289,7 +326,10 @@
         >
       </button>
       <button
-        class="action-btn h-9 w-9 rounded-full !p-0"
+        type="button"
+        class="action-btn h-9 w-9 rounded-full !p-0 {disliked
+          ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
+          : ''}"
         onclick={() => interact('thumbs_down')}
         title="Dislike"
       >
@@ -298,7 +338,7 @@
           width="16"
           height="16"
           viewBox="0 0 24 24"
-          fill="none"
+          fill={disliked ? 'currentColor' : 'none'}
           stroke="currentColor"
           stroke-width="2"
           ><path d="M17 14V2" /><path
@@ -309,7 +349,10 @@
     </div>
 
     <button
-      class="action-btn h-9 px-3 rounded-full"
+      type="button"
+      class="action-btn h-9 px-3 rounded-full {saved
+        ? '!text-success-400 !bg-success-500/10 !border-success-500/30'
+        : ''}"
       onclick={() => interact('save')}
       title="Save Article"
     >
@@ -318,12 +361,12 @@
         width="16"
         height="16"
         viewBox="0 0 24 24"
-        fill="none"
+        fill={saved ? 'currentColor' : 'none'}
         stroke="currentColor"
         stroke-width="2"
         ><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" /></svg
       >
-      <span class="ml-1.5 hidden sm:inline">Save</span>
+      <span class="ml-1.5 hidden sm:inline">{saved ? 'Saved' : 'Save'}</span>
     </button>
 
     <a
@@ -354,7 +397,10 @@
     </a>
 
     <button
-      class="action-btn h-9 px-3 rounded-full hover:!text-error-400"
+      type="button"
+      class="action-btn h-9 px-3 rounded-full hover:!text-error-400 {hidden
+        ? 'opacity-50 pointer-events-none'
+        : ''}"
       onclick={() => interact('hide')}
       title="Hide Article"
     >
