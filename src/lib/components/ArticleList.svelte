@@ -198,7 +198,7 @@
     {#each articles as article, i (article.id)}
       <div
         id="article-{article.id}"
-        class="glass-card glass-card-hover group relative flex cursor-pointer flex-col overflow-hidden p-0"
+        class="glass-card glass-card-hover group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[280px]"
         class:article-focus-ring={focusedIndex === i}
         role="link"
         tabindex="0"
@@ -222,73 +222,36 @@
         }}
       >
         {#if article.image_url}
-          <div class="relative h-48 w-full overflow-hidden">
+          <div class="absolute inset-0 z-0 bg-surface-950">
             <img
               src={article.image_url}
               alt=""
-              class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+              class="h-full w-full object-cover opacity-80 transition-all duration-700 group-hover:scale-110 group-hover:opacity-100"
+              style="filter: brightness(0.6);"
               loading="lazy"
             />
             <div
-              class="absolute inset-0 bg-gradient-to-t from-surface-950/80 to-transparent"
+              class="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/40 to-transparent opacity-90"
             ></div>
-            <div class="absolute bottom-3 left-4 right-4">
-              <span
-                class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
-                style="background: var(--color-primary-500); border-radius: 2px;"
-              >
-                {article.feed_title || 'Unknown'}
-              </span>
-            </div>
           </div>
         {/if}
 
-        <div class="flex flex-1 flex-col p-5">
-          {#if !article.image_url}
-            <div
-              class="mb-3 flex flex-wrap items-center gap-2 text-xs"
-              style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
-            >
-              <span
-                class="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium"
-                style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;"
-              >
-                {article.feed_title || 'Unknown'}
-              </span>
-              <span class="flex items-center gap-1">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  ><circle cx="12" cy="12" r="10" /><polyline
-                    points="12 6 12 12 16 14"
-                  /></svg
-                >
-                {timeAgo(article.published_at || article.fetched_at)}
-              </span>
-            </div>
-          {/if}
-
-          <h3
-            class="text-lg font-bold leading-tight transition-colors group-hover:text-primary-400"
-            style="color: var(--color-surface-50);"
+        <div class="relative z-10 flex flex-1 flex-col p-6">
+          <div
+            class="mb-3 flex flex-wrap items-center gap-2 text-xs"
+            style="color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);"
           >
-            {article.title}
-          </h3>
-
-          {#if article.image_url}
-            <div
-              class="mt-1 flex items-center gap-1 text-[10px]"
-              style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);"
+            <span
+              class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
+              style="background: var(--color-primary-500); border-radius: 2px;"
             >
+              {article.feed_title || 'Unknown'}
+            </span>
+            <span class="flex items-center gap-1">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                width="10"
-                height="10"
+                width="12"
+                height="12"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -298,23 +261,30 @@
                 /></svg
               >
               {timeAgo(article.published_at || article.fetched_at)}
-            </div>
-          {/if}
+            </span>
+          </div>
+
+          <h3
+            class="text-xl font-bold leading-tight transition-colors group-hover:text-primary-400"
+            style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
+          >
+            {article.title}
+          </h3>
 
           {#if article.summary}
             <p
-              class="mt-3 line-clamp-3 text-sm leading-relaxed"
-              style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
+              class="mt-3 line-clamp-2 text-sm leading-relaxed"
+              style="color: color-mix(in oklch, var(--color-surface-100) 80%, transparent);"
             >
               {article.summary}
             </p>
           {/if}
 
-          <div class="mt-auto pt-5">
+          <div class="mt-auto pt-6">
             <div class="flex items-center gap-1.5">
               <button
                 type="button"
-                class="action-btn"
+                class="action-btn !bg-surface-900/50 backdrop-blur-sm"
                 onclick={(e) => {
                   e.stopPropagation();
                   interact(article.id, 'hide');
@@ -337,7 +307,7 @@
               </button>
               <button
                 type="button"
-                class="action-btn"
+                class="action-btn !bg-surface-900/50 backdrop-blur-sm"
                 onclick={(e) => {
                   e.stopPropagation();
                   interact(article.id, 'save');
@@ -361,7 +331,7 @@
               <div class="ml-auto flex items-center gap-1">
                 <button
                   type="button"
-                  class="action-btn"
+                  class="action-btn !bg-surface-900/50 backdrop-blur-sm"
                   onclick={(e) => {
                     e.stopPropagation();
                     interact(article.id, 'thumbs_up');
@@ -383,7 +353,7 @@
                 </button>
                 <button
                   type="button"
-                  class="action-btn"
+                  class="action-btn !bg-surface-900/50 backdrop-blur-sm"
                   onclick={(e) => {
                     e.stopPropagation();
                     interact(article.id, 'thumbs_down');

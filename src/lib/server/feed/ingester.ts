@@ -90,9 +90,17 @@ export async function ingestFeed(options: IngestOptions): Promise<IngestResult> 
 
       const articleId = generateArticleId(item.url, item.title);
 
-      // Skip duplicate
-      const existing = db.prepare('SELECT id FROM articles WHERE id = ?').get(articleId);
-      if (existing) continue;
+      // Skip duplicate or update missing image
+      const existing = db.prepare('SELECT id, image_url FROM articles WHERE id = ?').get(articleId) as { id: string, image_url: string } | undefined;
+      if (existing) {
+        if (!existing.image_url && item.imageUrl) {
+          db.prepare('UPDATE articles SET image_url = ? WHERE id = ?').run(
+            item.imageUrl,
+            articleId
+          );
+        }
+        continue;
+      }
 
       // Insert new article
       db.prepare(

@@ -79,11 +79,22 @@ export async function fetchFeed(url: string, options: { etag?: string, lastModif
     const items: FetchedItem[] = (result.items || []).map((item: Record<string, unknown>) => {
       // Extract image from various possible sources
       let imageUrl = '';
-      const mediaContent = item['media:content'] as Record<string, unknown> | undefined;
-      const mediaThumbnail = item['media:thumbnail'] as Record<string, unknown> | undefined;
+      
+      const mediaContent = item.mediaContent as any;
+      const mediaThumbnail = item.mediaThumbnail as any;
+      const enclosure = item.enclosure as any;
 
-      if (mediaContent?.url && typeof mediaContent.url === 'string') imageUrl = mediaContent.url;
-      else if (mediaThumbnail?.url && typeof mediaThumbnail.url === 'string') imageUrl = mediaThumbnail.url;
+      if (mediaContent?.$?.url) {
+        imageUrl = mediaContent.$.url;
+      } else if (mediaThumbnail?.$?.url) {
+        imageUrl = mediaThumbnail.$.url;
+      } else if (enclosure?.url && enclosure?.type?.startsWith('image/')) {
+        imageUrl = enclosure.url;
+      } else if (typeof mediaContent?.url === 'string') {
+        imageUrl = mediaContent.url;
+      } else if (typeof mediaThumbnail?.url === 'string') {
+        imageUrl = mediaThumbnail.url;
+      }
 
       return {
         guid: String(item.guid || item.link || ''),
