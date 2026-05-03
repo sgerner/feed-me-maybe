@@ -1,6 +1,7 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
   import ThemeChooser from '$lib/components/ThemeChooser.svelte';
+  import { fly, fade } from 'svelte/transition';
   let { data } = $props();
 
   async function importOpml() {
@@ -27,7 +28,7 @@
 </script>
 
 <div class="space-y-5">
-  <div class="glass-card glass-card-hover p-5">
+  <div class="glass-card glass-card-hover p-5" in:fly={{ y: 12, duration: 300 }}>
     <h2 class="mb-4 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
       Application Theme
@@ -35,7 +36,7 @@
     <ThemeChooser />
   </div>
 
-  <div class="glass-card glass-card-hover p-5">
+  <div class="glass-card glass-card-hover p-5" in:fly={{ y: 12, duration: 300, delay: 60 }}>
     <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       Polling Configuration
@@ -62,7 +63,7 @@
     </p>
   </div>
 
-  <div class="glass-card p-5">
+  <div class="glass-card p-5" in:fly={{ y: 12, duration: 300, delay: 120 }}>
     <h2 class="mb-2 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       App Password
@@ -70,7 +71,7 @@
     <p class="text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);">Password is configured via the APP_PASSWORD environment variable.</p>
   </div>
 
-  <div class="glass-card p-5">
+  <div class="glass-card p-5" in:fly={{ y: 12, duration: 300, delay: 180 }}>
     <h2 class="mb-2 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       Privacy Note
@@ -78,7 +79,7 @@
     <p class="text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);">This app stores all data locally in SQLite. No data is sent to external services except the AI provider you configure and RSS/Atom feed fetches. Your reading habits remain private to your server.</p>
   </div>
 
-  <div class="glass-card glass-card-hover p-5">
+  <div class="glass-card glass-card-hover p-5" in:fly={{ y: 12, duration: 300, delay: 240 }}>
     <h2 class="mb-2 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       OPML Import/Export

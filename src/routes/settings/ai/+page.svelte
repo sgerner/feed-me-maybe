@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   let { data: pageData } = $props();
   let providers = $state<any[]>([]);
   let selectedProvider = $state('');
@@ -40,11 +41,11 @@
 {#if loading}
   <div class="glass-card mt-8 h-32 animate-pulse p-5"></div>
 {:else if providers.length === 0}
-  <div class="glass-card mt-8 p-5">
+  <div class="glass-card mt-8 p-5" in:fade={{ duration: 300 }}>
     <p class="text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">No provider metadata available.</p>
   </div>
 {:else}
-  <div class="glass-card glass-card-hover mt-8 space-y-5 p-5 md:p-6">
+  <div class="glass-card glass-card-hover mt-8 space-y-5 p-5 md:p-6" in:fly={{ y: 14, duration: 320 }}>
     <label class="label">
       <span class="mb-1 block text-sm font-medium" style="color: var(--color-surface-100);">Provider</span>
       <select class="input glass-input" bind:value={selectedProvider} onchange={() => { selectedModel = ''; }}>
@@ -57,7 +58,7 @@
 
     {#if selectedProvider}
       {@const provider = providers.find((p: any) => p.id === selectedProvider)}
-      <label class="label">
+      <label class="label" in:fly={{ y: 8, duration: 240 }}>
         <span class="mb-1 block text-sm font-medium" style="color: var(--color-surface-100);">Model</span>
         <select class="input glass-input" bind:value={selectedModel}>
           <option value="">-- Select Model --</option>
@@ -67,19 +68,19 @@
         </select>
       </label>
 
-      <label class="label">
+      <label class="label" in:fly={{ y: 8, duration: 240, delay: 40 }}>
         <span class="mb-1 block text-sm font-medium" style="color: var(--color-surface-100);">API Key</span>
         <input class="input glass-input" type="password" bind:value={apiKey} placeholder="sk-..." />
       </label>
 
-      <label class="label">
+      <label class="label" in:fly={{ y: 8, duration: 240, delay: 80 }}>
         <span class="mb-1 block text-sm font-medium" style="color: var(--color-surface-100);">Custom Base URL (optional)</span>
         <input class="input glass-input" type="url" bind:value={customBaseUrl} placeholder={provider.baseUrl} />
       </label>
     {/if}
 
     {#if message}
-      <div class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-surface-100) 6%, transparent); color: color-mix(in oklch, var(--color-surface-100) 75%, transparent); border: 1px solid color-mix(in oklch, var(--color-surface-100) 10%, transparent);">
+      <div class="flex items-center gap-2 px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-surface-100) 6%, transparent); color: color-mix(in oklch, var(--color-surface-100) 75%, transparent); border: 1px solid color-mix(in oklch, var(--color-surface-100) 10%, transparent); border-radius: 2px;" in:fly={{ y: 6, duration: 220 }}>
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
         {message}
       </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   let { children } = $props();
   import { page } from '$app/stores';
 </script>

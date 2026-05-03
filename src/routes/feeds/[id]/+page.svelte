@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
+  import { fly, fade } from 'svelte/transition';
 
   let feed = $state<Record<string, unknown> | null>(null);
   let loading = $state(true);
@@ -75,12 +76,12 @@
       {error}
     </div>
   {:else if feed}
-    <div class="glass-card glass-card-hover p-5 md:p-8">
+    <div class="glass-card glass-card-hover p-5 md:p-8" in:fly={{ y: 14, duration: 320 }}>
       <h1 class="text-xl font-bold md:text-2xl" style="color: var(--color-surface-50);">{feed.title || 'Untitled Feed'}</h1>
       <p class="mt-1 break-all text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);">{feed.url}</p>
 
       {#if saveSuccess}
-        <div class="mt-4 flex items-center gap-2 rounded-lg px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); color: var(--color-success-300); border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent);">
+        <div class="mt-4 flex items-center gap-2 px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); color: var(--color-success-300); border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent); border-radius: 2px;" in:fly={{ y: 6, duration: 220 }}>
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
           Saved successfully!
         </div>

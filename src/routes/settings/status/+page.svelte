@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   let { data: pageData } = $props();
 </script>
 
@@ -6,15 +7,15 @@
 <p class="section-subtitle">Overview of your RSS reader instance.</p>
 
 <div class="mt-8 grid grid-cols-3 gap-4">
-  <div class="stat-card">
+  <div class="stat-card" in:fly={{ y: 12, duration: 300 }}>
     <p class="stat-value">{pageData.feedCount}</p>
     <p class="mt-1 text-xs font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Feeds</p>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" in:fly={{ y: 12, duration: 300, delay: 60 }}>
     <p class="stat-value">{pageData.articleCount}</p>
     <p class="mt-1 text-xs font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Articles</p>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" in:fly={{ y: 12, duration: 300, delay: 120 }}>
     <p class="stat-value">{pageData.jobCount}</p>
     <p class="mt-1 text-xs font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Pending Jobs</p>
   </div>
@@ -26,9 +27,9 @@
     Recent Fetches
   </h3>
   <div class="space-y-2">
-    {#each pageData.recentJobs as job}
-      <div class="glass-card flex items-center gap-3 p-3 text-xs">
-        <span class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium" style={job.status === 'success' ? 'background: color-mix(in oklch, var(--color-success-500) 12%, transparent); color: var(--color-success-300);' : 'background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300);'}>
+    {#each pageData.recentJobs as job, i}
+      <div class="glass-card flex items-center gap-3 p-3 text-xs" in:fly={{ y: 8, duration: 250, delay: Math.min(i * 40, 300) }}>
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 font-medium" style={job.status === 'success' ? 'background: color-mix(in oklch, var(--color-success-500) 12%, transparent); color: var(--color-success-300); border-radius: 2px;' : 'background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300); border-radius: 2px;'}>
           {#if job.status === 'success'}
             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>
           {:else}

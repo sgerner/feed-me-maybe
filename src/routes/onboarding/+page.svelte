@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   let step = $state(1);
   const totalSteps = 4;
   let feedUrl = $state('');
@@ -67,7 +68,7 @@
   </div>
 
   {#if step === 1}
-    <div class="glass-card p-8 text-center">
+    <div class="glass-card p-8 text-center" in:fly={{ y: 16, duration: 350 }}>
       <div class="mb-6 inline-flex h-20 w-20 items-center justify-center rounded-full" style="background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); box-shadow: 0 0 30px -5px color-mix(in oklch, var(--color-primary-500) 30%, transparent);">
         <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-primary-400">
           <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>
@@ -84,7 +85,7 @@
     </div>
 
   {:else if step === 2}
-    <div class="glass-card p-6 md:p-8">
+    <div class="glass-card p-6 md:p-8" in:fly={{ y: 16, duration: 350 }}>
       <h2 class="text-xl font-bold" style="color: var(--color-surface-50);">Add Your First Feed</h2>
       <p class="mt-2 text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);">
         Enter an RSS or Atom feed URL to get started.
@@ -103,7 +104,7 @@
           class="input glass-input w-full"
         />
         {#if error}
-          <div class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent);">
+          <div class="flex items-center gap-2 px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent); border-radius: 2px;">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             {error}
           </div>
@@ -126,7 +127,7 @@
     </div>
 
   {:else if step === 3}
-    <div class="glass-card p-6 md:p-8">
+    <div class="glass-card p-6 md:p-8" in:fly={{ y: 16, duration: 350 }}>
       <h2 class="text-xl font-bold" style="color: var(--color-surface-50);">AI Configuration</h2>
       <p class="mt-2 text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);">
         Optionally configure an AI provider to get article summaries, scoring, and personalized recommendations.
@@ -142,7 +143,7 @@
     </div>
 
   {:else if step === 4}
-    <div class="glass-card p-8 text-center">
+    <div class="glass-card p-8 text-center" in:fly={{ y: 16, duration: 350 }}>
       <div class="mb-6 inline-flex h-20 w-20 items-center justify-center rounded-full" style="background: color-mix(in oklch, var(--color-success-500) 12%, transparent); box-shadow: 0 0 30px -5px color-mix(in oklch, var(--color-success-500) 30%, transparent);">
         <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--color-success-400);">
           <path d="M20 6 9 17l-5-5"/>

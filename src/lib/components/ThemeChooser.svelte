@@ -31,10 +31,10 @@
   {#each themes as { name, label }}
     <button
       type="button"
-      class="relative flex items-center justify-between rounded-lg px-3 py-2.5 text-sm transition-all"
+      class="relative flex items-center justify-between px-3 py-2.5 text-sm transition-all"
       style={themeStore.current === name
-        ? 'background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); border: 1px solid color-mix(in oklch, var(--color-primary-500) 30%, transparent); color: var(--color-primary-300); box-shadow: 0 0 16px -4px color-mix(in oklch, var(--color-primary-500) 25%, transparent);'
-        : 'background: color-mix(in oklch, var(--color-surface-100) 4%, transparent); border: 1px solid color-mix(in oklch, var(--color-surface-100) 5%, transparent); color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);'}
+        ? 'background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); border: 1px solid color-mix(in oklch, var(--color-primary-500) 30%, transparent); color: var(--color-primary-300); box-shadow: 0 0 16px -4px color-mix(in oklch, var(--color-primary-500) 25%, transparent); border-radius: 2px;'
+        : 'background: color-mix(in oklch, var(--color-surface-100) 4%, transparent); border: 1px solid color-mix(in oklch, var(--color-surface-100) 5%, transparent); color: color-mix(in oklch, var(--color-surface-200) 65%, transparent); border-radius: 2px;'}
       onclick={() => themeStore.set(name)}
     >
       <span class="font-medium">{label}</span>

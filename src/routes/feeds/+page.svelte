@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   let feeds = $state<Array<Record<string, unknown>>>([]);
   let loading = $state(true);
   let error = $state('');
@@ -62,14 +63,14 @@
   $effect(() => { loadFeeds(); });
 </script>
 
-<div class="mx-auto max-w-2xl">
+<div class="mx-auto max-w-3xl">
   <div class="mb-8">
     <h1 class="section-title">Feeds</h1>
     <p class="section-subtitle">Manage your RSS/Atom feed sources.</p>
   </div>
 
   <!-- Add Feed Form -->
-  <div class="glass-card glass-card-hover mb-6 p-5">
+  <div class="glass-card glass-card-hover mb-6 p-5" in:fly={{ y: 12, duration: 300 }}>
     <h2 class="mb-4 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Add Feed
@@ -81,7 +82,7 @@
         <input class="input glass-input flex-1" type="text" bind:value={newCategory} placeholder="Category (optional)" />
       </div>
       {#if addError}
-        <div class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent);">
+        <div class="flex items-center gap-2 px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent); border-radius: 2px;">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           {addError}
         </div>
@@ -110,7 +111,7 @@
       {error}
     </div>
   {:else if feeds.length === 0}
-    <div class="glass-card mt-12 p-8 text-center">
+    <div class="glass-card mt-12 p-8 text-center" in:fade={{ duration: 300 }}>
       <div class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent);">
         <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-primary-400">
           <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>
@@ -121,19 +122,19 @@
     </div>
   {:else}
     <div class="mt-6 space-y-3">
-      {#each feeds as feed (feed.id)}
-        <div class="glass-card glass-card-hover flex items-center justify-between p-4 md:p-5">
+      {#each feeds as feed, i (feed.id)}
+        <div class="glass-card glass-card-hover flex items-center justify-between p-4 md:p-5" in:fly={{ y: 12, duration: 300, delay: Math.min(i * 30, 300) }}>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
               <a href="/feeds/{feed.id}" class="font-semibold no-underline transition-colors hover:text-primary-400" style="color: var(--color-surface-50);">{feed.title || feed.url}</a>
               {#if !feed.enabled}
-                <span class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider" style="background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300);">Disabled</span>
+                <span class="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider" style="background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300); border-radius: 2px;">Disabled</span>
               {/if}
             </div>
             <p class="mt-0.5 truncate text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);">{feed.url}</p>
             <div class="mt-2 flex flex-wrap items-center gap-2 text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);">
               {#if feed.category}
-                <span class="inline-flex items-center rounded-md px-1.5 py-0.5" style="background: color-mix(in oklch, var(--color-surface-100) 6%, transparent);">{feed.category}</span>
+                <span class="inline-flex items-center px-1.5 py-0.5" style="background: color-mix(in oklch, var(--color-surface-100) 6%, transparent); border-radius: 2px;">{feed.category}</span>
               {/if}
               <span class="flex items-center gap-1">
                 {#if feed.last_fetch_status === 'success'}

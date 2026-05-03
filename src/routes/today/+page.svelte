@@ -1,6 +1,7 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import { onMount } from 'svelte';
+  import { fly, fade } from 'svelte/transition';
 
   let { data: pageData } = $props();
 
@@ -77,20 +78,20 @@
     const dx = e.changedTouches[0].screenX - touchStartX;
     const dy = e.changedTouches[0].screenY - touchStartY;
     if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 80) {
-      if (dx < 0) interact(articleId, 'hide'); // swipe left = hide
-      else interact(articleId, 'save'); // swipe right = save
+      if (dx < 0) interact(articleId, 'hide');
+      else interact(articleId, 'save');
     }
   }
 </script>
 
-<div class="mx-auto max-w-2xl">
+<div class="mx-auto max-w-7xl">
   <div class="mb-8">
     <h1 class="section-title">Today</h1>
     <p class="section-subtitle">{pageData.totalArticles} articles waiting for you</p>
   </div>
 
   {#if pageData.articles.length === 0}
-    <div class="glass-card mt-16 p-8 text-center">
+    <div class="glass-card mt-16 p-8 text-center" in:fade={{ duration: 300 }}>
       <div class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent);">
         <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-primary-400">
           <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>
@@ -104,23 +105,24 @@
       </a>
     </div>
   {:else}
-    <div class="space-y-4">
+    <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
       {#each pageData.articles as article, i (article.id)}
         <div
           id="article-{article.id}"
           class="glass-card glass-card-hover p-4 md:p-5"
           class:article-focus-ring={focusedIndex === i}
           role="listitem"
+          in:fly={{ y: 16, duration: 350, delay: Math.min(i * 35, 400) }}
           ontouchstart={handleTouchStart}
           ontouchend={(e) => handleTouchEnd(e, article.id)}
         >
           <div class="flex gap-4">
             {#if article.image_url}
-              <img src={article.image_url} alt="" class="mt-1 h-20 w-20 flex-shrink-0 rounded-lg object-cover shadow-md md:h-24 md:w-24" loading="lazy" />
+              <img src={article.image_url} alt="" class="mt-1 h-20 w-20 flex-shrink-0 object-cover shadow-md md:h-24 md:w-24" style="border-radius: 2px;" loading="lazy" />
             {/if}
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2 text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">
-                <span class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300);">
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;">
                   {article.feed_title || 'Unknown'}
                 </span>
                 <span class="flex items-center gap-1">

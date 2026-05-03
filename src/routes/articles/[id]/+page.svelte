@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly, fade } from 'svelte/transition';
   let { data: pageData } = $props();
 
   const article = $derived(pageData.article);
@@ -10,7 +11,7 @@
     Back to Today
   </a>
 
-  <article class="glass-card glass-card-hover overflow-hidden">
+  <article class="glass-card glass-card-hover overflow-hidden" in:fly={{ y: 16, duration: 350 }}>
     {#if article.image_url}
       <div class="relative">
         <img src={article.image_url} alt="" class="h-64 w-full object-cover md:h-80" loading="lazy" />
@@ -21,7 +22,7 @@
     <div class="p-5 md:p-8">
       <div class="mb-6">
         <div class="flex flex-wrap items-center gap-2 text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">
-          <span class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 font-medium" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300);">
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 font-medium" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;">
             {article.feed_title || 'Unknown Feed'}
           </span>
           {#if article.author}
@@ -45,7 +46,7 @@
       </div>
 
       {#if article.ai_summary}
-        <div class="mb-6 rounded-xl border p-5" style="background: color-mix(in oklch, var(--color-secondary-500) 6%, transparent); border-color: color-mix(in oklch, var(--color-secondary-500) 15%, transparent);">
+        <div class="mb-6 border p-5" style="background: color-mix(in oklch, var(--color-secondary-500) 6%, transparent); border-color: color-mix(in oklch, var(--color-secondary-500) 15%, transparent); border-radius: 2px;">
           <div class="mb-2 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-secondary-300);">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><path d="M8.5 8.5v.01"/><path d="M16 15.5v.01"/><path d="M12 12v.01"/><path d="M11 17v.01"/><path d="M7 14v.01"/></svg>
             AI Summary
@@ -55,7 +56,7 @@
       {/if}
 
       {#if article.explanation}
-        <details class="mb-6 rounded-xl border p-4" style="background: color-mix(in oklch, var(--color-surface-100) 3%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 8%, transparent);">
+        <details class="mb-6 border p-4" style="background: color-mix(in oklch, var(--color-surface-100) 3%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 8%, transparent); border-radius: 2px;">
           <summary class="flex cursor-pointer items-center gap-2 text-sm font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
             Why this article?
