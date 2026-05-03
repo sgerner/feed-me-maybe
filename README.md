@@ -72,18 +72,54 @@ docker compose up -d
 
 The application will be available at `http://localhost:3000`.
 
+### Persistent Storage
+
+The app stores its SQLite database in `/data/feed-me-maybe.db` inside the container.
+Mount `/data` to a persistent Docker volume or host directory so feeds, articles,
+sessions, and settings survive container restarts.
+
+If you change `APP_SECRET` after storing AI provider credentials, previously saved
+encrypted values may no longer be readable.
+
+### CapRover
+
+For CapRover, set the following as runtime environment variables, not build args:
+
+- `APP_PASSWORD`
+- `APP_SECRET`
+- `DATABASE_URL=/data/feed-me-maybe.db`
+
+Create a persistent directory mapping for `/data`.
+
+Example:
+
+- App env vars: `APP_PASSWORD`, `APP_SECRET`, `DATABASE_URL`
+- Persistent directory: `/data`
+- Database path inside container: `/data/feed-me-maybe.db`
+
+CapRover may show a warning if you enter these values as build args. That warning
+is harmless only if the values are also set as runtime environment variables.
+The Docker image reads them at startup, not at build time.
+
 ## Environment Variables
 
-| Variable       | Required | Default                   | Description                                                        |
-| -------------- | -------- | ------------------------- | ------------------------------------------------------------------ |
-| `APP_PASSWORD` | **Yes**  | —                         | Password for application access                                    |
-| `DATABASE_URL` | No       | `./data/feed-me-maybe.db` | Path to the SQLite database file                                   |
-| `HOST`         | No       | `0.0.0.0`                 | Server bind address                                                |
-| `PORT`         | No       | `3000`                    | Server port                                                        |
-| `APP_SECRET`   | No       | —                         | Session encryption secret (generate with `openssl rand -hex 32`)   |
-| `PROVIDER`     | No       | —                         | AI provider ID (e.g., `openai`, `anthropic`, `openrouter`, `groq`) |
-| `MODEL`        | No       | —                         | AI model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`)       |
-| `API_KEY`      | No       | —                         | AI provider API key                                                |
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `APP_PASSWORD` | Yes | - | Password for application access |
+| `APP_SECRET` | Recommended | - | Secret used for session-related and encrypted AI settings; generate with `openssl rand -hex 32` |
+| `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/data/feed-me-maybe.db` in Docker | Path to the SQLite database file |
+| `HOST` | No | `0.0.0.0` | Server bind address |
+| `PORT` | No | `3000` | Server port |
+| `PROVIDER` | No | - | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq` |
+| `MODEL` | No | - | AI model name, for example `gpt-4o` or `claude-3-5-sonnet-20241022` |
+| `API_KEY` | No | - | AI provider API key |
+
+### Docker Notes
+
+- Use a persistent mount for `/data`.
+- Set `DATABASE_URL=/data/feed-me-maybe.db` when running in Docker or CapRover.
+- Keep `APP_PASSWORD` and `APP_SECRET` stable across restarts.
+- Set these as runtime environment variables. Do not rely on build args for them.
 
 ## Project Structure
 
