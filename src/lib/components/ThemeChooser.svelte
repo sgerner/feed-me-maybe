@@ -27,19 +27,40 @@
   ];
 </script>
 
-<div class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
   {#each themes as { name, label }}
     <button
       type="button"
-      class="relative flex items-center justify-between px-3 py-2.5 text-sm transition-all"
+      data-theme={name}
+      class="group relative flex flex-col gap-3 p-3 transition-all duration-300 glass-card glass-card-hover text-left"
       style={themeStore.current === name
-        ? 'background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); border: 1px solid color-mix(in oklch, var(--color-primary-500) 30%, transparent); color: var(--color-primary-300); box-shadow: 0 0 16px -4px color-mix(in oklch, var(--color-primary-500) 25%, transparent); border-radius: 2px;'
-        : 'background: color-mix(in oklch, var(--color-surface-100) 4%, transparent); border: 1px solid color-mix(in oklch, var(--color-surface-100) 5%, transparent); color: color-mix(in oklch, var(--color-surface-200) 65%, transparent); border-radius: 2px;'}
+        ? 'border-color: color-mix(in oklch, var(--color-primary-500) 40%, transparent); background: color-mix(in oklch, var(--color-primary-500) 8%, transparent);'
+        : ''}
       onclick={() => themeStore.set(name)}
     >
-      <span class="font-medium">{label}</span>
+      <!-- Header: Label and Checkmark -->
+      <div class="flex items-center justify-between w-full">
+        <span class="text-[10px] font-bold uppercase tracking-widest transition-colors {themeStore.current === name ? 'text-primary-400' : 'text-surface-400 group-hover:text-surface-200'}">
+          {label}
+        </span>
+        {#if themeStore.current === name}
+          <div class="flex h-4 w-4 items-center justify-center rounded-full bg-primary-500 text-white" style="box-shadow: 0 0 10px color-mix(in oklch, var(--color-primary-500) 50%, transparent)">
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4"><path d="M20 6 9 17l-5-5"/></svg>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Color Palette Preview -->
+      <div class="flex w-full gap-1 overflow-hidden rounded-[2px] p-1 bg-black/20 backdrop-blur-sm border border-white/5">
+        <div class="h-4 flex-1 rounded-[1px]" style="background-color: var(--color-primary-500)" title="Primary"></div>
+        <div class="h-4 flex-1 rounded-[1px]" style="background-color: var(--color-secondary-500)" title="Secondary"></div>
+        <div class="h-4 flex-1 rounded-[1px]" style="background-color: var(--color-tertiary-500)" title="Tertiary"></div>
+        <div class="h-4 flex-1 rounded-[1px]" style="background-color: var(--color-surface-500)" title="Surface"></div>
+      </div>
+
+      <!-- Active Indicator Glow (Optional, subtle) -->
       {#if themeStore.current === name}
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>
+        <div class="absolute -inset-[1px] -z-10 rounded-[3px] bg-primary-500/20 blur-md transition-opacity"></div>
       {/if}
     </button>
   {/each}

@@ -5,12 +5,30 @@
   import { fly } from 'svelte/transition';
 
   let sidebarOpen = $state(false);
-  let { children } = $props();
+  let syncing = $state(false);
+  let { children, data } = $props();
+
+  async function syncFeeds() {
+    if (syncing) return;
+    syncing = true;
+    try {
+      const res = await fetch('/api/feeds/refresh', { method: 'POST' });
+      if (res.ok) {
+        const { addToast } = await import('$lib/stores/toast.svelte');
+        addToast('Syncing feeds in background', 'success');
+      }
+    } catch {
+      const { addToast } = await import('$lib/stores/toast.svelte');
+      addToast('Sync failed', 'error');
+    } finally {
+      syncing = false;
+    }
+  }
 
   const navItems = [
     {
       href: '/today',
-      label: 'Today',
+      label: 'All Feeds',
       icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>',
     },
     {
@@ -23,9 +41,12 @@
       label: 'Training',
       icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
     },
+  ];
+
+  const adminItems = [
     {
       href: '/feeds',
-      label: 'Feeds',
+      label: 'Manage Feeds',
       icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>',
     },
     {
@@ -113,23 +134,125 @@
           Feed Me Maybe
         </a>
       </div>
-      <nav class="flex flex-col gap-1 p-3">
-        {#each navItems as item (item.href)}
-          <a
-            href={item.href}
-            data-sveltekit-preload-data
-            class={'nav-item' +
-              ($page.url.pathname.startsWith(item.href)
-                ? ' nav-item-active'
-                : '')}
-          >
-            <span class="flex h-5 w-5 items-center justify-center"
-              >{@html item.icon}</span
+
+      <div
+        class="flex h-[calc(100%-5rem)] flex-col justify-between p-3 md:h-[calc(100%-4rem)]"
+      >
+        <nav class="flex flex-col gap-1 overflow-y-auto">
+          {#each navItems as item (item.href)}
+            <a
+              href={item.href}
+              data-sveltekit-preload-data
+              class={'nav-item' +
+                ($page.url.pathname === item.href ? ' nav-item-active' : '')}
             >
-            <span>{item.label}</span>
-          </a>
-        {/each}
-      </nav>
+              <span class="flex h-5 w-5 items-center justify-center"
+                >{@html item.icon}</span
+              >
+              <span>{item.label}</span>
+            </a>
+          {/each}
+
+          {#if data.feeds && data.feeds.length > 0}
+            <div
+              class="mt-4 px-3 pb-2 text-[10px] font-bold uppercase tracking-widest"
+              style="color: color-mix(in oklch, var(--color-surface-200) 30%, transparent);"
+            >
+              Your Feeds
+            </div>
+            {#each data.feeds as feed (feed.id)}
+              <a
+                href="/feeds/{feed.id}"
+                data-sveltekit-preload-data
+                class={'nav-item' +
+                  ($page.url.pathname === `/feeds/${feed.id}`
+                    ? ' nav-item-active'
+                    : '')}
+              >
+                <span
+                  class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-sm bg-white/5"
+                >
+                  {#if feed.icon_url}
+                    <img
+                      src={feed.icon_url}
+                      alt=""
+                      class="h-full w-full object-contain"
+                    />
+                  {:else}
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);"
+                      ><path d="M4 11a9 9 0 0 1 9 9" /><path
+                        d="M4 4a16 16 0 0 1 16 16"
+                      /><circle cx="5" cy="19" r="1" /></svg
+                    >
+                  {/if}
+                </span>
+                <span class="truncate">{feed.title || 'Untitled'}</span>
+              </a>
+            {/each}
+          {/if}
+
+          <button
+            class="nav-item mt-4 hidden w-full items-center gap-3 bg-transparent text-left md:flex"
+            onclick={syncFeeds}
+            disabled={syncing}
+          >
+            <span class="flex h-5 w-5 items-center justify-center">
+              {#if syncing}
+                <div
+                  class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+                ></div>
+              {:else}
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  ><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path
+                    d="M3 3v5h5"
+                  /><path
+                    d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"
+                  /><path d="M16 16h5v5" /></svg
+                >
+              {/if}
+            </span>
+            <span>{syncing ? 'Syncing...' : 'Sync Feeds'}</span>
+          </button>
+        </nav>
+
+        <nav
+          class="mt-auto flex flex-col gap-1 border-t pt-4"
+          style="border-color: color-mix(in oklch, var(--color-surface-100) 5%, transparent);"
+        >
+          {#each adminItems as item (item.href)}
+            <a
+              href={item.href}
+              data-sveltekit-preload-data
+              class={'nav-item' +
+                ($page.url.pathname.startsWith(item.href)
+                  ? ' nav-item-active'
+                  : '')}
+            >
+              <span class="flex h-5 w-5 items-center justify-center"
+                >{@html item.icon}</span
+              >
+              <span>{item.label}</span>
+            </a>
+          {/each}
+        </nav>
+      </div>
     </aside>
 
     <!-- Main Content -->

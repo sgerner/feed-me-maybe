@@ -3,16 +3,39 @@ import crypto from 'node:crypto';
 
 export function exportOpml(): string {
   const db = getDb();
-  const feeds = db.prepare('SELECT url, title, description, category FROM feeds WHERE enabled = 1').all() as Array<Record<string, string>>;
+  const feeds = db.prepare('SELECT url, title, site_url, description, category FROM feeds WHERE enabled = 1').all() as Array<Record<string, string>>;
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <opml version="1.0">
 <head><title>Feed Me Maybe Export</title></head>
 <body>\n`;
 
+  const categorized: Record<string, typeof feeds> = {};
+  const uncategorized: typeof feeds = [];
+
   for (const feed of feeds) {
-    const cat = feed.category ? ` category="${escapeXml(feed.category)}"` : '';
-    xml += `  <outline text="${escapeXml(feed.title || feed.url)}"${cat} type="rss" xmlUrl="${escapeXml(feed.url)}"/>\n`;
+    if (feed.category) {
+      if (!categorized[feed.category]) categorized[feed.category] = [];
+      categorized[feed.category].push(feed);
+    } else {
+      uncategorized.push(feed);
+    }
+  }
+
+  // Export categorized feeds in groups
+  for (const [cat, catFeeds] of Object.entries(categorized)) {
+    xml += `  <outline text="${escapeXml(cat)}">\n`;
+    for (const feed of catFeeds) {
+      const htmlUrl = feed.site_url ? ` htmlUrl="${escapeXml(feed.site_url)}"` : '';
+      xml += `    <outline text="${escapeXml(feed.title || feed.url)}" type="rss" xmlUrl="${escapeXml(feed.url)}"${htmlUrl}/>\n`;
+    }
+    xml += `  </outline>\n`;
+  }
+
+  // Export uncategorized feeds
+  for (const feed of uncategorized) {
+    const htmlUrl = feed.site_url ? ` htmlUrl="${escapeXml(feed.site_url)}"` : '';
+    xml += `  <outline text="${escapeXml(feed.title || feed.url)}" type="rss" xmlUrl="${escapeXml(feed.url)}"${htmlUrl}/>\n`;
   }
 
   xml += '</body>\n</opml>';
@@ -22,19 +45,47 @@ export function exportOpml(): string {
 export interface OpmlOutline {
   text?: string;
   xmlUrl?: string;
+  htmlUrl?: string;
   type?: string;
+  category?: string;
 }
 
 export function parseOpml(xml: string): OpmlOutline[] {
   const outlines: OpmlOutline[] = [];
-  const regex = /<outline\s[^>]*\/?>/gi;
+  
+  // Basic robust attribute extractor
+  function getAttr(tag: string, attr: string): string | undefined {
+    const regex = new RegExp(`${attr}=(['"])(.*?)\\1`, 'i');
+    return tag.match(regex)?.[2];
+  }
+
+  // Find all outline tags
+  const outlineRegex = /<outline\s+([^>]+?)(?:>([\s\S]*?)<\/outline>|\/>|>)/gi;
   let match;
 
-  while ((match = regex.exec(xml)) !== null) {
-    const text = match[0].match(/text="([^"]*)"/)?.[1];
-    const xmlUrl = match[0].match(/xmlUrl="([^"]*)"/i)?.[1];
-    const type = match[0].match(/type="([^"]*)"/i)?.[1];
-    if (xmlUrl) outlines.push({ text, xmlUrl, type });
+  while ((match = outlineRegex.exec(xml)) !== null) {
+    const attrs = match[1];
+    const content = match[2];
+    
+    const xmlUrl = getAttr(attrs, 'xmlUrl');
+    const htmlUrl = getAttr(attrs, 'htmlUrl');
+    const text = getAttr(attrs, 'text') || getAttr(attrs, 'title');
+    const type = getAttr(attrs, 'type');
+    const category = getAttr(attrs, 'category');
+
+    if (xmlUrl) {
+      outlines.push({ text, xmlUrl, htmlUrl, type, category });
+    } else if (content) {
+      // It's a container outline (likely a category)
+      const parentText = text;
+      const subOutlines = parseOpml(content);
+      for (const sub of subOutlines) {
+        if (!sub.category && parentText) {
+          sub.category = parentText;
+        }
+        outlines.push(sub);
+      }
+    }
   }
 
   return outlines;
@@ -54,11 +105,11 @@ export function importOpml(xml: string): { imported: number; errors: string[] } 
       if (existing) continue;
 
       const now = Date.now();
-      db.prepare('INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-        .run(crypto.randomUUID(), outline.xmlUrl, outline.text || '', now, now);
+      db.prepare('INSERT INTO feeds (id, url, title, site_url, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(crypto.randomUUID(), outline.xmlUrl, outline.text || '', outline.htmlUrl || '', outline.category || '', now, now);
       imported++;
-    } catch {
-      errors.push(`Invalid URL: ${outline.xmlUrl}`);
+    } catch (err: any) {
+      errors.push(`Error importing ${outline.xmlUrl}: ${err.message}`);
     }
   }
 

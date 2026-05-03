@@ -1,163 +1,171 @@
 <script lang="ts">
-  import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { addToast } from '$lib/stores/toast.svelte';
+  import ArticleList from '$lib/components/ArticleList.svelte';
   import { fly, fade } from 'svelte/transition';
 
-  let feed = $state<Record<string, unknown> | null>(null);
-  let loading = $state(true);
+  let { data: pageData } = $props();
+
+  let articles = $state<any[]>(pageData.articles);
+  let feed = $state(pageData.feed);
+  let showSettings = $state(false);
   let saving = $state(false);
-  let error = $state('');
-  let title = $state('');
-  let category = $state('');
-  let enabled = $state(true);
   let saveSuccess = $state(false);
 
-  async function loadFeed() {
-    loading = true;
+  // Settings form state
+  let title = $state(String(pageData.feed.title ?? ''));
+  let category = $state(String(pageData.feed.category ?? ''));
+  let enabled = $state(!!pageData.feed.enabled);
+
+  let pullDistance = $state(0);
+  let isPulling = $state(false);
+  let syncing = $state(false);
+  let touchStartY = 0;
+
+  async function syncFeed() {
+    if (syncing) return;
+    syncing = true;
     try {
-      const res = await fetch(`/api/feeds/${$page.params.id}`);
-      if (!res.ok) throw new Error('Not found');
-      const data = await res.json();
-      feed = data.feed;
-      title = String(data.feed.title ?? '');
-      category = String(data.feed.category ?? '');
-      enabled = !!data.feed.enabled;
+      const res = await fetch(`/api/feeds/${pageData.feedId}/refresh`, { method: 'POST' });
+      if (res.ok) {
+        addToast('Syncing feed...', 'success');
+        // Refresh article list could be done here if needed, 
+        // but background sync doesn't return articles.
+      }
     } catch {
-      error = 'Feed not found';
+      addToast('Sync failed', 'error');
     } finally {
-      loading = false;
+      syncing = false;
     }
   }
 
-  async function save() {
+  async function saveSettings() {
     saving = true;
     saveSuccess = false;
     try {
-      const res = await fetch(`/api/feeds/${$page.params.id}`, {
+      const res = await fetch(`/api/feeds/${pageData.feedId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, category, enabled })
       });
-      if (!res.ok) throw new Error('Save failed');
-      saveSuccess = true;
-      setTimeout(() => { saveSuccess = false; }, 2000);
+      if (res.ok) {
+        saveSuccess = true;
+        feed.title = title;
+        setTimeout(() => { saveSuccess = false; }, 2000);
+      } else {
+        throw new Error();
+      }
     } catch {
-      error = 'Failed to save feed';
+      addToast('Failed to save settings', 'error');
     } finally {
       saving = false;
     }
   }
 
-  async function refreshFeed() {
-    const res = await fetch(`/api/feeds/${$page.params.id}/refresh`, { method: 'POST' });
-    if (res.ok) await loadFeed();
+  function handleTouchStart(e: TouchEvent) {
+    if (window.scrollY <= 0) {
+      isPulling = true;
+      touchStartY = e.changedTouches[0].screenY;
+    }
   }
 
-  async function removeFeed() {
-    if (!confirm('Delete this feed and all its articles?')) return;
-    const res = await fetch(`/api/feeds/${$page.params.id}`, { method: 'DELETE' });
-    if (res.ok) goto('/feeds');
+  function handleTouchMove(e: TouchEvent) {
+    if (!isPulling) return;
+    const currentY = e.changedTouches[0].screenY;
+    const diff = currentY - touchStartY;
+    if (diff > 0) {
+      pullDistance = Math.min(diff * 0.4, 80);
+    } else {
+      pullDistance = 0;
+      isPulling = false;
+    }
   }
 
-  $effect(() => { loadFeed(); });
+  function handleTouchEnd(e: TouchEvent) {
+    if (isPulling && pullDistance >= 60) {
+      syncFeed();
+    }
+    pullDistance = 0;
+    isPulling = false;
+  }
 </script>
 
-<div class="mx-auto max-w-2xl">
-  <a href="/feeds" class="mb-6 inline-flex items-center gap-1.5 text-sm no-underline transition-colors hover:text-primary-400" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
-    Back to Feeds
-  </a>
-
-  {#if loading}
-    <div class="glass-card h-40 animate-pulse p-5"></div>
-  {:else if error}
-    <div class="glass-card flex items-center gap-2 p-4 text-sm" style="background: color-mix(in oklch, var(--color-error-500) 8%, transparent); color: var(--color-error-300); border-color: color-mix(in oklch, var(--color-error-500) 18%, transparent);">
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      {error}
+<div
+  class="mx-auto max-w-7xl"
+  ontouchstart={handleTouchStart}
+  ontouchmove={handleTouchMove}
+  ontouchend={handleTouchEnd}
+>
+  <!-- Pull to refresh indicator -->
+  <div
+    class="flex justify-center overflow-hidden transition-all duration-200"
+    style="height: {pullDistance}px; opacity: {pullDistance / 60};"
+  >
+    <div class="mt-4 flex items-center gap-2 text-primary-400">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2.5"
+        class={pullDistance >= 60 ? 'rotate-180' : ''}
+        style="transition: transform 0.2s;"
+      >
+        <path d="M12 5v14M19 12l-7 7-7-7" />
+      </svg>
+      <span class="text-xs font-bold uppercase tracking-wider"
+        >{pullDistance >= 60 ? 'Release to sync' : 'Pull to sync'}</span
+      >
     </div>
-  {:else if feed}
-    <div class="glass-card glass-card-hover p-5 md:p-8" in:fly={{ y: 14, duration: 320 }}>
-      <h1 class="text-xl font-bold md:text-2xl" style="color: var(--color-surface-50);">{feed.title || 'Untitled Feed'}</h1>
-      <p class="mt-1 break-all text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);">{feed.url}</p>
+  </div>
 
-      {#if saveSuccess}
-        <div class="mt-4 flex items-center gap-2 px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); color: var(--color-success-300); border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent); border-radius: 2px;" in:fly={{ y: 6, duration: 220 }}>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
-          Saved successfully!
-        </div>
+  <div class="mb-8 flex items-center justify-between">
+    <div class="flex items-center gap-4">
+      <h1 class="section-title">{feed.title || 'Untitled Feed'}</h1>
+      {#if !feed.enabled}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider" style="background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300); border-radius: 2px;">Disabled</span>
       {/if}
+    </div>
+    <button 
+      class="btn preset-filled-surface-200-800 flex items-center gap-2"
+      onclick={() => showSettings = !showSettings}
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      Settings
+    </button>
+  </div>
 
-      <div class="mt-6 space-y-4">
+  {#if showSettings}
+    <div class="glass-card mb-12 p-6" in:fly={{ y: -10, duration: 200 }}>
+      <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
         <label class="label">
-          <span class="mb-1 block text-sm font-medium" style="color: var(--color-surface-100);">Title</span>
+          <span class="mb-1 block text-sm font-medium">Title</span>
           <input class="input glass-input" type="text" bind:value={title} />
         </label>
         <label class="label">
-          <span class="mb-1 block text-sm font-medium" style="color: var(--color-surface-100);">Category</span>
+          <span class="mb-1 block text-sm font-medium">Category</span>
           <input class="input glass-input" type="text" bind:value={category} placeholder="e.g., Technology, News" />
         </label>
         <label class="flex items-center gap-3">
           <input type="checkbox" bind:checked={enabled} class="checkbox" />
-          <span class="text-sm" style="color: var(--color-surface-100);">Feed enabled</span>
+          <span class="text-sm">Feed enabled</span>
         </label>
       </div>
-
-      <div class="mt-6 flex flex-wrap gap-2">
-        <button class="btn preset-filled-primary-500 inline-flex items-center gap-2" disabled={saving} onclick={save}>
-          {#if saving}
-            <svg class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-            Saving...
-          {:else}
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-            Save
-          {/if}
+      <div class="mt-6 flex items-center gap-4">
+        <button class="btn preset-filled-primary-500" onclick={saveSettings} disabled={saving}>
+          {saving ? 'Saving...' : 'Save Changes'}
         </button>
-        <button class="action-btn px-3 py-2" onclick={refreshFeed}>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>
-          Refresh Now
-        </button>
-        <button class="action-btn px-3 py-2 text-error-300" style="border-color: color-mix(in oklch, var(--color-error-500) 15%, transparent);" onclick={removeFeed}>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-          Delete
-        </button>
-      </div>
-
-      <!-- Feed Info -->
-      <div class="mt-8 border-t pt-5" style="border-color: color-mix(in oklch, var(--color-surface-100) 6%, transparent);">
-        <h3 class="mb-3 flex items-center gap-2 text-sm font-semibold" style="color: var(--color-surface-100);">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-          Feed Info
-        </h3>
-        <dl class="space-y-2 text-xs">
-          <div class="flex gap-2">
-            <dt class="w-24 font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Status:</dt>
-            <dd class="flex items-center gap-1.5" style="color: var(--color-surface-100);">
-              {#if feed.last_fetch_status === 'success'}
-                <span class="status-dot" style="background: var(--color-success-500); color: var(--color-success-500);"></span>
-              {:else if feed.last_fetch_status === 'error'}
-                <span class="status-dot" style="background: var(--color-error-500); color: var(--color-error-500);"></span>
-              {:else}
-                <span class="status-dot" style="background: color-mix(in oklch, var(--color-surface-200) 30%, transparent);"></span>
-              {/if}
-              {feed.last_fetch_status || 'never'}
-            </dd>
-          </div>
-          <div class="flex gap-2">
-            <dt class="w-24 font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Last fetch:</dt>
-            <dd style="color: var(--color-surface-100);">{feed.last_fetch_at ? new Date(Number(feed.last_fetch_at)).toLocaleString() : 'Never'}</dd>
-          </div>
-          {#if feed.last_error}
-            <div class="flex gap-2">
-              <dt class="w-24 font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Last error:</dt>
-              <dd class="text-error-300">{feed.last_error}</dd>
-            </div>
-          {/if}
-          <div class="flex gap-2">
-            <dt class="w-24 font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Created:</dt>
-            <dd style="color: var(--color-surface-100);">{new Date(Number(feed.created_at)).toLocaleDateString()}</dd>
-          </div>
-        </dl>
+        {#if saveSuccess}
+          <span class="text-sm text-success-400" in:fade>Settings saved!</span>
+        {/if}
       </div>
     </div>
   {/if}
+
+  <ArticleList 
+    bind:articles={articles} 
+    totalPages={pageData.totalPages} 
+    feedId={pageData.feedId} 
+  />
 </div>
