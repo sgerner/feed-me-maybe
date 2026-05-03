@@ -2,10 +2,16 @@
   import { addToast } from '$lib/stores/toast.svelte';
   import { onMount } from 'svelte';
   import { fly, fade } from 'svelte/transition';
+  import { goto } from '$app/navigation';
 
   let { data: pageData } = $props();
 
-  let articleIds = $state<string[]>([]);
+  let articles = $state<any[]>(pageData.articles);
+  let page = $state(1);
+  let loadingMore = $state(false);
+  let hasMore = $state(pageData.totalPages > 1);
+
+  let articleIds = $derived(articles.map(a => a.id));
   let focusedIndex = $state(0);
 
   function timeAgo(date: number | null): string {
@@ -29,7 +35,7 @@
         const labels: Record<string, string> = { hide: 'Hidden', save: 'Saved', thumbs_up: 'Liked', thumbs_down: 'Disliked' };
         addToast(labels[type] || type, 'success');
         if (type === 'hide') {
-          window.location.reload();
+          articles = articles.filter(a => a.id !== articleId);
         }
       }
     } catch { addToast('Action failed', 'error'); }
@@ -48,7 +54,7 @@
     }
     if (e.key === 'o' || e.key === 'O') {
       e.preventDefault();
-      if (articleIds[focusedIndex]) window.location.href = `/articles/${articleIds[focusedIndex]}`;
+      if (articleIds[focusedIndex]) goto(`/articles/${articleIds[focusedIndex]}`);
     }
     if (e.key === 'h') {
       e.preventDefault();
@@ -60,10 +66,46 @@
     }
   }
 
+  async function loadMore() {
+    if (loadingMore || !hasMore) return;
+    loadingMore = true;
+    try {
+      const res = await fetch(`/api/articles?page=${page + 1}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.articles.length === 0) {
+          hasMore = false;
+        } else {
+          articles = [...articles, ...data.articles];
+          page += 1;
+          if (data.articles.length < 25) hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      loadingMore = false;
+    }
+  }
+
   onMount(() => {
-    articleIds = pageData.articles.map((a: { id: string }) => a.id);
     document.addEventListener('keydown', handleKeydown);
-    return () => document.removeEventListener('keydown', handleKeydown);
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && hasMore && !loadingMore) {
+        loadMore();
+      }
+    }, { rootMargin: '400px' });
+
+    const sentinel = document.getElementById('infinite-sentinel');
+    if (sentinel) observer.observe(sentinel);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeydown);
+      observer.disconnect();
+    };
   });
 
   let touchStartX = 0;
@@ -90,7 +132,7 @@
     <p class="section-subtitle">{pageData.totalArticles} articles waiting for you</p>
   </div>
 
-  {#if pageData.articles.length === 0}
+  {#if articles.length === 0 && !loadingMore}
     <div class="glass-card mt-16 p-8 text-center" in:fade={{ duration: 300 }}>
       <div class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent);">
         <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-primary-400">
@@ -106,22 +148,42 @@
     </div>
   {:else}
     <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-      {#each pageData.articles as article, i (article.id)}
+      {#each articles as article, i (article.id)}
         <div
           id="article-{article.id}"
-          class="glass-card glass-card-hover p-4 md:p-5"
+          class="glass-card glass-card-hover group relative flex cursor-pointer flex-col overflow-hidden p-0"
           class:article-focus-ring={focusedIndex === i}
-          role="listitem"
+          role="link"
+          tabindex="0"
           in:fly={{ y: 16, duration: 350, delay: Math.min(i * 35, 400) }}
           ontouchstart={handleTouchStart}
           ontouchend={(e) => handleTouchEnd(e, article.id)}
+          onclick={(e) => {
+            if (!(e.target instanceof HTMLButtonElement || (e.target as HTMLElement).closest('button'))) {
+              goto(`/articles/${article.id}`);
+            }
+          }}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              goto(`/articles/${article.id}`);
+            }
+          }}
         >
-          <div class="flex gap-4">
-            {#if article.image_url}
-              <img src={article.image_url} alt="" class="mt-1 h-20 w-20 flex-shrink-0 object-cover shadow-md md:h-24 md:w-24" style="border-radius: 2px;" loading="lazy" />
-            {/if}
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-2 text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">
+          {#if article.image_url}
+            <div class="relative h-48 w-full overflow-hidden">
+              <img src={article.image_url} alt="" class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
+              <div class="absolute inset-0 bg-gradient-to-t from-surface-950/80 to-transparent"></div>
+              <div class="absolute bottom-3 left-4 right-4">
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white" style="background: var(--color-primary-500); border-radius: 2px;">
+                  {article.feed_title || 'Unknown'}
+                </span>
+              </div>
+            </div>
+          {/if}
+
+          <div class="flex flex-1 flex-col p-5">
+            {#if !article.image_url}
+              <div class="mb-3 flex flex-wrap items-center gap-2 text-xs" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">
                 <span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium" style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;">
                   {article.feed_title || 'Unknown'}
                 </span>
@@ -130,27 +192,41 @@
                   {timeAgo(article.published_at || article.fetched_at)}
                 </span>
               </div>
-              <a href="/articles/{article.id}" class="mt-1.5 block text-base font-semibold leading-snug no-underline transition-colors hover:text-primary-400 md:text-lg" style="color: var(--color-surface-50);">
-                {article.title}
-              </a>
-              {#if article.summary}
-                <p class="mt-1.5 line-clamp-2 text-sm leading-relaxed" style="color: color-mix(in oklch, var(--color-surface-200) 60%, transparent);">{article.summary}</p>
-              {/if}
-              <div class="mt-3 flex items-center gap-1.5">
-                <button type="button" class="action-btn" onclick={() => interact(article.id, 'hide')} title="Hide (h)">
+            {/if}
+
+            <h3 class="text-lg font-bold leading-tight transition-colors group-hover:text-primary-400" style="color: var(--color-surface-50);">
+              {article.title}
+            </h3>
+
+            {#if article.image_url}
+              <div class="mt-1 flex items-center gap-1 text-[10px]" style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);">
+                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                {timeAgo(article.published_at || article.fetched_at)}
+              </div>
+            {/if}
+
+            {#if article.summary}
+              <p class="mt-3 line-clamp-3 text-sm leading-relaxed" style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);">{article.summary}</p>
+            {/if}
+
+            <div class="mt-auto pt-5">
+              <div class="flex items-center gap-1.5">
+                <button type="button" class="action-btn" onclick={(e) => { e.stopPropagation(); interact(article.id, 'hide'); }} title="Hide (h)">
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
                   Hide
                 </button>
-                <button type="button" class="action-btn" onclick={() => interact(article.id, 'save')} title="Save (s)">
+                <button type="button" class="action-btn" onclick={(e) => { e.stopPropagation(); interact(article.id, 'save'); }} title="Save (s)">
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
                   Save
                 </button>
-                <button type="button" class="action-btn" onclick={() => interact(article.id, 'thumbs_up')} title="Like">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"/></svg>
-                </button>
-                <button type="button" class="action-btn" onclick={() => interact(article.id, 'thumbs_down')} title="Dislike">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"/></svg>
-                </button>
+                <div class="ml-auto flex items-center gap-1">
+                  <button type="button" class="action-btn" onclick={(e) => { e.stopPropagation(); interact(article.id, 'thumbs_up'); }} title="Like">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"/></svg>
+                  </button>
+                  <button type="button" class="action-btn" onclick={(e) => { e.stopPropagation(); interact(article.id, 'thumbs_down'); }} title="Dislike">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"/></svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -158,23 +234,16 @@
       {/each}
     </div>
 
-    <!-- Pagination -->
-    {#if pageData.totalPages > 1}
-      <div class="mt-8 flex items-center justify-center gap-4">
-        {#if pageData.page > 1}
-          <a href="/today?page={pageData.page - 1}" class="action-btn gap-1.5 px-3 py-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
-            Previous
-          </a>
-        {/if}
-        <span class="text-sm font-medium" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);">Page {pageData.page} of {pageData.totalPages}</span>
-        {#if pageData.page < pageData.totalPages}
-          <a href="/today?page={pageData.page + 1}" class="action-btn gap-1.5 px-3 py-2">
-            Next
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
-          </a>
-        {/if}
-      </div>
-    {/if}
+    <!-- Infinite Scroll Sentinel -->
+    <div id="infinite-sentinel" class="flex h-32 items-center justify-center">
+      {#if loadingMore}
+        <div class="flex items-center gap-3 text-sm" style="color: var(--color-surface-300);">
+          <div class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
+          Loading more...
+        </div>
+      {:else if !hasMore && articles.length > 0}
+        <p class="text-sm" style="color: var(--color-surface-400);">No more articles to show.</p>
+      {/if}
+    </div>
   {/if}
 </div>

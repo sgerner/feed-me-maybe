@@ -11,28 +11,28 @@
     {
       href: '/today',
       label: 'Today',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>',
     },
     {
       href: '/saved',
       label: 'Saved',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>'
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>',
     },
     {
       href: '/training-history',
       label: 'Training',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
     },
     {
       href: '/feeds',
       label: 'Feeds',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>'
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>',
     },
     {
       href: '/settings',
       label: 'Settings',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>'
-    }
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
+    },
   ];
 
   function toggleSidebar() {
@@ -55,25 +55,36 @@
 <div class="grain-overlay" aria-hidden="true"></div>
 <div class="vignette" aria-hidden="true"></div>
 
-<div class="relative z-10 flex min-h-dvh flex-col">
-  <!-- Top Navigation Bar -->
-  <header class="glass-header flex h-14 shrink-0 items-center justify-between px-4">
+<div class="relative z-10 flex h-dvh flex-col">
+  <!-- Top Navigation Bar (Mobile only) -->
+  <header
+    class="glass-header flex h-14 shrink-0 items-center justify-between px-4 md:hidden"
+  >
     <div class="flex items-center gap-3">
       <button
-        class="btn-icon md:hidden"
+        class="btn-icon"
         onclick={toggleSidebar}
         aria-label="Toggle navigation"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
           <path d="M4 6h16M4 12h16M4 18h16" />
         </svg>
       </button>
-      <a href="/today" data-sveltekit-preload-data class="gradient-text text-lg font-bold no-underline">
+      <a
+        href="/today"
+        data-sveltekit-preload-data
+        class="gradient-text text-lg font-bold no-underline"
+      >
         Feed Me Maybe
       </a>
-    </div>
-    <div class="flex items-center gap-2">
-      <span class="hidden text-xs md:inline" style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);">AI-powered RSS reader</span>
     </div>
   </header>
 
@@ -89,18 +100,32 @@
 
     <!-- Sidebar -->
     <aside
-      class="glass-sidebar fixed left-0 top-14 z-50 h-[calc(100dvh-3.5rem)] w-56 transform transition-transform duration-300 ease-out md:static md:translate-x-0"
+      class="glass-sidebar fixed left-0 top-14 z-50 h-[calc(100dvh-3.5rem)] w-56 transform transition-transform duration-300 ease-out md:static md:top-0 md:h-dvh md:translate-x-0"
       class:translate-x-0={sidebarOpen}
       class:-translate-x-full={!sidebarOpen}
     >
+      <div class="hidden p-2 md:block">
+        <a
+          href="/today"
+          data-sveltekit-preload-data
+          class="gradient-text text-xl font-bold no-underline"
+        >
+          Feed Me Maybe
+        </a>
+      </div>
       <nav class="flex flex-col gap-1 p-3">
         {#each navItems as item (item.href)}
           <a
             href={item.href}
             data-sveltekit-preload-data
-            class={'nav-item' + ($page.url.pathname.startsWith(item.href) ? ' nav-item-active' : '')}
+            class={'nav-item' +
+              ($page.url.pathname.startsWith(item.href)
+                ? ' nav-item-active'
+                : '')}
           >
-            <span class="flex h-5 w-5 items-center justify-center">{@html item.icon}</span>
+            <span class="flex h-5 w-5 items-center justify-center"
+              >{@html item.icon}</span
+            >
             <span>{item.label}</span>
           </a>
         {/each}
