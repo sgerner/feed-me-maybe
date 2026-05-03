@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  rss-reader:
+    build: .
+    container_name: feed-me-maybe
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - APP_PASSWORD=${APP_PASSWORD}
+      - DATABASE_URL=/data/feed-me-maybe.db
+      - HOST=0.0.0.0
+      - PORT=3000
+    volumes:
+      - feed-me-maybe-data:/data
+    restart: unless-stopped
+
+volumes:
+  feed-me-maybe-data:

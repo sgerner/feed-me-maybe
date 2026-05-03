@@ -1,0 +1,45 @@
+# Stage 1: Build
+FROM node:20-slim AS builder
+WORKDIR /app
+
+# Install build dependencies for better-sqlite3 native module
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy package files
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy source and build
+COPY . .
+RUN npm run build
+
+FROM node:20-slim AS runner
+WORKDIR /app
+
+# Install only runtime build deps for better-sqlite3
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy production dependencies and build output
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY --from=builder /app/build ./build
+
+# Create data directory for SQLite
+RUN mkdir -p /data && chown -R node:node /data
+
+USER node
+ENV NODE_ENV=production
+ENV DATABASE_URL=/data/feed-me-maybe.db
+
+EXPOSE 3000
+
+CMD ["node", "build/index.js"]
