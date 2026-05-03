@@ -2,6 +2,14 @@
   import { fly, fade } from 'svelte/transition';
   let { data: pageData } = $props();
   let msg = $state('');
+  const preferences = (pageData?.preferences ?? []) as Array<{
+    id: string;
+    polarity: 'positive' | 'negative';
+    type: string;
+    label: string;
+    strength: number;
+    evidence_count: number;
+  }>;
 
   async function deletePref(id: string) {
     await fetch(`/api/settings`, {
@@ -33,7 +41,7 @@
   </div>
 {/if}
 
-{#if pageData.preferences.length === 0}
+{#if preferences.length === 0}
   <div class="glass-card mt-8 p-8 text-center text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);" in:fade={{ duration: 300 }}>
     <div class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full" style="background: color-mix(in oklch, var(--color-tertiary-500) 10%, transparent);">
       <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--color-tertiary-400);">
@@ -44,7 +52,7 @@
   </div>
 {:else}
   <div class="mt-8 space-y-3">
-    {#each pageData.preferences as p, i}
+    {#each preferences as p, i}
       <div class="glass-card glass-card-hover p-4" in:fly={{ y: 10, duration: 280, delay: Math.min(i * 30, 300) }}>
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">

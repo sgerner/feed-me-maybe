@@ -1,5 +1,6 @@
 import { getDb } from '$lib/server/db';
 import crypto from 'node:crypto';
+import { getPreferenceStateForArticle, updatePreferenceMemoryFromInteraction } from '$lib/server/preferences';
 
 export type InteractionType = 'read' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down' | 'unhide' | 'unsave' | 'open';
 
@@ -51,6 +52,8 @@ export function recordInteraction(articleId: string, type: InteractionType): voi
       break;
   }
 
+  updatePreferenceMemoryFromInteraction(articleId, type);
+
   // Update heuristic score
   recalculateScore(articleId);
 }
@@ -58,25 +61,50 @@ export function recordInteraction(articleId: string, type: InteractionType): voi
 function recalculateScore(articleId: string): void {
   const db = getDb();
 
-  // Get interaction stats for this article
-  const stats = db.prepare(`
-    SELECT 
-      SUM(CASE WHEN interaction_type = 'read' THEN 1 ELSE 0 END) as reads,
-      SUM(CASE WHEN interaction_type = 'save' THEN 1 ELSE 0 END) as saves,
-      SUM(CASE WHEN interaction_type = 'hide' AND (metadata IS NULL OR json_extract(metadata, '$.auto') IS NULL) THEN 1 ELSE 0 END) as hides,
-      SUM(CASE WHEN interaction_type = 'thumbs_up' THEN 1 ELSE 0 END) as thumbs_up,
-      SUM(CASE WHEN interaction_type = 'thumbs_down' THEN 1 ELSE 0 END) as thumbs_down,
-      SUM(CASE WHEN interaction_type = 'open' THEN 1 ELSE 0 END) as opens
-    FROM user_interactions WHERE article_id = ?
-  `).get(articleId) as Record<string, number>;
+  // Use stateful signals so repeated clicks don't compound score.
+  // Penalties are only from explicit user-hide and thumbs-down.
+  const article = db
+    .prepare('SELECT read, thumbs_up, thumbs_down FROM articles WHERE id = ?')
+    .get(articleId) as
+    | {
+        read: number;
+        thumbs_up: number;
+        thumbs_down: number;
+      }
+    | undefined;
+
+  const explicitHideState = db.prepare(`
+    SELECT
+      SUM(
+        CASE
+          WHEN interaction_type = 'hide'
+            AND (metadata IS NULL OR json_extract(metadata, '$.auto') IS NULL)
+          THEN 1 ELSE 0
+        END
+      ) as explicit_hides,
+      SUM(CASE WHEN interaction_type = 'unhide' THEN 1 ELSE 0 END) as unhides
+    FROM user_interactions
+    WHERE article_id = ?
+  `).get(articleId) as
+    | {
+        explicit_hides: number;
+        unhides: number;
+      }
+    | undefined;
+
+  const opened = !!article?.read;
+  const thumbsUp = !!article?.thumbs_up;
+  const thumbsDown = !!article?.thumbs_down;
+  const explicitHidden =
+    ((explicitHideState?.explicit_hides || 0) - (explicitHideState?.unhides || 0)) > 0;
+  const preferenceState = getPreferenceStateForArticle(articleId);
 
   const score = 50 // Base score
-    + (stats.reads || 0) * 2
-    + (stats.opens || 0) * 15
-    + (stats.saves || 0) * 8
-    - (stats.hides || 0) * 10
-    + (stats.thumbs_up || 0) * 5
-    - (stats.thumbs_down || 0) * 8;
+    + (opened ? 3 : 0) // slight positive bias for opened articles
+    + (thumbsUp ? 25 : 0) // significant positive bias for liked articles
+    - (thumbsDown ? 20 : 0)
+    - (explicitHidden ? 20 : 0)
+    + preferenceState.adjustment;
 
   const clamped = Math.max(0, Math.min(100, score));
   db.prepare('UPDATE articles SET heuristic_score = ? WHERE id = ?').run(clamped, articleId);

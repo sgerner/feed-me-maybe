@@ -1,5 +1,6 @@
 import { getDb } from '$lib/server/db';
 import { fetchFeed } from '$lib/server/feed/fetcher';
+import { applyPreferenceModelToArticle } from '$lib/server/preferences';
 import crypto from 'node:crypto';
 
 interface IngestOptions {
@@ -137,6 +138,7 @@ export async function ingestFeed(options: IngestOptions): Promise<IngestResult> 
         Date.now(),
         Date.now()
       );
+      applyPreferenceModelToArticle(articleId);
       articlesNew++;
     }
 
