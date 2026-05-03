@@ -5,7 +5,9 @@ const appAuthSecret = process.env.APP_PASSWORD || env.APP_PASSWORD;
 
 export function verifyPassword(input: string): boolean {
   if (!appAuthSecret) {
-    console.error('[auth] APP_PASSWORD environment variable is not set. All login attempts will be rejected.');
+    console.error(
+      '[auth] APP_PASSWORD environment variable is not set. All login attempts will be rejected.',
+    );
     return false;
   }
   return timingSafeEqual(input, appAuthSecret);

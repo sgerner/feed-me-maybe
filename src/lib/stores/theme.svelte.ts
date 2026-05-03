@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 
 class ThemeStore {
   current = $state(
-    browser ? (localStorage.getItem('theme') || 'cerberus') : 'cerberus'
+    browser ? localStorage.getItem('theme') || 'cerberus' : 'cerberus',
   );
 
   set(newTheme: string) {

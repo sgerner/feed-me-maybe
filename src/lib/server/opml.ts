@@ -3,7 +3,11 @@ import crypto from 'node:crypto';
 
 export function exportOpml(): string {
   const db = getDb();
-  const feeds = db.prepare('SELECT url, title, site_url, description, category FROM feeds WHERE enabled = 1').all() as Array<Record<string, string>>;
+  const feeds = db
+    .prepare(
+      'SELECT url, title, site_url, description, category FROM feeds WHERE enabled = 1',
+    )
+    .all() as Array<Record<string, string>>;
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <opml version="1.0">
@@ -26,7 +30,9 @@ export function exportOpml(): string {
   for (const [cat, catFeeds] of Object.entries(categorized)) {
     xml += `  <outline text="${escapeXml(cat)}">\n`;
     for (const feed of catFeeds) {
-      const htmlUrl = feed.site_url ? ` htmlUrl="${escapeXml(feed.site_url)}"` : '';
+      const htmlUrl = feed.site_url
+        ? ` htmlUrl="${escapeXml(feed.site_url)}"`
+        : '';
       xml += `    <outline text="${escapeXml(feed.title || feed.url)}" type="rss" xmlUrl="${escapeXml(feed.url)}"${htmlUrl}/>\n`;
     }
     xml += `  </outline>\n`;
@@ -34,7 +40,9 @@ export function exportOpml(): string {
 
   // Export uncategorized feeds
   for (const feed of uncategorized) {
-    const htmlUrl = feed.site_url ? ` htmlUrl="${escapeXml(feed.site_url)}"` : '';
+    const htmlUrl = feed.site_url
+      ? ` htmlUrl="${escapeXml(feed.site_url)}"`
+      : '';
     xml += `  <outline text="${escapeXml(feed.title || feed.url)}" type="rss" xmlUrl="${escapeXml(feed.url)}"${htmlUrl}/>\n`;
   }
 
@@ -52,7 +60,7 @@ export interface OpmlOutline {
 
 export function parseOpml(xml: string): OpmlOutline[] {
   const outlines: OpmlOutline[] = [];
-  
+
   // Basic robust attribute extractor
   function getAttr(tag: string, attr: string): string | undefined {
     const regex = new RegExp(`${attr}=(['"])(.*?)\\1`, 'i');
@@ -66,7 +74,7 @@ export function parseOpml(xml: string): OpmlOutline[] {
   while ((match = outlineRegex.exec(xml)) !== null) {
     const attrs = match[1];
     const content = match[2];
-    
+
     const xmlUrl = getAttr(attrs, 'xmlUrl');
     const htmlUrl = getAttr(attrs, 'htmlUrl');
     const text = getAttr(attrs, 'text') || getAttr(attrs, 'title');
@@ -91,7 +99,10 @@ export function parseOpml(xml: string): OpmlOutline[] {
   return outlines;
 }
 
-export function importOpml(xml: string): { imported: number; errors: string[] } {
+export function importOpml(xml: string): {
+  imported: number;
+  errors: string[];
+} {
   const db = getDb();
   const outlines = parseOpml(xml);
   let imported = 0;
@@ -101,12 +112,23 @@ export function importOpml(xml: string): { imported: number; errors: string[] } 
     if (!outline.xmlUrl) continue;
     try {
       new URL(outline.xmlUrl);
-      const existing = db.prepare('SELECT id FROM feeds WHERE url = ?').get(outline.xmlUrl);
+      const existing = db
+        .prepare('SELECT id FROM feeds WHERE url = ?')
+        .get(outline.xmlUrl);
       if (existing) continue;
 
       const now = Date.now();
-      db.prepare('INSERT INTO feeds (id, url, title, site_url, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(crypto.randomUUID(), outline.xmlUrl, outline.text || '', outline.htmlUrl || '', outline.category || '', now, now);
+      db.prepare(
+        'INSERT INTO feeds (id, url, title, site_url, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        crypto.randomUUID(),
+        outline.xmlUrl,
+        outline.text || '',
+        outline.htmlUrl || '',
+        outline.category || '',
+        now,
+        now,
+      );
       imported++;
     } catch (err: any) {
       errors.push(`Error importing ${outline.xmlUrl}: ${err.message}`);
@@ -117,5 +139,9 @@ export function importOpml(xml: string): { imported: number; errors: string[] } 
 }
 
 function escapeXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

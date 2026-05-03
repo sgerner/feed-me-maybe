@@ -370,7 +370,6 @@
               class="input glass-input w-full"
               required
               disabled={addingFeed}
-              autofocus
             />
           </label>
 

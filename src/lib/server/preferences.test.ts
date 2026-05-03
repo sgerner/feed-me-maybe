@@ -23,19 +23,18 @@ describe('preference learning model', () => {
 
   it('learns negative obituary preference and can auto-hide future similar article', async () => {
     const { getDb } = await import('$lib/server/db');
-    const { updatePreferenceMemoryFromInteraction, applyPreferenceModelToArticle } = await import('./preferences');
+    const {
+      updatePreferenceMemoryFromInteraction,
+      applyPreferenceModelToArticle,
+    } = await import('./preferences');
     const db = getDb();
     const now = Date.now();
 
-    db.prepare('INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-      'feed-obits',
-      'https://www.nytimes.com/rss',
-      'NYT',
-      now,
-      now
-    );
     db.prepare(
-      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-obits', 'https://www.nytimes.com/rss', 'NYT', now, now);
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       'a-train',
       'feed-obits',
@@ -47,10 +46,10 @@ describe('preference learning model', () => {
       50,
       now,
       now,
-      now
+      now,
     );
     db.prepare(
-      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       'a-future',
       'feed-obits',
@@ -62,7 +61,7 @@ describe('preference learning model', () => {
       50,
       now,
       now,
-      now
+      now,
     );
 
     updatePreferenceMemoryFromInteraction('a-train', 'hide');
@@ -71,7 +70,9 @@ describe('preference learning model', () => {
 
     applyPreferenceModelToArticle('a-future');
 
-    const future = db.prepare('SELECT hidden, heuristic_score FROM articles WHERE id = ?').get('a-future') as {
+    const future = db
+      .prepare('SELECT hidden, heuristic_score FROM articles WHERE id = ?')
+      .get('a-future') as {
       hidden: number;
       heuristic_score: number;
     };
@@ -87,24 +88,42 @@ describe('preference learning model', () => {
     const stale = now - 180 * 24 * 60 * 60 * 1000;
 
     db.prepare(
-      'INSERT OR REPLACE INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run('stale-pref', 'topic:obituaries', 'topic', 'negative', 1, 1, stale, '', stale);
+      'INSERT OR REPLACE INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'stale-pref',
+      'topic:obituaries',
+      'topic',
+      'negative',
+      1,
+      1,
+      stale,
+      '',
+      stale,
+    );
     db.prepare(
-      'INSERT OR REPLACE INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run('fresh-pref', 'topic:obituaries', 'topic', 'negative', 1, 1, now, '', now);
+      'INSERT OR REPLACE INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'fresh-pref',
+      'topic:obituaries',
+      'topic',
+      'negative',
+      1,
+      1,
+      now,
+      '',
+      now,
+    );
 
-    const feedExists = db.prepare('SELECT id FROM feeds WHERE id = ?').get('feed-decay') as { id: string } | undefined;
+    const feedExists = db
+      .prepare('SELECT id FROM feeds WHERE id = ?')
+      .get('feed-decay') as { id: string } | undefined;
     if (!feedExists) {
-      db.prepare('INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-        'feed-decay',
-        'https://example.com/decay',
-        'Decay Feed',
-        now,
-        now
-      );
+      db.prepare(
+        'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('feed-decay', 'https://example.com/decay', 'Decay Feed', now, now);
     }
     db.prepare(
-      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, categories, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, categories, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       'a-decay',
       'feed-decay',
@@ -114,7 +133,7 @@ describe('preference learning model', () => {
       50,
       now,
       now,
-      now
+      now,
     );
 
     const state = getPreferenceStateForArticle('a-decay');

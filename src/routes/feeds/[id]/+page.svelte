@@ -4,10 +4,45 @@
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
 
-  let { data: pageData } = $props();
+  type FeedArticle = {
+    id: string;
+    url: string;
+    title: string;
+    author?: string | null;
+    summary?: string | null;
+    image_url?: string | null;
+    categories?: string | null;
+    published_at?: number | null;
+    fetched_at?: number | null;
+    read?: boolean;
+    saved?: boolean;
+    hidden?: boolean;
+    heuristic_score?: number | null;
+    combined_score?: number | null;
+    feed_title?: string | null;
+    feed_url?: string | null;
+    feed_open_mode?: string | null;
+  };
 
-  let articles = $state<any[]>(pageData.articles);
-  let feed = $state(pageData.feed);
+  type FeedData = {
+    id?: string;
+    title?: string | null;
+    category?: string | null;
+    enabled?: boolean;
+    open_mode?: string | null;
+  };
+
+  let { data: pageData } = $props<{
+    data: {
+      articles: FeedArticle[];
+      feed: FeedData;
+      feedId: string;
+      totalPages: number;
+    };
+  }>();
+
+  let articles = $state<FeedArticle[]>([]);
+  let feed = $state<FeedData>({});
   let showSettings = $state(false);
   let saving = $state(false);
   let deleting = $state(false);
@@ -15,15 +50,24 @@
   let saveSuccess = $state(false);
 
   // Settings form state
-  let title = $state(String(pageData.feed.title ?? ''));
-  let category = $state(String(pageData.feed.category ?? ''));
-  let enabled = $state(!!pageData.feed.enabled);
-  let openMode = $state(pageData.feed.open_mode ?? '');
+  let title = $state('');
+  let category = $state('');
+  let enabled = $state(true);
+  let openMode = $state('');
 
   let pullDistance = $state(0);
   let isPulling = $state(false);
   let syncing = $state(false);
   let touchStartY = 0;
+
+  $effect(() => {
+    articles = pageData.articles;
+    feed = pageData.feed;
+    title = String(pageData.feed.title ?? '');
+    category = String(pageData.feed.category ?? '');
+    enabled = !!pageData.feed.enabled;
+    openMode = pageData.feed.open_mode ?? '';
+  });
 
   async function syncFeed() {
     if (syncing) return;
@@ -82,7 +126,11 @@
   }
 
   async function deleteFeed() {
-    if (!confirm('Are you sure you want to delete this feed? All articles will be removed.')) {
+    if (
+      !confirm(
+        'Are you sure you want to delete this feed? All articles will be removed.',
+      )
+    ) {
       return;
     }
 
@@ -107,7 +155,7 @@
   async function clearFeedItems() {
     if (
       !confirm(
-        'Remove all current articles from this feed? This will not clear your learned preferences.'
+        'Remove all current articles from this feed? This will not clear your learned preferences.',
       )
     ) {
       return;
@@ -150,7 +198,7 @@
     }
   }
 
-  function handleTouchEnd(e: TouchEvent) {
+  function handleTouchEnd() {
     if (isPulling && pullDistance >= 60) {
       syncFeed();
     }
@@ -161,6 +209,7 @@
 
 <div
   class="mx-auto max-w-7xl"
+  role="presentation"
   ontouchstart={handleTouchStart}
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
@@ -262,7 +311,8 @@
             {saving ? 'Saving...' : 'Save Changes'}
           </button>
           {#if saveSuccess}
-            <span class="text-sm text-success-400" in:fade>Settings saved!</span>
+            <span class="text-sm text-success-400" in:fade>Settings saved!</span
+            >
           {/if}
         </div>
         <div class="flex items-center gap-3">

@@ -18,7 +18,7 @@ export function createSession(): Session {
   const expiresAt = new Date(now.getTime() + SESSION_MAX_AGE_MS);
 
   db.prepare(
-    'INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'
+    'INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)',
   ).run(id, 'admin', now.getTime(), expiresAt.getTime());
 
   return { id, userId: 'admin', createdAt: now, expiresAt };
@@ -26,7 +26,9 @@ export function createSession(): Session {
 
 export function validateSession(sessionId: string): Session | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Record<string, unknown> | undefined;
+  const row = db
+    .prepare('SELECT * FROM sessions WHERE id = ?')
+    .get(sessionId) as Record<string, unknown> | undefined;
 
   if (!row) return null;
 
@@ -34,7 +36,7 @@ export function validateSession(sessionId: string): Session | null {
     id: row.id as string,
     userId: row.user_id as string,
     createdAt: new Date(row.created_at as number),
-    expiresAt: new Date(row.expires_at as number)
+    expiresAt: new Date(row.expires_at as number),
   };
 
   if (session.expiresAt < new Date()) {

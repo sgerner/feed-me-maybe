@@ -1,6 +1,9 @@
 import { building } from '$app/environment';
 import { initializeDatabase } from '$lib/server/db/migrate';
-import { validateSession, getSessionCookieName } from '$lib/server/auth/session';
+import {
+  validateSession,
+  getSessionCookieName,
+} from '$lib/server/auth/session';
 import { startPolling } from '$lib/server/poller';
 import type { Handle } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
@@ -15,7 +18,9 @@ if (!building) {
 function isSetupComplete(): boolean {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'setup_complete'").get() as { value: string } | undefined;
+    const row = db
+      .prepare("SELECT value FROM app_settings WHERE key = 'setup_complete'")
+      .get() as { value: string } | undefined;
     return row?.value === 'true';
   } catch {
     return false;
@@ -39,10 +44,13 @@ export const handle: Handle = async ({ event, resolve }) => {
     const ip = event.request.headers.get('x-forwarded-for') || 'local';
     const attempts = loginAttempts.get(ip) || 0;
     if (attempts > 5) {
-      return new Response(JSON.stringify({ error: 'Too many attempts. Try again later.' }), {
-        status: 429,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return new Response(
+        JSON.stringify({ error: 'Too many attempts. Try again later.' }),
+        {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     loginAttempts.set(ip, attempts + 1);
     setTimeout(() => {
@@ -68,7 +76,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     if (isApiRoute) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
       });
     }
     throw redirect(302, '/login');

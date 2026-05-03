@@ -9,9 +9,11 @@ export const GET: RequestHandler = async ({ locals }) => {
   }
 
   const db = getDb();
-  const rows = db.prepare(
-    'SELECT id, url, title, description, site_url, category, icon_url, enabled, error_count, last_fetch_status, last_fetch_at, last_error, created_at, updated_at FROM feeds ORDER BY title ASC'
-  ).all();
+  const rows = db
+    .prepare(
+      'SELECT id, url, title, description, site_url, category, icon_url, enabled, error_count, last_fetch_status, last_fetch_at, last_error, created_at, updated_at FROM feeds ORDER BY title ASC',
+    )
+    .all();
 
   return json({ feeds: rows });
 };
@@ -47,7 +49,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   try {
     db.prepare(
-      'INSERT INTO feeds (id, url, title, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO feeds (id, url, title, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
     ).run(id, url, title || '', category || '', now.getTime(), now.getTime());
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';

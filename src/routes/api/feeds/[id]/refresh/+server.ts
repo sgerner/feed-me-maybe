@@ -9,7 +9,9 @@ export const POST: RequestHandler = async ({ params, locals }) => {
   }
 
   const db = getDb();
-  const feed = db.prepare('SELECT id, url FROM feeds WHERE id = ?').get(params.id) as { id: string; url: string } | undefined;
+  const feed = db
+    .prepare('SELECT id, url FROM feeds WHERE id = ?')
+    .get(params.id) as { id: string; url: string } | undefined;
 
   if (!feed) {
     return json({ error: 'Feed not found' }, { status: 404 });

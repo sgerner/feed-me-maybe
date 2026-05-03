@@ -5,7 +5,7 @@ services:
     build: .
     container_name: feed-me-maybe
     ports:
-      - "${PORT:-3000}:3000"
+      - '${PORT:-3000}:3000'
     environment:
       - NODE_ENV=production
       - APP_PASSWORD=${APP_PASSWORD}

@@ -1,9 +1,11 @@
 # Agent Handoff: Feed Me Maybe
 
 ## Project Overview
+
 Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 
 ## Architecture
+
 - Single-process Node.js app (adapter-node)
 - SQLite database (better-sqlite3 + Drizzle ORM)
 - Password authentication (APP_PASSWORD env var, session cookies)
@@ -13,6 +15,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 ## Key Files
 
 ### Server Code (`src/lib/server/`)
+
 - `db/` - Database singleton, Drizzle schema, migration
 - `auth/` - Password verification, session management
 - `feed/` - RSS fetcher (rss-parser), article ingester
@@ -21,6 +24,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 - `poller.ts` - Background feed polling
 
 ### Routes (`src/routes/`)
+
 - `login/` - Login page
 - `today/` - Mixed feed (main reading view)
 - `feeds/` - Feed management (list, add, edit, delete)
@@ -31,6 +35,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 - `api/` - REST API endpoints (feeds, interactions, auth, settings, ai/providers)
 
 ### Database Tables
+
 - `sessions` - Auth sessions with expiry
 - `app_settings` - Key-value settings (setup_complete, ai_enabled)
 - `feeds` - RSS/Atom feed sources
@@ -42,6 +47,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 - `user_preference_memory` - Learned preferences (type/polarity/strength)
 
 ## Key Design Decisions
+
 - **Svelte 5 runes** ($state, $props, $effect) throughout
 - **Skeleton UI v4** preset classes (no component imports for simple forms)
 - **SQLite** for single-user self-hosted simplicity
@@ -54,6 +60,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 ## State of Completion
 
 ### Complete
+
 - Auth, sessions, login page, route guards
 - Feed CRUD (API + UI)
 - RSS/Atom fetching + parsing
@@ -71,6 +78,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 - Documentation (README, architecture, deployment, backup)
 
 ### Needs Work
+
 - AI settings integration with provider_configs table
 - Onboarding wizard (steps 2-4 need full implementation)
 - Memory management UI (view/edit/delete preferences)
@@ -83,6 +91,7 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 - Test coverage (interaction API, ingestion integration)
 
 ## Commands
+
 ```bash
 npm run dev      # Development server
 npm run build    # Production build
@@ -97,12 +106,14 @@ docker-compose up -d
 ```
 
 ## Environment Variables
+
 - `APP_PASSWORD` (required) - Password to access the app
 - `DATABASE_URL` (optional) - SQLite file path (default: `./data/feed-me-maybe.db`)
 - `HOST`, `PORT` (optional) - Server binding
 - `APP_SECRET` (optional) - Encryption key for API keys
 
 ## Known Issues
+
 - svelte-check reports ~19 type warnings (non-blocking, build succeeds)
 - Interaction API FK constraint error if passed invalid article IDs
 - No rate limiting on login endpoint

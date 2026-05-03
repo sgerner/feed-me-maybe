@@ -23,7 +23,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   const db = getDb();
-  const existing = db.prepare('SELECT id FROM feeds WHERE id = ?').get(params.id);
+  const existing = db
+    .prepare('SELECT id FROM feeds WHERE id = ?')
+    .get(params.id);
   if (!existing) {
     return json({ error: 'Feed not found' }, { status: 404 });
   }
@@ -67,7 +69,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   values.push(params.id);
 
   try {
-    db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(
+      ...values,
+    );
   } catch {
     return json({ error: 'Failed to update feed' }, { status: 500 });
   }

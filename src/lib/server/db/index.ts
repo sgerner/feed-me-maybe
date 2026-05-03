@@ -7,7 +7,8 @@ let db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (db) return db;
-  const dbPath = process.env.DATABASE_URL || env.DATABASE_URL || './data/feed-me-maybe.db';
+  const dbPath =
+    process.env.DATABASE_URL || env.DATABASE_URL || './data/feed-me-maybe.db';
   const dbDir = path.dirname(dbPath);
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });

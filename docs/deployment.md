@@ -45,22 +45,23 @@ docker compose up -d
 ```
 
 The `docker-compose.yml` defines:
+
 - A named volume `feed-me-maybe-data` mounted at `/data` inside the container
 - Port mapping from `${PORT:-3000}` on the host to `3000` in the container
 - `restart: unless-stopped` for automatic recovery
 
 ## Environment Variables Reference
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `APP_PASSWORD` | **Yes** | — | Password for application access. Must be set or login will fail. |
-| `DATABASE_URL` | No | `./data/feed-me-maybe.db` (local) / `/data/feed-me-maybe.db` (Docker) | Path to the SQLite database file. |
-| `HOST` | No | `0.0.0.0` | Network interface to bind the server to. |
-| `PORT` | No | `3000` | HTTP port to listen on. |
-| `APP_SECRET` | No | — | Session encryption secret. Generate with `openssl rand -hex 32`. |
-| `PROVIDER` | No | — | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`. |
-| `MODEL` | No | — | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`). |
-| `API_KEY` | No | — | API key for the configured AI provider. |
+| Variable       | Required | Default                                                               | Description                                                      |
+| -------------- | -------- | --------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `APP_PASSWORD` | **Yes**  | —                                                                     | Password for application access. Must be set or login will fail. |
+| `DATABASE_URL` | No       | `./data/feed-me-maybe.db` (local) / `/data/feed-me-maybe.db` (Docker) | Path to the SQLite database file.                                |
+| `HOST`         | No       | `0.0.0.0`                                                             | Network interface to bind the server to.                         |
+| `PORT`         | No       | `3000`                                                                | HTTP port to listen on.                                          |
+| `APP_SECRET`   | No       | —                                                                     | Session encryption secret. Generate with `openssl rand -hex 32`. |
+| `PROVIDER`     | No       | —                                                                     | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`.  |
+| `MODEL`        | No       | —                                                                     | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`).       |
+| `API_KEY`      | No       | —                                                                     | API key for the configured AI provider.                          |
 
 ### Generating a Secure APP_SECRET
 
@@ -153,11 +154,11 @@ This makes the database file directly accessible on the host filesystem for easi
 
 ### Database File Location
 
-| Deployment | Database Path |
-|------------|---------------|
-| Local dev | `./data/feed-me-maybe.db` |
+| Deployment            | Database Path                             |
+| --------------------- | ----------------------------------------- |
+| Local dev             | `./data/feed-me-maybe.db`                 |
 | Docker (named volume) | `/data/feed-me-maybe.db` inside container |
-| Docker (bind mount) | `/path/on/host/data/feed-me-maybe.db` |
+| Docker (bind mount)   | `/path/on/host/data/feed-me-maybe.db`     |
 
 ## Health Check
 
@@ -187,7 +188,7 @@ services:
     build: .
     container_name: feed-me-maybe
     ports:
-      - "${PORT:-3000}:3000"
+      - '${PORT:-3000}:3000'
     environment:
       - NODE_ENV=production
       - APP_PASSWORD=${APP_PASSWORD}
@@ -198,7 +199,13 @@ services:
       - feed-me-maybe-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/login', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://localhost:3000/login', (r) => process.exit(r.statusCode === 200 ? 0 : 1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3

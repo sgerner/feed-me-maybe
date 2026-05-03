@@ -2,17 +2,43 @@
   import { fly, fade } from 'svelte/transition';
   import { addToast } from '$lib/stores/toast.svelte';
   import { page } from '$app/stores';
-  let { data: pageData } = $props();
+  type ArticleData = {
+    id: string;
+    url: string;
+    title: string;
+    author?: string | null;
+    summary?: string | null;
+    content?: string | null;
+    image_url?: string | null;
+    feed_title?: string | null;
+    feed_url?: string | null;
+    feed_site_url?: string | null;
+    published_at?: number | null;
+    ai_summary?: string | null;
+    thumbs_up?: boolean | null;
+    thumbs_down?: boolean | null;
+    saved?: boolean | null;
+    hidden?: boolean | null;
+  };
+
+  let { data: pageData } = $props<{ data: { article: ArticleData } }>();
 
   const article = $derived(pageData.article);
   const mode = $derived($page.url.searchParams.get('mode') || 'app');
 
   // Reactive interaction state
-  let liked = $state(!!article.thumbs_up);
-  let disliked = $state(!!article.thumbs_down);
-  let saved = $state(!!article.saved);
-  let hidden = $state(!!article.hidden);
+  let liked = $state(false);
+  let disliked = $state(false);
+  let saved = $state(false);
+  let hidden = $state(false);
   let iframeLoading = $state(true);
+
+  $effect(() => {
+    liked = !!article.thumbs_up;
+    disliked = !!article.thumbs_down;
+    saved = !!article.saved;
+    hidden = !!article.hidden;
+  });
 
   // Prevent main scroll when in iframe/proxy mode
   $effect(() => {
@@ -26,13 +52,13 @@
   });
 
   // Check if the hero image is already the first thing in the content to avoid duplicates
-  const contentFirstImg = $derived(() => {
+  function contentFirstImg(): string | null {
     if (!article.content) return null;
     const match = article.content.match(/<img[^>]+src=["']([^"']+)["']/i);
     return match ? match[1] : null;
-  });
+  }
 
-  const shouldShowHero = $derived(() => {
+  function shouldShowHero(): boolean {
     if (!article.image_url) return false;
     const firstImg = contentFirstImg();
     if (!firstImg) return true;
@@ -45,7 +71,7 @@
     } catch {
       return article.image_url !== firstImg;
     }
-  });
+  }
 
   async function interact(type: string) {
     // Optimistic UI updates
@@ -142,6 +168,7 @@
     ? 'absolute inset-0 z-0 bg-surface-950'
     : 'mx-auto max-w-4xl'}
   style="touch-action: pan-y;"
+  role="presentation"
   onpointerdown={handlePointerDown}
   onpointerup={handlePointerUp}
 >

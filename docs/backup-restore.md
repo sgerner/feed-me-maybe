@@ -4,11 +4,11 @@ Feed Me Maybe stores all data in a single SQLite database file. Backup and resto
 
 ## Database Location
 
-| Deployment | Path |
-|------------|------|
-| Local development | `./data/feed-me-maybe.db` |
+| Deployment            | Path                                          |
+| --------------------- | --------------------------------------------- |
+| Local development     | `./data/feed-me-maybe.db`                     |
 | Docker (named volume) | Inside the volume at `/data/feed-me-maybe.db` |
-| Docker (bind mount) | The host path you specified |
+| Docker (bind mount)   | The host path you specified                   |
 
 ## SQLite WAL Mode
 

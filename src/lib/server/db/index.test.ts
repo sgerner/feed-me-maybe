@@ -40,16 +40,20 @@ describe('Database initialization', () => {
     const { getDb } = await import('./index');
     const db = getDb();
     // Verify sessions table exists
-    const sessionsResult = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'"
-    ).get();
+    const sessionsResult = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+      )
+      .get();
     expect(sessionsResult).toBeDefined();
     expect((sessionsResult as { name: string }).name).toBe('sessions');
 
     // Verify app_settings table exists
-    const settingsResult = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'"
-    ).get();
+    const settingsResult = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'",
+      )
+      .get();
     expect(settingsResult).toBeDefined();
     expect((settingsResult as { name: string }).name).toBe('app_settings');
   });
@@ -60,13 +64,13 @@ describe('Database initialization', () => {
 
     // Insert a setting
     db.prepare(
-      "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)"
+      'INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
     ).run('test_key', 'test_value', Date.now());
 
     // Read it back
-    const row = db.prepare(
-      "SELECT value FROM app_settings WHERE key = ?"
-    ).get('test_key') as { value: string };
+    const row = db
+      .prepare('SELECT value FROM app_settings WHERE key = ?')
+      .get('test_key') as { value: string };
 
     expect(row).toBeDefined();
     expect(row.value).toBe('test_value');

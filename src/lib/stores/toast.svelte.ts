@@ -8,13 +8,17 @@ interface Toast {
 }
 
 let nextId = 0;
-let toasts = $state<Toast[]>([]);
+const toasts = $state<Toast[]>([]);
 
 export function getToasts() {
   return toasts;
 }
 
-export function addToast(message: string, type: ToastType = 'info', duration = 3000) {
+export function addToast(
+  message: string,
+  type: ToastType = 'info',
+  duration = 3000,
+) {
   const id = nextId++;
   toasts.push({ id, message, type });
   setTimeout(() => {

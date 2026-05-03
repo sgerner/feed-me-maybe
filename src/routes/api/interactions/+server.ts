@@ -1,6 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { recordInteraction, type InteractionType } from '$lib/server/interactions';
+import {
+  recordInteraction,
+  type InteractionType,
+} from '$lib/server/interactions';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
@@ -15,10 +18,22 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   const { articleId, type } = body as { articleId?: string; type?: string };
-  const validTypes: InteractionType[] = ['read', 'hide', 'save', 'thumbs_up', 'thumbs_down', 'unhide', 'unsave', 'open'];
+  const validTypes: InteractionType[] = [
+    'read',
+    'hide',
+    'save',
+    'thumbs_up',
+    'thumbs_down',
+    'unhide',
+    'unsave',
+    'open',
+  ];
 
   if (!articleId || !type || !validTypes.includes(type as InteractionType)) {
-    return json({ error: 'articleId and valid type are required' }, { status: 400 });
+    return json(
+      { error: 'articleId and valid type are required' },
+      { status: 400 },
+    );
   }
 
   recordInteraction(articleId, type as InteractionType);

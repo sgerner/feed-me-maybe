@@ -194,6 +194,7 @@ Displayed in article view when available
 ### Svelte 5 Runes
 
 The application uses Svelte 5's rune-based reactivity (`$state`, `$derived`, `$effect`, `$props`) instead of the older `let` + reactive declarations pattern. This provides:
+
 - Fine-grained reactivity without compiler magic
 - Better TypeScript integration
 - Clearer mental model for state management
@@ -208,6 +209,7 @@ The application uses Svelte 5's rune-based reactivity (`$state`, `$derived`, `$e
 ### rss-parser with Custom Fields
 
 The feed parser extracts additional metadata beyond standard RSS/Atom fields:
+
 - `media:content` and `media:thumbnail` for article images
 - `dc:creator` for author attribution
 - `enclosure.url` as a fallback image source
@@ -238,17 +240,17 @@ On first launch, the `app_settings` table has no `setup_complete` entry. After l
 
 ### Core Tables
 
-| Table | Purpose |
-|-------|---------|
-| `sessions` | Auth sessions (id, user_id, created_at, expires_at) |
-| `app_settings` | Key-value store for app configuration |
-| `feeds` | RSS/Atom feed definitions and fetch status |
-| `articles` | Stored articles with interaction flags and scores |
-| `article_ai_metadata` | AI-generated analysis per article |
-| `feed_fetch_logs` | Historical fetch results per feed |
-| `jobs` | Background job queue (feed_fetch, ai_process, memory_summarize) |
-| `user_interactions` | Interaction event log for scoring |
-| `user_preference_memory` | Learned user preferences for AI ranking |
+| Table                    | Purpose                                                         |
+| ------------------------ | --------------------------------------------------------------- |
+| `sessions`               | Auth sessions (id, user_id, created_at, expires_at)             |
+| `app_settings`           | Key-value store for app configuration                           |
+| `feeds`                  | RSS/Atom feed definitions and fetch status                      |
+| `articles`               | Stored articles with interaction flags and scores               |
+| `article_ai_metadata`    | AI-generated analysis per article                               |
+| `feed_fetch_logs`        | Historical fetch results per feed                               |
+| `jobs`                   | Background job queue (feed_fetch, ai_process, memory_summarize) |
+| `user_interactions`      | Interaction event log for scoring                               |
+| `user_preference_memory` | Learned user preferences for AI ranking                         |
 
 ### Key Indexes
 

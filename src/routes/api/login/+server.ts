@@ -1,7 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { verifyPassword } from '$lib/server/auth/password';
-import { createSession, setSessionCookie, getSessionCookieName } from '$lib/server/auth/session';
+import {
+  createSession,
+  setSessionCookie,
+  getSessionCookieName,
+} from '$lib/server/auth/session';
 
 export const POST: RequestHandler = async ({ request, cookies }) => {
   let body: Record<string, unknown>;
@@ -27,7 +31,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      'Set-Cookie': cookieHeader
-    }
+      'Set-Cookie': cookieHeader,
+    },
   });
 };

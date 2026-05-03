@@ -1,6 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { destroySession, clearSessionCookie, getSessionCookieName } from '$lib/server/auth/session';
+import {
+  destroySession,
+  clearSessionCookie,
+  getSessionCookieName,
+} from '$lib/server/auth/session';
 
 export const POST: RequestHandler = async ({ cookies }) => {
   const sessionId = cookies.get(getSessionCookieName());
@@ -15,7 +19,7 @@ export const POST: RequestHandler = async ({ cookies }) => {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      'Set-Cookie': cookieHeader
-    }
+      'Set-Cookie': cookieHeader,
+    },
   });
 };

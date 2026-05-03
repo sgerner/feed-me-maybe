@@ -15,16 +15,21 @@ const category = 'News';
 const now = Date.now();
 
 db.prepare(
-  'INSERT INTO feeds (id, url, title, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+  'INSERT INTO feeds (id, url, title, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
 ).run(id, url, title, category, now, now);
 
-console.log('After insert:', db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id));
+console.log(
+  'After insert:',
+  db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id),
+);
 
 // 2. Fetcher overwrites it because custom_title is 0
 const updates = [];
 const values = [];
 const fetchResultTitle = 'Hacker News';
-const feedRecord1 = db.prepare('SELECT custom_title FROM feeds WHERE id = ?').get(id);
+const feedRecord1 = db
+  .prepare('SELECT custom_title FROM feeds WHERE id = ?')
+  .get(id);
 
 if (fetchResultTitle && !feedRecord1.custom_title) {
   updates.push('title = ?');
@@ -34,23 +39,35 @@ if (fetchResultTitle && !feedRecord1.custom_title) {
 if (updates.length > 0) {
   updates.push('updated_at = ?');
   values.push(Date.now(), id);
-  db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(
+    ...values,
+  );
 }
 
-console.log('After ingest 1:', db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id));
+console.log(
+  'After ingest 1:',
+  db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id),
+);
 
 // 3. User updates title to "My Awesome HN"
 const userTitle = 'My Awesome HN';
 const patchUpdates = ['title = ?', 'custom_title = 1', 'updated_at = ?'];
 const patchValues = [userTitle, Date.now(), id];
-db.prepare(`UPDATE feeds SET ${patchUpdates.join(', ')} WHERE id = ?`).run(...patchValues);
+db.prepare(`UPDATE feeds SET ${patchUpdates.join(', ')} WHERE id = ?`).run(
+  ...patchValues,
+);
 
-console.log('After user patch:', db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id));
+console.log(
+  'After user patch:',
+  db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id),
+);
 
 // 4. Ingester runs again
 const updates2 = [];
 const values2 = [];
-const feedRecord2 = db.prepare('SELECT custom_title FROM feeds WHERE id = ?').get(id);
+const feedRecord2 = db
+  .prepare('SELECT custom_title FROM feeds WHERE id = ?')
+  .get(id);
 
 if (fetchResultTitle && !feedRecord2.custom_title) {
   updates2.push('title = ?');
@@ -60,8 +77,12 @@ if (fetchResultTitle && !feedRecord2.custom_title) {
 if (updates2.length > 0) {
   updates2.push('updated_at = ?');
   values2.push(Date.now(), id);
-  db.prepare(`UPDATE feeds SET ${updates2.join(', ')} WHERE id = ?`).run(...values2);
+  db.prepare(`UPDATE feeds SET ${updates2.join(', ')} WHERE id = ?`).run(
+    ...values2,
+  );
 }
 
-console.log('After ingest 2:', db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id));
-
+console.log(
+  'After ingest 2:',
+  db.prepare('SELECT id, title, custom_title FROM feeds WHERE id = ?').get(id),
+);

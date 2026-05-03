@@ -2,12 +2,26 @@
   import { addToast } from '$lib/stores/toast.svelte';
   import ArticleList from '$lib/components/ArticleList.svelte';
 
-  let { data: pageData } = $props();
+  type Article = {
+    id: string;
+    url: string;
+    title: string;
+    feed_open_mode?: string | null;
+  };
 
-  let articles = $state<any[]>(pageData.articles);
+  let { data: pageData } = $props<{
+    data: { articles: Article[]; totalPages: number };
+  }>();
+
+  let articles = $state<Article[]>([]);
   let pullDistance = $state(0);
   let isPulling = $state(false);
   let syncing = $state(false);
+  let touchStartY = 0;
+
+  $effect(() => {
+    articles = pageData.articles;
+  });
 
   async function syncFeeds() {
     if (syncing) return;
@@ -27,13 +41,11 @@
   function handleTouchStart(e: TouchEvent) {
     if (window.scrollY <= 0) {
       isPulling = true;
-      // We don't need to track startY here for the child component, 
+      // We don't need to track startY here for the child component,
       // but we need it for our pull-to-refresh logic.
       touchStartY = e.changedTouches[0].screenY;
     }
   }
-
-  let touchStartY = 0;
 
   function handleTouchMove(e: TouchEvent) {
     if (!isPulling) return;
@@ -47,7 +59,7 @@
     }
   }
 
-  function handleTouchEnd(e: TouchEvent) {
+  function handleTouchEnd() {
     if (isPulling && pullDistance >= 60) {
       syncFeeds();
     }
@@ -58,6 +70,7 @@
 
 <div
   class="mx-auto max-w-7xl"
+  role="presentation"
   ontouchstart={handleTouchStart}
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
@@ -87,8 +100,5 @@
     </div>
   </div>
 
-  <ArticleList 
-    bind:articles={articles} 
-    totalPages={pageData.totalPages} 
-  />
+  <ArticleList bind:articles totalPages={pageData.totalPages} />
 </div>

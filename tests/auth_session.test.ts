@@ -8,11 +8,11 @@ describe('Phase 1 Task 1.3 - Session authentication infrastructure', () => {
   let loginCookie: string | null = null;
 
   // Helper to perform HTTP requests against the local server
- const request = async (path: string, opts: any = {}) => {
-  const url = `http://localhost:3000${path}`;
-  const res = await fetch(url, opts);
-  return res;
-};
+  const request = async (path: string, opts: any = {}) => {
+    const url = `http://localhost:3000${path}`;
+    const res = await fetch(url, opts);
+    return res;
+  };
 
   beforeAll(async () => {
     // 1) Build the project
@@ -108,7 +108,10 @@ describe('Phase 1 Task 1.3 - Session authentication infrastructure', () => {
         body: JSON.stringify({ password: 'testpass123' }),
       });
       const sc = loginRes.headers.get('set-cookie');
-      if (sc) loginCookie = Array.isArray(sc) ? sc[0].split(';')[0] : sc.split(';')[0];
+      if (sc)
+        loginCookie = Array.isArray(sc)
+          ? sc[0].split(';')[0]
+          : sc.split(';')[0];
     }
     // Call logout with the cookie
     const logoutRes = await request('/api/logout', {

@@ -5,17 +5,30 @@
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
 
+  type Article = {
+    id: string;
+    url: string;
+    title: string;
+    summary?: string | null;
+    image_url?: string | null;
+    published_at?: number | null;
+    feed_title?: string | null;
+    feed_open_mode?: string | null;
+    feed_url?: string | null;
+    feed_site_url?: string | null;
+  };
+
   let {
     articles = $bindable(),
     totalPages,
     feedId = null,
   } = $props<{
-    articles: any[];
+    articles: Article[];
     totalPages: number;
     feedId?: string | null;
   }>();
 
-  async function openArticle(article: any) {
+  async function openArticle(article: Article) {
     // Determine mode: feed override or global default
     const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
     const mode = article.feed_open_mode || globalMode;
@@ -30,7 +43,7 @@
 
       // If "hide on open" is active, remove from local list
       if ($pageStore.data.globalSettings?.hideOnOpen) {
-        articles = articles.filter((a: any) => a.id !== article.id);
+        articles = articles.filter((a: Article) => a.id !== article.id);
       }
     } catch (err) {
       console.error('Failed to record open interaction', err);
@@ -45,10 +58,14 @@
 
   let page = $state(1);
   let loadingMore = $state(false);
-  let hasMore = $state(totalPages > 1);
+  let hasMore = $state(false);
 
-  let articleIds = $derived(articles.map((a) => a.id));
+  let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
+
+  $effect(() => {
+    hasMore = totalPages > 1;
+  });
 
   function timeAgo(date: number | null): string {
     if (!date) return '';
@@ -76,7 +93,7 @@
         };
         addToast(labels[type] || type, 'success');
         if (type === 'hide') {
-          articles = articles.filter((a) => a.id !== articleId);
+          articles = articles.filter((a: Article) => a.id !== articleId);
         }
       }
     } catch {

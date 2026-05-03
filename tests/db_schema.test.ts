@@ -56,7 +56,10 @@ describe('Phase 2 Task 2.1 - Database schema', () => {
   test('Schema defines all 9 tables', () => {
     expect(db).not.toBeNull();
     // Query all tables in sqlite_master
-    const tables = db!.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r: any) => r.name);
+    const tables = db!
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all()
+      .map((r: any) => r.name);
     const expectedTables = [
       'sessions',
       'app_settings',
@@ -76,7 +79,10 @@ describe('Phase 2 Task 2.1 - Database schema', () => {
 
   test('Migrate initializes all required indexes', () => {
     expect(db).not.toBeNull();
-    const indices = db!.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((r: any) => r.name);
+    const indices = db!
+      .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+      .all()
+      .map((r: any) => r.name);
     const expectedIndices = [
       'idx_articles_feed_id',
       'idx_articles_published_at',

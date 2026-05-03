@@ -9,7 +9,9 @@ export const POST: RequestHandler = async ({ locals }) => {
   }
 
   const db = getDb();
-  const feeds = db.prepare('SELECT id, url FROM feeds WHERE enabled = 1').all() as { id: string; url: string }[];
+  const feeds = db
+    .prepare('SELECT id, url FROM feeds WHERE enabled = 1')
+    .all() as { id: string; url: string }[];
 
   // Run in background and return immediate response to avoid timeout
   const poll = async () => {
@@ -21,8 +23,11 @@ export const POST: RequestHandler = async ({ locals }) => {
       }
     }
   };
-  
+
   poll();
 
-  return json({ success: true, message: `Refreshing ${feeds.length} feeds in background` });
+  return json({
+    success: true,
+    message: `Refreshing ${feeds.length} feeds in background`,
+  });
 };
