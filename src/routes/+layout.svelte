@@ -8,6 +8,7 @@
   let sidebarOpen = $state(false);
   let syncing = $state(false);
   let addingFeed = $state(false);
+  let showAddFeedModal = $state(false);
   let newFeedUrl = $state('');
   let { children, data } = $props();
 
@@ -41,6 +42,7 @@
       });
       if (res.ok) {
         newFeedUrl = '';
+        showAddFeedModal = false;
         const { addToast } = await import('$lib/stores/toast.svelte');
         addToast('Feed added successfully', 'success');
         // Refresh the page to show the new feed in the sidebar
@@ -183,10 +185,35 @@
 
           {#if data.feeds && data.feeds.length > 0}
             <div
-              class="mt-4 px-3 pb-2 text-[10px] font-bold uppercase tracking-widest"
-              style="color: color-mix(in oklch, var(--color-surface-200) 30%, transparent);"
+              class="mt-4 flex items-center justify-between px-3 pb-2"
             >
-              Your Feeds
+              <div
+                class="text-[10px] font-bold uppercase tracking-widest"
+                style="color: color-mix(in oklch, var(--color-surface-200) 30%, transparent);"
+              >
+                Your Feeds
+              </div>
+              <button
+                class="flex h-5 w-5 items-center justify-center rounded-full bg-white/5 transition-colors hover:bg-white/10"
+                onclick={() => (showAddFeedModal = true)}
+                aria-label="Add feed"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  ><line x1="12" y1="5" x2="12" y2="19" /><line
+                    x1="5"
+                    y1="12"
+                    x2="19"
+                    y2="12"
+                  /></svg
+                >
+              </button>
             </div>
             {#each data.feeds as feed (feed.id)}
               <a
@@ -225,43 +252,6 @@
                 <span class="truncate">{feed.title || 'Untitled'}</span>
               </a>
             {/each}
-
-            <form onsubmit={addFeed} class="mt-4 px-3">
-              <div class="relative">
-                <input
-                  type="url"
-                  bind:value={newFeedUrl}
-                  placeholder="Add feed URL..."
-                  class="w-full bg-white/5 px-2 py-1.5 text-xs outline-none focus:bg-white/10"
-                  style="border: 1px solid color-mix(in oklch, var(--color-surface-200) 10%, transparent); border-radius: 2px;"
-                  disabled={addingFeed}
-                />
-                {#if addingFeed}
-                  <div class="absolute right-2 top-1.5">
-                    <svg
-                      class="h-3 w-3 animate-spin text-primary-400"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        class="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        stroke-width="4"
-                      ></circle>
-                      <path
-                        class="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      ></path>
-                    </svg>
-                  </div>
-                {/if}
-              </div>
-            </form>
           {/if}
 
           <button
@@ -344,4 +334,97 @@
       </div>
     {/each}
   </div>
+
+  {#if showAddFeedModal}
+    <div
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-md"
+      transition:fade={{ duration: 200 }}
+      onclick={() => (showAddFeedModal = false)}
+      role="presentation"
+    >
+      <div
+        class="glass-card w-full max-w-md p-6 shadow-2xl"
+        transition:fly={{ y: 20, duration: 300 }}
+        onclick={(e) => e.stopPropagation()}
+        role="presentation"
+      >
+        <div class="mb-4 flex items-center justify-between">
+          <h3 class="text-lg font-bold">Add New Feed</h3>
+          <button
+            class="btn-icon"
+            onclick={() => (showAddFeedModal = false)}
+            aria-label="Close"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              ><path d="M18 6 6 18M6 6l12 12" /></svg
+            >
+          </button>
+        </div>
+
+        <form onsubmit={addFeed} class="space-y-4">
+          <label class="label">
+            <span class="mb-1 block text-sm font-medium">Feed URL</span>
+            <input
+              type="url"
+              bind:value={newFeedUrl}
+              placeholder="https://example.com/rss"
+              class="input glass-input w-full"
+              required
+              disabled={addingFeed}
+              autofocus
+            />
+          </label>
+
+          <div class="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              class="btn preset-tonal"
+              onclick={() => (showAddFeedModal = false)}
+              disabled={addingFeed}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="btn preset-filled-primary-500 flex items-center gap-2"
+              disabled={addingFeed || !newFeedUrl.trim()}
+            >
+              {#if addingFeed}
+                <svg
+                  class="h-4 w-4 animate-spin"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    class="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="4"
+                  ></circle>
+                  <path
+                    class="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+                Adding...
+              {:else}
+                Add Feed
+              {/if}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {/if}
 </div>
