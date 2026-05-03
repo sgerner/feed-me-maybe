@@ -2,7 +2,7 @@
   import '../app.css';
   import { page } from '$app/stores';
   import { getToasts } from '$lib/stores/toast.svelte';
-  import { fly } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
 
   let sidebarOpen = $state(false);
