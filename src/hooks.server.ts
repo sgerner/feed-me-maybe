@@ -21,7 +21,12 @@ function isSetupComplete(): boolean {
     const row = db
       .prepare("SELECT value FROM app_settings WHERE key = 'setup_complete'")
       .get() as { value: string } | undefined;
-    return row?.value === 'true';
+    if (row?.value === 'true') return true;
+
+    const feedRow = db
+      .prepare('SELECT COUNT(*) as count FROM feeds')
+      .get() as { count: number } | undefined;
+    return (feedRow?.count ?? 0) > 0;
   } catch {
     return false;
   }
