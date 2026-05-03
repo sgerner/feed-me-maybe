@@ -18,7 +18,7 @@
         Getting Started
       </h2>
       <ol class="list-inside list-decimal space-y-2 text-sm" style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);">
-        <li>Add RSS/Atom feeds in the <a href="/feeds" class="text-primary-400 no-underline hover:underline">Feeds section</a></li>
+        <li>Import feeds (OPML) in <a href="/settings" class="text-primary-400 no-underline hover:underline">Settings</a></li>
         <li>Articles will appear in your <a href="/today" class="text-primary-400 no-underline hover:underline">Today feed</a></li>
         <li>Rate articles to train the AI</li>
       </ol>

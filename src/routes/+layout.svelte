@@ -3,9 +3,12 @@
   import { page } from '$app/stores';
   import { getToasts } from '$lib/stores/toast.svelte';
   import { fly } from 'svelte/transition';
+  import { invalidateAll } from '$app/navigation';
 
   let sidebarOpen = $state(false);
   let syncing = $state(false);
+  let addingFeed = $state(false);
+  let newFeedUrl = $state('');
   let { children, data } = $props();
 
   async function syncFeeds() {
@@ -22,6 +25,36 @@
       addToast('Sync failed', 'error');
     } finally {
       syncing = false;
+    }
+  }
+
+  async function addFeed(e: Event) {
+    e.preventDefault();
+    if (!newFeedUrl.trim() || addingFeed) return;
+
+    addingFeed = true;
+    try {
+      const res = await fetch('/api/feeds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: newFeedUrl.trim() }),
+      });
+      if (res.ok) {
+        newFeedUrl = '';
+        const { addToast } = await import('$lib/stores/toast.svelte');
+        addToast('Feed added successfully', 'success');
+        // Refresh the page to show the new feed in the sidebar
+        await invalidateAll();
+      } else {
+        const errData = await res.json();
+        const { addToast } = await import('$lib/stores/toast.svelte');
+        addToast(errData.error || 'Failed to add feed', 'error');
+      }
+    } catch {
+      const { addToast } = await import('$lib/stores/toast.svelte');
+      addToast('Failed to add feed', 'error');
+    } finally {
+      addingFeed = false;
     }
   }
 
@@ -44,11 +77,6 @@
   ];
 
   const adminItems = [
-    {
-      href: '/feeds',
-      label: 'Manage Feeds',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>',
-    },
     {
       href: '/settings',
       label: 'Settings',
@@ -197,6 +225,43 @@
                 <span class="truncate">{feed.title || 'Untitled'}</span>
               </a>
             {/each}
+
+            <form onsubmit={addFeed} class="mt-4 px-3">
+              <div class="relative">
+                <input
+                  type="url"
+                  bind:value={newFeedUrl}
+                  placeholder="Add feed URL..."
+                  class="w-full bg-white/5 px-2 py-1.5 text-xs outline-none focus:bg-white/10"
+                  style="border: 1px solid color-mix(in oklch, var(--color-surface-200) 10%, transparent); border-radius: 2px;"
+                  disabled={addingFeed}
+                />
+                {#if addingFeed}
+                  <div class="absolute right-2 top-1.5">
+                    <svg
+                      class="h-3 w-3 animate-spin text-primary-400"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                      ></circle>
+                      <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                  </div>
+                {/if}
+              </div>
+            </form>
           {/if}
 
           <button

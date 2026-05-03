@@ -199,9 +199,9 @@
       </svg>
     </div>
     <p class="text-surface-300 mb-2 text-lg font-medium">No articles yet</p>
-    <p class="section-subtitle mb-6">Add some RSS feeds to get started.</p>
+    <p class="section-subtitle mb-6">Import some RSS feeds to get started.</p>
     <a
-      href="/feeds"
+      href="/settings"
       class="btn preset-filled-primary-500 inline-flex items-center gap-2"
     >
       <svg
@@ -212,14 +212,9 @@
         fill="none"
         stroke="currentColor"
         stroke-width="2"
-        ><line x1="12" y1="5" x2="12" y2="19" /><line
-          x1="5"
-          y1="12"
-          x2="19"
-          y2="12"
-        /></svg
+        ><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
       >
-      Add Feeds
+      Go to Settings
     </a>
   </div>
 {:else}

@@ -2,6 +2,7 @@
   import { addToast } from '$lib/stores/toast.svelte';
   import ArticleList from '$lib/components/ArticleList.svelte';
   import { fly, fade } from 'svelte/transition';
+  import { goto } from '$app/navigation';
 
   let { data: pageData } = $props();
 
@@ -9,6 +10,7 @@
   let feed = $state(pageData.feed);
   let showSettings = $state(false);
   let saving = $state(false);
+  let deleting = $state(false);
   let saveSuccess = $state(false);
 
   // Settings form state
@@ -75,6 +77,29 @@
       addToast('Failed to save settings', 'error');
     } finally {
       saving = false;
+    }
+  }
+
+  async function deleteFeed() {
+    if (!confirm('Are you sure you want to delete this feed? All articles will be removed.')) {
+      return;
+    }
+
+    deleting = true;
+    try {
+      const res = await fetch(`/api/feeds/${pageData.feedId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        addToast('Feed deleted', 'success');
+        goto('/today');
+      } else {
+        throw new Error();
+      }
+    } catch {
+      addToast('Failed to delete feed', 'error');
+    } finally {
+      deleting = false;
     }
   }
 
@@ -199,17 +224,26 @@
           <span class="text-sm">Feed enabled</span>
         </label>
       </div>
-      <div class="mt-6 flex items-center gap-4">
+      <div class="mt-6 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <button
+            class="btn preset-filled-primary-500"
+            onclick={saveSettings}
+            disabled={saving}
+          >
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+          {#if saveSuccess}
+            <span class="text-sm text-success-400" in:fade>Settings saved!</span>
+          {/if}
+        </div>
         <button
-          class="btn preset-filled-primary-500"
-          onclick={saveSettings}
-          disabled={saving}
+          class="btn preset-tonal-error"
+          onclick={deleteFeed}
+          disabled={deleting}
         >
-          {saving ? 'Saving...' : 'Save Changes'}
+          {deleting ? 'Deleting...' : 'Delete Feed'}
         </button>
-        {#if saveSuccess}
-          <span class="text-sm text-success-400" in:fade>Settings saved!</span>
-        {/if}
       </div>
     </div>
   {/if}
