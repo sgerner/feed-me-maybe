@@ -51,7 +51,7 @@ docker run -d \
   --name feed-me-maybe \
   -p 3000:3000 \
   -e APP_PASSWORD=your-strong-password \
-  -v feed-me-maybe-data:/data \
+  -v feed-me-maybe-data:/app/data \
   feed-me-maybe
 ```
 
@@ -74,8 +74,8 @@ The application will be available at `http://localhost:3000`.
 
 ### Persistent Storage
 
-The app stores its SQLite database in `/data/feed-me-maybe.db` inside the container.
-Mount `/data` to a persistent Docker volume or host directory so feeds, articles,
+The app stores its SQLite database in `/app/data/feed-me-maybe.db` inside the container.
+Mount `/app/data` to a persistent Docker volume or host directory so feeds, articles,
 sessions, and settings survive container restarts.
 
 If you change `APP_SECRET` after storing AI provider credentials, previously saved
@@ -88,13 +88,13 @@ For a standard CapRover install, set the following as runtime environment variab
 - `APP_PASSWORD`
 - `APP_SECRET`
 
-Create a persistent directory mapping for `/data`.
+Create a persistent directory mapping for `/app/data`.
 
 Example:
 
 - App env vars: `APP_PASSWORD`, `APP_SECRET`, `DATABASE_URL`
-- Persistent directory: `/data`
-- Database path inside container: `/data/feed-me-maybe.db`
+- Persistent directory: `/app/data`
+- Database path inside container: `/app/data/feed-me-maybe.db`
 
 CapRover may show a warning if you enter these values as build args. That warning
 is harmless only if the values are also set as runtime environment variables.
@@ -104,7 +104,7 @@ The Docker image also ships with the reverse-proxy header defaults needed by
 SvelteKit behind CapRover, so you should not need to set `ORIGIN` or the
 `X-Forwarded-*` variables manually.
 
-`DATABASE_URL` already defaults to `/data/feed-me-maybe.db` in the image, so
+`DATABASE_URL` already defaults to `/app/data/feed-me-maybe.db` in the image, so
 you only need to override it if you want a different database location.
 
 ## Environment Variables
@@ -113,7 +113,7 @@ you only need to override it if you want a different database location.
 | -------- | -------- | ------- | ----------- |
 | `APP_PASSWORD` | Yes | - | Password for application access |
 | `APP_SECRET` | Recommended | - | Secret used for session-related and encrypted AI settings; generate with `openssl rand -hex 32` |
-| `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/data/feed-me-maybe.db` in Docker | Path to the SQLite database file |
+| `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/app/data/feed-me-maybe.db` in Docker | Path to the SQLite database file |
 | `HOST` | No | `0.0.0.0` | Server bind address |
 | `PORT` | No | `3000` | Server port |
 | `PROVIDER` | No | - | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq` |
@@ -122,8 +122,8 @@ you only need to override it if you want a different database location.
 
 ### Docker Notes
 
-- Use a persistent mount for `/data`.
-- Set `DATABASE_URL=/data/feed-me-maybe.db` when running in Docker or CapRover.
+- Use a persistent mount for `/app/data`.
+- Set `DATABASE_URL=/app/data/feed-me-maybe.db` when running in Docker or CapRover.
 - Keep `APP_PASSWORD` and `APP_SECRET` stable across restarts.
 - Set these as runtime environment variables. Do not rely on build args for them.
 - `ORIGIN` is not required for the CapRover setup shipped here.
@@ -144,10 +144,10 @@ feed-me-maybe/
 │   │   └── index.ts         # Shared utilities
 │   ├── routes/
 │   │   ├── +layout.svelte   # App layout with sidebar navigation
-│   │   ├── +page.svelte     # Landing page
+│   │   ├── +page.svelte     # Main article feed (ranked, paginated)
 │   │   ├── login/           # Password login page
 │   │   ├── onboarding/      # First-run setup wizard
-│   │   ├── today/           # Main article feed (ranked, paginated)
+│   │   ├── today/           # Legacy redirect to /
 │   │   ├── saved/           # Saved/bookmarked articles
 │   │   ├── feeds/           # Feed management (list + detail)
 │   │   ├── articles/[id]/   # Individual article view

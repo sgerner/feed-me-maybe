@@ -1,80 +1,101 @@
 <script lang="ts">
-  import { fly, fade } from 'svelte/transition';
+  import { addToast } from '$lib/stores/toast.svelte';
+  import ArticleList from '$lib/components/ArticleList.svelte';
+
+  type Article = {
+    id: string;
+    url: string;
+    title: string;
+    feed_open_mode?: string | null;
+  };
+
+  let { data: pageData } = $props<{
+    data: { articles: Article[]; totalPages: number };
+  }>();
+
+  let articles = $state<Article[]>([]);
+  let pullDistance = $state(0);
+  let isPulling = $state(false);
+  let syncing = $state(false);
+  let touchStartY = 0;
+
+  $effect(() => {
+    articles = pageData.articles;
+  });
+
+  async function syncFeeds() {
+    if (syncing) return;
+    syncing = true;
+    try {
+      const res = await fetch('/api/feeds/refresh', { method: 'POST' });
+      if (res.ok) {
+        addToast('Syncing feeds in background', 'success');
+      }
+    } catch {
+      addToast('Sync failed', 'error');
+    } finally {
+      syncing = false;
+    }
+  }
+
+  function handleTouchStart(e: TouchEvent) {
+    if (window.scrollY <= 0) {
+      isPulling = true;
+      touchStartY = e.changedTouches[0].screenY;
+    }
+  }
+
+  function handleTouchMove(e: TouchEvent) {
+    if (!isPulling) return;
+    const currentY = e.changedTouches[0].screenY;
+    const diff = currentY - touchStartY;
+    if (diff > 0) {
+      pullDistance = Math.min(diff * 0.4, 80);
+    } else {
+      pullDistance = 0;
+      isPulling = false;
+    }
+  }
+
+  function handleTouchEnd() {
+    if (isPulling && pullDistance >= 60) {
+      syncFeeds();
+    }
+    pullDistance = 0;
+    isPulling = false;
+  }
 </script>
 
-<div class="mx-auto max-w-2xl">
-  <div class="glass-card p-8 md:p-10" in:fly={{ y: 16, duration: 350 }}>
-    <div
-      class="mb-6 inline-flex h-16 w-16 items-center justify-center rounded-full"
-      style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent);"
-    >
+<div
+  class="mx-auto max-w-7xl"
+  role="presentation"
+  ontouchstart={handleTouchStart}
+  ontouchmove={handleTouchMove}
+  ontouchend={handleTouchEnd}
+>
+  <div
+    class="flex justify-center overflow-hidden transition-all duration-200"
+    style="height: {pullDistance}px; opacity: {pullDistance / 60};"
+  >
+    <div class="mt-4 flex items-center gap-2 text-primary-400">
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        width="32"
-        height="32"
+        width="20"
+        height="20"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="1.5"
-        class="text-primary-400"
+        stroke-width="2.5"
+        class={pullDistance >= 60 ? 'rotate-180' : ''}
+        style="transition: transform 0.2s;"
       >
-        <path d="M4 11a9 9 0 0 1 9 9" /><path
-          d="M4 4a16 16 0 0 1 16 16"
-        /><circle cx="5" cy="19" r="1" />
+        <path d="M12 5v14M19 12l-7 7-7-7" />
       </svg>
-    </div>
-    <h1 class="gradient-text text-3xl font-extrabold tracking-tight">
-      Welcome to Feed Me Maybe
-    </h1>
-    <p
-      class="mt-3 text-lg"
-      style="color: color-mix(in oklch, var(--color-surface-200) 60%, transparent);"
-    >
-      Your AI-powered RSS reader.
-    </p>
-
-    <div
-      class="mt-8 p-5"
-      style="background: color-mix(in oklch, var(--color-surface-100) 4%, transparent); border: 1px solid color-mix(in oklch, var(--color-surface-100) 6%, transparent); border-radius: 2px;"
-    >
-      <h2
-        class="mb-3 flex items-center gap-2 text-sm font-semibold"
-        style="color: var(--color-surface-100);"
+      <span class="text-xs font-bold uppercase tracking-wider"
+        >{pullDistance >= 60 ? 'Release to sync' : 'Pull to sync'}</span
       >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          ><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5" /><path
-            d="M8.5 8.5v.01"
-          /><path d="M16 15.5v.01" /><path d="M12 12v.01" /><path
-            d="M11 17v.01"
-          /><path d="M7 14v.01" /></svg
-        >
-        Getting Started
-      </h2>
-      <ol
-        class="list-inside list-decimal space-y-2 text-sm"
-        style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
-      >
-        <li>
-          Import feeds (OPML) in <a
-            href="/settings"
-            class="text-primary-400 no-underline hover:underline">Settings</a
-          >
-        </li>
-        <li>
-          Articles will appear in your <a
-            href="/today"
-            class="text-primary-400 no-underline hover:underline">Today feed</a
-          >
-        </li>
-        <li>Rate articles to train the AI</li>
-      </ol>
     </div>
   </div>
+
+  <ArticleList bind:articles totalPages={pageData.totalPages} />
 </div>

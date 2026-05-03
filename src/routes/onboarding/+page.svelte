@@ -92,7 +92,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: 'setup_complete', value: 'true' }),
     });
-    window.location.href = '/today';
+    window.location.href = '/';
   }
 </script>
 

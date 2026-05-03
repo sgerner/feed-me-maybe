@@ -19,6 +19,7 @@
     thumbs_down?: boolean | null;
     saved?: boolean | null;
     hidden?: boolean | null;
+    archive_url?: string | null;
   };
 
   let { data: pageData } = $props<{ data: { article: ArticleData } }>();
@@ -40,9 +41,12 @@
     hidden = !!article.hidden;
   });
 
+  const isEmbeddedMode = $derived(mode === 'iframe' || mode === 'proxy');
+  const isReaderMode = $derived(mode === 'app' || mode === 'archive');
+
   // Prevent main scroll when in iframe/proxy mode
   $effect(() => {
-    if (mode === 'iframe' || mode === 'proxy') {
+    if (isEmbeddedMode) {
       const main = document.querySelector('main');
       if (main) main.style.overflow = 'hidden';
       return () => {
@@ -164,7 +168,7 @@
 </script>
 
 <div
-  class={mode === 'iframe' || mode === 'proxy'
+  class={isEmbeddedMode
     ? 'absolute inset-0 z-0 bg-surface-950'
     : 'mx-auto max-w-4xl'}
   style="touch-action: pan-y;"
@@ -172,10 +176,10 @@
   onpointerdown={handlePointerDown}
   onpointerup={handlePointerUp}
 >
-  {#if mode === 'app'}
+  {#if isReaderMode}
     <div class="mb-4 flex items-center justify-between">
       <a
-        href="/today"
+        href="/"
         class="inline-flex items-center gap-1.5 text-sm no-underline transition-colors hover:text-primary-400"
         style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
       >
@@ -193,7 +197,7 @@
     </div>
   {/if}
 
-  {#if mode === 'iframe' || mode === 'proxy'}
+  {#if isEmbeddedMode}
     <div class="relative h-full w-full overflow-hidden" in:fade>
       {#if iframeLoading}
         <div

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
   import ThemeChooser from '$lib/components/ThemeChooser.svelte';
+  import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
   import { fly, fade } from 'svelte/transition';
   let { data } = $props();
 
@@ -169,10 +170,9 @@
             class="select glass-input text-sm"
             value={data.articleOpenMode}
           >
-            <option value="app">Fetch & Render (In-App)</option>
-            <option value="iframe">Iframe (In-App)</option>
-            <option value="proxy">Iframe via Proxy (Bypass Blocks)</option>
-            <option value="tab">New Tab</option>
+            {#each ARTICLE_OPEN_MODES as option (option.value)}
+              <option value={option.value}>{option.label}</option>
+            {/each}
           </select>
         </label>
         <div class="flex items-center gap-3 pt-5">

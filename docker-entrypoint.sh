@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-DB_PATH="${DATABASE_URL:-/data/feed-me-maybe.db}"
+DB_PATH="${DATABASE_URL:-/app/data/feed-me-maybe.db}"
 DB_DIR="$(dirname "$DB_PATH")"
 
 mkdir -p "$DB_DIR"

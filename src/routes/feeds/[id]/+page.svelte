@@ -1,6 +1,7 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import ArticleList from '$lib/components/ArticleList.svelte';
+  import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
 
@@ -141,7 +142,7 @@
       });
       if (res.ok) {
         addToast('Feed deleted', 'success');
-        goto('/today');
+        goto('/');
       } else {
         throw new Error();
       }
@@ -290,10 +291,9 @@
           <span class="mb-1 block text-sm font-medium">Open Mode Override</span>
           <select class="select glass-input" bind:value={openMode}>
             <option value="">Use Global Default</option>
-            <option value="app">Fetch & Render (In-App)</option>
-            <option value="iframe">Iframe (In-App)</option>
-            <option value="proxy">Iframe via Proxy (Bypass Blocks)</option>
-            <option value="tab">New Tab</option>
+            {#each ARTICLE_OPEN_MODES as option (option.value)}
+              <option value={option.value}>{option.label}</option>
+            {/each}
           </select>
         </label>
         <label class="flex items-center gap-3 pt-5">

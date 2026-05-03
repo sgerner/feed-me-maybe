@@ -1,6 +1,7 @@
 import type { PageServerLoad, Actions } from './$types';
 import { getDb } from '$lib/server/db';
 import { fail } from '@sveltejs/kit';
+import { isArticleOpenMode } from '$lib/constants/article-open-modes';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};
@@ -50,10 +51,7 @@ export const actions: Actions = {
     const openMode = data.get('openMode');
     const hideOnOpen = data.get('hideOnOpen') === 'on';
 
-    if (
-      !openMode ||
-      !['app', 'iframe', 'proxy', 'tab'].includes(String(openMode))
-    ) {
+    if (!openMode || !isArticleOpenMode(openMode)) {
       return fail(400, { error: 'Invalid open mode' });
     }
 

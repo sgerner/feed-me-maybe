@@ -2,8 +2,9 @@ import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
 import { recordInteraction } from '$lib/server/interactions';
+import { fetchArchivedArticle } from '$lib/server/archive';
 
-export const load: PageServerLoad = async ({ params, locals }) => {
+export const load: PageServerLoad = async ({ params, locals, url }) => {
   if (!locals.sessionId) {
     throw error(401, 'Unauthorized');
   }
@@ -26,8 +27,22 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     throw error(404, 'Article not found');
   }
 
-  // Mark as opened
   recordInteraction(params.id, 'open');
+
+  if (url.searchParams.get('mode') === 'archive') {
+    const archived = await fetchArchivedArticle(
+      String(article.url || ''),
+      String(article.title || 'Archived Article'),
+    );
+
+    if (archived) {
+      article.title = archived.title || article.title;
+      article.content = archived.content;
+      article.image_url = archived.imageUrl || article.image_url;
+      article.archive_url = archived.archiveUrl;
+    }
+  }
 
   return { article };
 };
+

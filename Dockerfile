@@ -36,9 +36,9 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Create data directory for SQLite
-RUN mkdir -p /data && chown -R node:node /data
+RUN mkdir -p /app/data && chown -R node:node /app/data
 ENV NODE_ENV=production
-ENV DATABASE_URL=/data/feed-me-maybe.db
+ENV DATABASE_URL=/app/data/feed-me-maybe.db
 ENV PROTOCOL_HEADER=x-forwarded-proto
 ENV HOST_HEADER=x-forwarded-host
 ENV PORT_HEADER=x-forwarded-port

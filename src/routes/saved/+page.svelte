@@ -46,7 +46,7 @@
         No saved articles yet
       </p>
       <p class="section-subtitle">
-        Save articles from your Today feed to read later.
+        Save articles from All Feeds to read later.
       </p>
     </div>
   {:else}

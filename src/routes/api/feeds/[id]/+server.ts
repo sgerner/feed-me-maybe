@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { isArticleOpenMode } from '$lib/constants/article-open-modes';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {
@@ -46,6 +47,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
     if (body[field] !== undefined) {
       if (field === 'enabled' && typeof body[field] !== 'boolean') {
         return json({ error: 'enabled must be a boolean' }, { status: 400 });
+      }
+      if (field === 'open_mode' && body[field] !== null && !isArticleOpenMode(body[field])) {
+        return json({ error: 'Invalid open mode' }, { status: 400 });
       }
       updates.push(`${field === 'open_mode' ? 'open_mode' : field} = ?`);
       let val: string | number | boolean | null = body[field] as any;

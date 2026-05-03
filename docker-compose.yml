@@ -9,11 +9,11 @@ services:
     environment:
       - NODE_ENV=production
       - APP_PASSWORD=${APP_PASSWORD}
-      - DATABASE_URL=/data/feed-me-maybe.db
+      - DATABASE_URL=/app/data/feed-me-maybe.db
       - HOST=0.0.0.0
       - PORT=3000
     volumes:
-      - feed-me-maybe-data:/data
+      - feed-me-maybe-data:/app/data
     restart: unless-stopped
 
 volumes:
