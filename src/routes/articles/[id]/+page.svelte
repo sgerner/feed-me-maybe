@@ -113,12 +113,37 @@
       ? `/api/proxy?url=${encodeURIComponent(article.url)}`
       : article.url,
   );
+
+  let touchStartX = 0;
+  let touchStartY = 0;
+
+  function handlePointerDown(e: PointerEvent) {
+    if (!e.isPrimary) return;
+    touchStartX = e.clientX;
+    touchStartY = e.clientY;
+  }
+
+  function handlePointerUp(e: PointerEvent) {
+    if (!e.isPrimary || !touchStartX) return;
+    const dx = e.clientX - touchStartX;
+    const dy = e.clientY - touchStartY;
+    touchStartX = 0;
+    touchStartY = 0;
+
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
+      if (dx < 0) interact('hide');
+      else interact('save');
+    }
+  }
 </script>
 
 <div
   class={mode === 'iframe' || mode === 'proxy'
     ? 'absolute inset-0 z-0 bg-surface-950'
     : 'mx-auto max-w-4xl'}
+  style="touch-action: pan-y;"
+  onpointerdown={handlePointerDown}
+  onpointerup={handlePointerUp}
 >
   {#if mode === 'app'}
     <div class="mb-4 flex items-center justify-between">
@@ -414,7 +439,7 @@
 
     <button
       type="button"
-      class="action-btn h-9 px-3 rounded-full {saved
+      class="action-btn h-9 px-3 rounded-full !hidden lg:!inline-flex {saved
         ? '!text-success-400 !bg-success-500/10 !border-success-500/30'
         : ''}"
       onclick={() => interact('save')}
@@ -462,7 +487,7 @@
 
     <button
       type="button"
-      class="action-btn h-9 px-3 rounded-full hover:!text-error-400 {hidden
+      class="action-btn h-9 px-3 rounded-full !hidden lg:!inline-flex hover:!text-error-400 {hidden
         ? 'opacity-50 pointer-events-none'
         : ''}"
       onclick={() => interact('hide')}

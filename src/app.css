@@ -47,8 +47,8 @@
 }
 
 .cinematic-bg-orb-1 {
-	width: 90vw;
-	height: 90vw;
+	width: 90vmax;
+	height: 90vmax;
 	top: -25%;
 	left: -25%;
 	background: radial-gradient(circle at center, var(--color-primary-500), transparent 65%);
@@ -57,8 +57,8 @@
 }
 
 .cinematic-bg-orb-2 {
-	width: 80vw;
-	height: 80vw;
+	width: 80vmax;
+	height: 80vmax;
 	bottom: -30%;
 	right: -20%;
 	background: radial-gradient(circle at center, var(--color-secondary-500), transparent 65%);
@@ -67,8 +67,8 @@
 }
 
 .cinematic-bg-orb-3 {
-	width: 70vw;
-	height: 70vw;
+	width: 70vmax;
+	height: 70vmax;
 	top: 30%;
 	left: 40%;
 	background: radial-gradient(circle at center, var(--color-tertiary-500), transparent 60%);

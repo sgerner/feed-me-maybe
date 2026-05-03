@@ -184,9 +184,7 @@
           {/each}
 
           {#if data.feeds && data.feeds.length > 0}
-            <div
-              class="mt-4 flex items-center justify-between px-3 pb-2"
-            >
+            <div class="mt-4 flex items-center justify-between px-3 pb-2">
               <div
                 class="text-[10px] font-bold uppercase tracking-widest"
                 style="color: color-mix(in oklch, var(--color-surface-200) 30%, transparent);"
@@ -362,8 +360,7 @@
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
-              ><path d="M18 6 6 18M6 6l12 12" /></svg
+              stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
             >
           </button>
         </div>
