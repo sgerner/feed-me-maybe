@@ -83,11 +83,10 @@ encrypted values may no longer be readable.
 
 ### CapRover
 
-For CapRover, set the following as runtime environment variables, not build args:
+For a standard CapRover install, set the following as runtime environment variables, not build args:
 
 - `APP_PASSWORD`
 - `APP_SECRET`
-- `DATABASE_URL=/data/feed-me-maybe.db`
 
 Create a persistent directory mapping for `/data`.
 
@@ -100,6 +99,13 @@ Example:
 CapRover may show a warning if you enter these values as build args. That warning
 is harmless only if the values are also set as runtime environment variables.
 The Docker image reads them at startup, not at build time.
+
+The Docker image also ships with the reverse-proxy header defaults needed by
+SvelteKit behind CapRover, so you should not need to set `ORIGIN` or the
+`X-Forwarded-*` variables manually.
+
+`DATABASE_URL` already defaults to `/data/feed-me-maybe.db` in the image, so
+you only need to override it if you want a different database location.
 
 ## Environment Variables
 
@@ -120,6 +126,7 @@ The Docker image reads them at startup, not at build time.
 - Set `DATABASE_URL=/data/feed-me-maybe.db` when running in Docker or CapRover.
 - Keep `APP_PASSWORD` and `APP_SECRET` stable across restarts.
 - Set these as runtime environment variables. Do not rely on build args for them.
+- `ORIGIN` is not required for the CapRover setup shipped here.
 
 ## Project Structure
 
