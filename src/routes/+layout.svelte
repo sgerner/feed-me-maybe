@@ -118,10 +118,10 @@
         try {
           const payload = JSON.parse(event.data);
           console.log('[sse] New articles received:', payload);
-          
+
           // Refresh the page data
           await invalidateAll();
-          
+
           const { addToast } = await import('$lib/stores/toast.svelte');
           addToast(`Synced ${payload.count} new articles`, 'info');
         } catch (err) {
@@ -143,7 +143,6 @@
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
   });
-
 </script>
 
 <!-- Cinematic Background -->
@@ -204,9 +203,11 @@
         stroke-linejoin="round"
         ><rect width="18" height="12" x="3" y="6" rx="2" ry="2" /><path
           d="M7 10h.01"
-        /><path d="M11 10h.01" /><path d="M15 10h.01" /><path d="M17 10h.01" /><path
-          d="M7 14h.01"
-        /><path d="M11 14h.01" /><path d="M15 14h.01" /><path d="M17 14h.01" /></svg
+        /><path d="M11 10h.01" /><path d="M15 10h.01" /><path
+          d="M17 10h.01"
+        /><path d="M7 14h.01" /><path d="M11 14h.01" /><path
+          d="M15 14h.01"
+        /><path d="M17 14h.01" /></svg
       >
     </button>
   </header>
@@ -408,7 +409,7 @@
     </aside>
 
     <!-- Main Content -->
-    <main class="relative flex-1 overflow-auto p-4 md:p-8">
+    <main class="relative flex-1 overflow-auto md:p-8">
       {#key $page.url.pathname}
         {@render children()}
       {/key}
@@ -423,7 +424,9 @@
       <div
         class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
       ></div>
-      <p class="text-sm font-medium text-surface-200">Loading from Archive...</p>
+      <p class="text-sm font-medium text-surface-200">
+        Loading from Archive...
+      </p>
       <p class="max-w-xs text-center text-xs text-surface-400">
         This may take a few moments as we retrieve the archived version.
       </p>
