@@ -39,7 +39,9 @@ export function isRedditUrl(url: string): boolean {
 function ensureHttpsWww(input: string): URL {
   const url = new URL(input);
   url.protocol = 'https:';
-  url.hostname = 'www.reddit.com';
+  url.hostname = process.env.REDDIT_BASE_URL 
+    ? new URL(process.env.REDDIT_BASE_URL).hostname 
+    : 'www.reddit.com';
   return url;
 }
 
@@ -57,6 +59,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   const url = ensureHttpsWww(input);
   const path = stripJsonSuffix(url.pathname).replace(/\/$/, '');
   const parts = path.split('/').filter(Boolean);
+  const baseUrl = process.env.REDDIT_BASE_URL || 'https://www.reddit.com';
 
   let redditKind: RedditKind = 'unknown';
   let fetchUrl = '';
@@ -72,7 +75,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   ) {
     redditKind = 'comments';
     subreddit = parts[1];
-    fetchUrl = `https://www.reddit.com${path}.json`;
+    fetchUrl = `${baseUrl}${path}.json`;
     return {
       originalUrl: input,
       normalizedUrl: url.href,
@@ -347,8 +350,9 @@ function parseRedditJson(json: any): { items: FetchedItem[]; title?: string } {
 export async function fetchRedditSource(
   source: RedditNormalizedSource,
 ): Promise<FetchResult> {
+  const userAgent = process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
   const headers: Record<string, string> = {
-    'User-Agent': 'FeedMeMaybe/1.0 by sgerner',
+    'User-Agent': userAgent,
     Accept: 'application/json',
   };
 
