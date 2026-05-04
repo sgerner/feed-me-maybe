@@ -94,7 +94,7 @@
       </span>
       {#if !loading}
         <span
-          class="text-xs"
+          class="text-sm"
           style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
         >
           {comments.length} top-level
@@ -121,7 +121,7 @@
     <div class="mt-3 space-y-3">
       {#if loading}
         <div
-          class="flex items-center gap-2 py-4 text-xs"
+          class="flex items-center gap-2 py-4 text-sm"
           style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
         >
           <div
@@ -130,12 +130,12 @@
           Loading comments...
         </div>
       {:else if error}
-        <div class="py-3 text-xs" style="color: var(--color-error-300);">
+        <div class="py-3 text-sm" style="color: var(--color-error-300);">
           {error}
         </div>
       {:else if flatComments.length === 0}
         <div
-          class="py-3 text-xs italic"
+          class="py-3 text-sm italic"
           style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
         >
           No comments yet.
@@ -170,7 +170,7 @@
               </span>
             </div>
             <p
-              class="whitespace-pre-wrap text-xs leading-relaxed"
+              class="whitespace-pre-wrap text-sm leading-relaxed"
               style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
             >
               {comment.body}
