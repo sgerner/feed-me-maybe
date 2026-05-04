@@ -176,6 +176,8 @@ CSRF protection to work correctly.
 | `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/app/data/feed-me-maybe.db` in Docker | Path to the SQLite database file. Already set in the Docker image; do not override unless you need a different location |
 | `HOST` | No | `0.0.0.0` | Server bind address |
 | `PORT` | No | `3000` | Server port |
+| `REDDIT_USER_AGENT` | No | `web:feed-me-maybe:v1.0 (by /u/sgerner)` | Custom User-Agent for Reddit requests; use this to bypass 403 Forbidden blocks |
+| `REDDIT_BASE_URL` | No | `https://www.reddit.com` | Alternative Reddit frontend/proxy (e.g., a Redlib instance or custom Cloudflare Worker) to bypass IP-range blocks |
 | `PROVIDER` | No | - | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq` |
 | `MODEL` | No | - | AI model name, for example `gpt-4o` or `claude-3-5-sonnet-20241022` |
 | `API_KEY` | No | - | AI provider API key |
