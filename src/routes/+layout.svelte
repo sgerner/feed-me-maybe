@@ -5,6 +5,7 @@
   import { subscribeToasts, type Toast } from '$lib/stores/toast.svelte';
   import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
+  import PWABanner from '$lib/components/PWABanner.svelte';
 
   let sidebarOpen = $state(false);
   let syncing = $state(false);
@@ -446,9 +447,4 @@
   {/if}
 
   <PWABanner />
-</div>
-rm>
-      </div>
-    </div>
-  {/if}
 </div>
