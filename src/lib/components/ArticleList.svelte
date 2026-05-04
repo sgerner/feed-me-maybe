@@ -362,14 +362,16 @@
               e.preventDefault();
               return;
             }
-            if ((e.target as Element).closest('button')) {
+            const target = e.target as Element;
+            if (target && typeof target.closest === 'function' && target.closest('button, .action-btn')) {
               return;
             }
             openArticle(article);
           }}
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
-              if ((e.target as Element).closest('button')) return;
+              const target = e.target as Element;
+              if (target && typeof target.closest === 'function' && target.closest('button, .action-btn')) return;
               e.preventDefault();
               openArticle(article);
             }
@@ -463,6 +465,7 @@
                   type="button"
                   class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
                   onclick={(e) => {
+                    e.preventDefault();
                     e.stopPropagation();
                     interact(article.id, 'save');
                   }}
@@ -555,3 +558,4 @@
     {/if}
   </div>
 {/if}
+}
