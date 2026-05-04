@@ -43,6 +43,9 @@
 
   const isEmbeddedMode = $derived(mode === 'iframe' || mode === 'proxy');
   const isReaderMode = $derived(mode === 'app' || mode === 'archive');
+  const sourceHref = $derived(
+    mode === 'archive' ? `https://archive.is/${encodeURIComponent(article.url)}` : article.url
+  );
 
   // Prevent main scroll when in iframe/proxy mode
   $effect(() => {
@@ -490,11 +493,11 @@
     </button>
 
     <a
-      href={article.url}
+      href={sourceHref}
       target="_blank"
       rel="noopener noreferrer"
       class="action-btn h-9 px-3 rounded-full no-underline hover:!text-primary-300"
-      title="Open Original Source"
+      title={mode === 'archive' ? 'Open Archived Source' : 'Open Original Source'}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"

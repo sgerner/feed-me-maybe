@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import { page } from '$app/stores';
+  import { navigating } from '$app/state';
   import { subscribeToasts, type Toast } from '$lib/stores/toast.svelte';
   import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
@@ -99,6 +100,7 @@
 
     return unsubscribe;
   });
+
 </script>
 
 <!-- Cinematic Background -->
@@ -319,6 +321,21 @@
       {/key}
     </main>
   </div>
+
+  {#if navigating.to?.url?.searchParams?.get('mode') === 'archive'}
+    <div
+      class="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-4 bg-surface-950/80 backdrop-blur-sm"
+      transition:fade={{ duration: 200 }}
+    >
+      <div
+        class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
+      ></div>
+      <p class="text-sm font-medium text-surface-200">Loading from Archive...</p>
+      <p class="max-w-xs text-center text-xs text-surface-400">
+        This may take a few moments as we retrieve the archived version.
+      </p>
+    </div>
+  {/if}
 
   <!-- Toast container -->
   <div class="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5">
