@@ -27,7 +27,7 @@ type PreferenceState = {
   totalNegativeEvidence: number;
 };
 
-const TITLE_PHRASE_LIMIT = 5;
+const TITLE_PHRASE_LIMIT = 8;
 const DECAY_HALF_LIFE_DAYS = 45;
 const STOPWORDS = new Set([
   'the',
@@ -72,6 +72,12 @@ const STOPWORDS = new Set([
   'off',
   'all',
   'not',
+  'also',
+  'just',
+  'more',
+  'than',
+  'some',
+  'very',
 ]);
 
 function normalizeToken(text: string): string {
@@ -86,7 +92,18 @@ function tokenize(text: string): string[] {
     .toLowerCase()
     .split(/[^a-z0-9]+/g)
     .map((t) => t.trim())
-    .filter((t) => t.length >= 4 && !STOPWORDS.has(t));
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+}
+
+function extractNGrams(tokens: string[], n: number): string[] {
+  const ngrams: string[] = [];
+  for (let i = 0; i <= tokens.length - n; i++) {
+    const gram = tokens.slice(i, i + n);
+    // Sort tokens to allow order-independent matching (e.g. "open source" == "source open")
+    gram.sort();
+    ngrams.push(gram.join(':'));
+  }
+  return ngrams;
 }
 
 function detectContentType(
@@ -114,11 +131,12 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
   const summary = ctx.summary || '';
   const content = ctx.content || '';
 
-  features.push({ type: 'source', label: `feed:${ctx.feed_id}`, weight: 0.4 });
+  // Source signals are lower priority as they are user-curated
+  features.push({ type: 'source', label: `feed:${ctx.feed_id}`, weight: 0.15 });
 
   try {
     const domain = new URL(ctx.feed_url).hostname.replace(/^www\./, '');
-    features.push({ type: 'source', label: `domain:${domain}`, weight: 0.6 });
+    features.push({ type: 'source', label: `domain:${domain}`, weight: 0.2 });
   } catch {
     // Ignore invalid feed URL.
   }
@@ -137,10 +155,10 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
 
   try {
     const aiTopics = JSON.parse(ctx.ai_topics || '[]') as string[];
-    for (const topic of aiTopics.slice(0, 5)) {
+    for (const topic of aiTopics.slice(0, 8)) {
       const token = normalizeToken(topic);
       if (token) {
-        features.push({ type: 'topic', label: `topic:${token}`, weight: 1.4 });
+        features.push({ type: 'topic', label: `topic:${token}`, weight: 1.5 });
       }
     }
   } catch {
@@ -149,13 +167,13 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
 
   try {
     const aiEntities = JSON.parse(ctx.ai_entities || '[]') as string[];
-    for (const entity of aiEntities.slice(0, 5)) {
+    for (const entity of aiEntities.slice(0, 8)) {
       const token = normalizeToken(entity);
       if (token) {
         features.push({
           type: 'entity',
           label: `entity:${token}`,
-          weight: 1.0,
+          weight: 1.2,
         });
       }
     }
@@ -169,19 +187,34 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
   features.push({
     type: 'content_type',
     label: `content_type:${contentType}`,
-    weight: 1.6,
+    weight: 1.8,
   });
   if (contentType === 'obituary') {
     features.push({
       type: 'negative_filter',
       label: 'negative_filter:obituary',
-      weight: 2.2,
+      weight: 2.5,
     });
   }
 
-  const tokens = tokenize(title).slice(0, TITLE_PHRASE_LIMIT);
-  for (const token of tokens) {
-    features.push({ type: 'phrase', label: `phrase:${token}`, weight: 0.7 });
+  // Phrase extraction with N-grams
+  const tokens = tokenize(title);
+
+  // Single tokens
+  for (const token of tokens.slice(0, TITLE_PHRASE_LIMIT)) {
+    features.push({ type: 'phrase', label: `phrase:${token}`, weight: 0.6 });
+  }
+
+  // Bigrams (2-word phrases)
+  const bigrams = extractNGrams(tokens, 2);
+  for (const gram of bigrams.slice(0, 5)) {
+    features.push({ type: 'phrase', label: `phrase:${gram}`, weight: 1.3 });
+  }
+
+  // Trigrams (3-word phrases)
+  const trigrams = extractNGrams(tokens, 3);
+  for (const gram of trigrams.slice(0, 3)) {
+    features.push({ type: 'phrase', label: `phrase:${gram}`, weight: 1.6 });
   }
 
   const dedup = new Map<string, Feature>();

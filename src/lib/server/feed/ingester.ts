@@ -6,6 +6,7 @@ import {
   fetchRedditSource,
 } from '$lib/server/sources/reddit';
 import { applyPreferenceModelToArticle } from '$lib/server/preferences';
+import { processArticle } from '$lib/server/ai/processor';
 import crypto from 'node:crypto';
 
 interface IngestOptions {
@@ -145,6 +146,7 @@ export async function ingestFeed(
   }
 
   // Process articles in a transaction for atomicity
+  const newArticleIds: string[] = [];
   const ingestTx = db.transaction(() => {
     let articlesNew = 0;
     for (const item of fetchResult.items) {
@@ -215,6 +217,7 @@ export async function ingestFeed(
         Date.now(),
       );
       applyPreferenceModelToArticle(articleId);
+      newArticleIds.push(articleId);
       articlesNew++;
     }
 
@@ -243,6 +246,15 @@ export async function ingestFeed(
 
   try {
     const articlesNew = ingestTx();
+
+    // Trigger AI processing for new articles in background
+    // We limit this to the most recent/relevant ones if there are many to avoid hammering API
+    const articlesToProcess = newArticleIds.slice(0, 5);
+    for (const articleId of articlesToProcess) {
+      processArticle(articleId).catch((err) =>
+        console.error(`[ingester] AI processing failed for ${articleId}:`, err),
+      );
+    }
 
     return {
       success: true,
