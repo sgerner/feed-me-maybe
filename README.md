@@ -189,6 +189,31 @@ CSRF protection to work correctly.
 - Set these as runtime environment variables. Do not rely on build args for them.
 - Set `ORIGIN` to your public URL when running behind a reverse proxy.
 
+## Reddit Proxy Deployment
+
+Reddit often blocks data center IP ranges (AWS, DigitalOcean, etc.) with a 403 Forbidden error. If you experience this, you can deploy a private proxy using Cloudflare Workers.
+
+### Deploying with Wrangler
+
+1.  Navigate to the `reddit-proxy` directory:
+    ```bash
+    cd reddit-proxy
+    ```
+2.  Login to Cloudflare:
+    ```bash
+    npx wrangler login
+    ```
+3.  Deploy the worker:
+    ```bash
+    npx wrangler deploy
+    ```
+4.  Copy the resulting URL and set it in your `.env`:
+    ```env
+    REDDIT_BASE_URL="https://reddit-proxy.your-name.workers.dev"
+    ```
+
+The provided proxy script automatically strips Cloudflare headers and mimics a modern browser to bypass Reddit's anti-bot filters.
+
 ## Project Structure
 
 ```
