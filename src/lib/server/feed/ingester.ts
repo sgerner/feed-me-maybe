@@ -1,5 +1,10 @@
 import { getDb } from '$lib/server/db';
 import { fetchFeed } from '$lib/server/feed/fetcher';
+import {
+  isRedditUrl,
+  normalizeRedditUrl,
+  fetchRedditSource,
+} from '$lib/server/sources/reddit';
 import { applyPreferenceModelToArticle } from '$lib/server/preferences';
 import crypto from 'node:crypto';
 
@@ -19,7 +24,14 @@ interface IngestResult {
   feedImageUrl?: string;
 }
 
-function generateArticleId(url: string, title: string): string {
+function generateArticleId(url: string, title: string, guid?: string): string {
+  if (guid) {
+    return crypto
+      .createHash('sha256')
+      .update(guid)
+      .digest('hex')
+      .substring(0, 32);
+  }
   return crypto
     .createHash('sha256')
     .update(`${url}|${title}`)
@@ -57,10 +69,16 @@ export async function ingestFeed(
   ).run(Date.now(), feedId);
 
   // Fetch the feed with caching headers
-  const fetchResult = await fetchFeed(url, {
-    etag: feedRecord?.etag || undefined,
-    lastModified: feedRecord?.last_modified_header || undefined,
-  });
+  let fetchResult;
+  if (isRedditUrl(url)) {
+    const redditSource = normalizeRedditUrl(url);
+    fetchResult = await fetchRedditSource(redditSource);
+  } else {
+    fetchResult = await fetchFeed(url, {
+      etag: feedRecord?.etag || undefined,
+      lastModified: feedRecord?.last_modified_header || undefined,
+    });
+  }
 
   if (fetchResult.notModified) {
     db.prepare(
@@ -133,13 +151,13 @@ export async function ingestFeed(
       // Skip items without URL
       if (!item.url) continue;
 
-      const articleId = generateArticleId(item.url, item.title);
+      const articleId = generateArticleId(item.url, item.title, item.guid);
 
       // Skip duplicate or update missing data
       const existing = db
-        .prepare('SELECT id, image_url, content FROM articles WHERE id = ?')
+        .prepare('SELECT id, image_url, content, external_url FROM articles WHERE id = ?')
         .get(articleId) as
-        | { id: string; image_url: string; content: string }
+        | { id: string; image_url: string; content: string; external_url: string }
         | undefined;
       if (existing) {
         let needsUpdate = false;
@@ -149,6 +167,12 @@ export async function ingestFeed(
         if (!existing.image_url && item.imageUrl) {
           updates.push('image_url = ?');
           params.push(item.imageUrl);
+          needsUpdate = true;
+        }
+
+        if (!existing.external_url && item.externalUrl) {
+          updates.push('external_url = ?');
+          params.push(item.externalUrl);
           needsUpdate = true;
         }
 
@@ -172,7 +196,7 @@ export async function ingestFeed(
 
       // Insert new article
       db.prepare(
-        'INSERT INTO articles (id, feed_id, guid, url, title, author, summary, content, image_url, categories, published_at, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO articles (id, feed_id, guid, url, title, author, summary, content, image_url, external_url, categories, published_at, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).run(
         articleId,
         feedId,
@@ -183,6 +207,7 @@ export async function ingestFeed(
         item.summary || '',
         item.content || '',
         item.imageUrl || '',
+        item.externalUrl || '',
         JSON.stringify(item.categories),
         item.publishedAt ? item.publishedAt.getTime() : null,
         Date.now(),

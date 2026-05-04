@@ -31,6 +31,8 @@
     category?: string | null;
     enabled?: boolean;
     open_mode?: string | null;
+    source_type?: string | null;
+    source_metadata?: string | null;
   };
 
   let { data: pageData } = $props<{
@@ -60,6 +62,21 @@
   let isPulling = $state(false);
   let syncing = $state(false);
   let touchStartY = 0;
+
+  function parseRedditMeta(meta: string | null | undefined) {
+    if (!meta) return null;
+    try {
+      return JSON.parse(meta) as {
+        redditKind?: string;
+        subreddit?: string;
+        username?: string;
+        query?: string;
+        originalUrl?: string;
+      };
+    } catch {
+      return null;
+    }
+  }
 
   $effect(() => {
     articles = pageData.articles;
@@ -242,7 +259,38 @@
 
   <div class="mb-8 flex items-center justify-between">
     <div class="flex items-center gap-4">
-      <h1 class="section-title">{feed.title || 'Untitled Feed'}</h1>
+      <div>
+        <h1 class="section-title">{feed.title || 'Untitled Feed'}</h1>
+        {#if feed.source_type === 'reddit'}
+          {@const meta = parseRedditMeta(feed.source_metadata)}
+          {#if meta}
+            <div
+              class="mt-1 flex flex-wrap items-center gap-2 text-xs"
+              style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);"
+            >
+              <span
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 font-medium"
+                style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;"
+                >Reddit</span
+              >
+              {#if meta.subreddit}
+                <span>{meta.subreddit}</span>
+              {/if}
+              {#if meta.username}
+                <span>u/{meta.username}</span>
+              {/if}
+              {#if meta.query}
+                <span>Search: {meta.query}</span>
+              {/if}
+              {#if meta.redditKind}
+                <span class="capitalize"
+                  >{meta.redditKind.replace('_', ' ')}</span
+                >
+              {/if}
+            </div>
+          {/if}
+        {/if}
+      </div>
       {#if !feed.enabled}
         <span
           class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"

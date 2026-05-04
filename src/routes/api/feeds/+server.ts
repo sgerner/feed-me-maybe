@@ -1,6 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import {
+  isRedditUrl,
+  normalizeRedditUrl,
+  fetchRedditSource,
+} from '$lib/server/sources/reddit';
 import crypto from 'node:crypto';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -11,7 +16,7 @@ export const GET: RequestHandler = async ({ locals }) => {
   const db = getDb();
   const rows = db
     .prepare(
-      'SELECT id, url, title, description, site_url, category, icon_url, enabled, error_count, last_fetch_status, last_fetch_at, last_error, created_at, updated_at FROM feeds ORDER BY title ASC',
+      'SELECT id, url, title, description, site_url, category, icon_url, enabled, error_count, last_fetch_status, last_fetch_at, last_error, source_type, source_metadata, created_at, updated_at FROM feeds ORDER BY title ASC',
     )
     .all();
 
@@ -30,7 +35,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { url, title, category } = body;
+  let { url, title, category } = body;
 
   if (!url || typeof url !== 'string') {
     return json({ error: 'Feed URL is required' }, { status: 400 });
@@ -47,10 +52,56 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const now = new Date();
   const id = crypto.randomUUID();
 
+  let sourceType = 'rss';
+  let sourceMetadata = '{}';
+  let normalizedUrl = url;
+
+  // Detect and validate Reddit URLs
+  if (isRedditUrl(url)) {
+    const redditSource = normalizeRedditUrl(url);
+    const validation = await fetchRedditSource(redditSource);
+    if (!validation.success) {
+      return json(
+        {
+          error:
+            validation.error ||
+            'This looks like a Reddit URL, but Reddit did not return a readable JSON feed. Check that the subreddit, user, or search URL exists.',
+        },
+        { status: 422 },
+      );
+    }
+    sourceType = 'reddit';
+    sourceMetadata = JSON.stringify({
+      originalUrl: url,
+      redditKind: redditSource.redditKind,
+      subreddit: redditSource.subreddit,
+      username: redditSource.username,
+      query: redditSource.query,
+    });
+    normalizedUrl = redditSource.fetchUrl;
+    // Use subreddit or username as default title if none provided
+    if (!title) {
+      title =
+        validation.title ||
+        redditSource.subreddit ||
+        redditSource.username ||
+        'Reddit';
+    }
+  }
+
   try {
     db.prepare(
-      'INSERT INTO feeds (id, url, title, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(id, url, title || '', category || '', now.getTime(), now.getTime());
+      'INSERT INTO feeds (id, url, title, category, source_type, source_metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      id,
+      normalizedUrl,
+      title || '',
+      category || '',
+      sourceType,
+      sourceMetadata,
+      now.getTime(),
+      now.getTime(),
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     if (msg.includes('UNIQUE constraint')) {

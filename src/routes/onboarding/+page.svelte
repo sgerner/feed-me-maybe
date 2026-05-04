@@ -161,8 +161,9 @@
         class="mt-2 text-sm"
         style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);"
       >
-        Enter an RSS or Atom feed URL to get started, or import an OPML file
-        from another reader.
+        Paste an RSS feed, website URL, or Reddit URL. Examples: /r/codex,
+        /r/selfhosted/new, Reddit search results, or a Reddit post. You can also
+        import an OPML file from another reader.
       </p>
       <div class="mt-5 space-y-3">
         <input

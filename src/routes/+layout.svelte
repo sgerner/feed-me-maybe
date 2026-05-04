@@ -444,4 +444,11 @@
       </div>
     </div>
   {/if}
+
+  <PWABanner />
+</div>
+rm>
+      </div>
+    </div>
+  {/if}
 </div>

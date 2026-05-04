@@ -14,7 +14,13 @@ export function initializeDatabase(): void {
   ).run();
 
   try {
-    db.prepare('ALTER TABLE feeds ADD COLUMN open_mode TEXT').run();
+    db.prepare("ALTER TABLE feeds ADD COLUMN source_metadata TEXT DEFAULT '{}'").run();
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    db.prepare("ALTER TABLE articles ADD COLUMN external_url TEXT DEFAULT ''").run();
   } catch {
     /* ignore */
   }
@@ -22,6 +28,22 @@ export function initializeDatabase(): void {
   try {
     db.prepare(
       'ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0',
+    ).run();
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    db.prepare(
+      "ALTER TABLE feeds ADD COLUMN source_type TEXT DEFAULT 'rss'",
+    ).run();
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    db.prepare(
+      "ALTER TABLE feeds ADD COLUMN source_metadata TEXT DEFAULT '{}'",
     ).run();
   } catch {
     /* ignore */

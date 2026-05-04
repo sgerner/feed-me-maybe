@@ -42,6 +42,8 @@ export const feeds = sqliteTable('feeds', {
   lastModifiedHeader: text('last_modified_header'),
   pollIntervalMins: integer('poll_interval_mins').default(15),
   openMode: text('open_mode'), // null = use global, 'app', 'iframe', 'tab'
+  sourceType: text('source_type').default('rss'),
+  sourceMetadata: text('source_metadata').default('{}'),
   lastChangedAt: integer('last_changed_at', { mode: 'timestamp' }),
   fetchCountSinceChange: integer('fetch_count_since_change').default(0),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
@@ -63,6 +65,7 @@ export const articles = sqliteTable(
     summary: text('summary').default(''),
     content: text('content').default(''),
     imageUrl: text('image_url').default(''),
+    externalUrl: text('external_url').default(''),
     categories: text('categories').default(''), // JSON array of category strings
     publishedAt: integer('published_at', { mode: 'timestamp' }),
     fetchedAt: integer('fetched_at', { mode: 'timestamp' }).notNull(),

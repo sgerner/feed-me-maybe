@@ -24,6 +24,7 @@ export interface FetchedItem {
   summary?: string;
   content?: string;
   imageUrl?: string;
+  externalUrl?: string;
   categories: string[];
   publishedAt?: Date;
 }
