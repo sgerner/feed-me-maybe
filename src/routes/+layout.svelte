@@ -6,8 +6,10 @@
   import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import PWABanner from '$lib/components/PWABanner.svelte';
+  import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 
   let sidebarOpen = $state(false);
+  let showShortcuts = $state(false);
   let syncing = $state(false);
   let addingFeed = $state(false);
   let showAddFeedModal = $state(false);
@@ -144,6 +146,29 @@
         Feed Me Maybe
       </a>
     </div>
+
+    <button
+      class="btn-icon"
+      onclick={() => (showShortcuts = true)}
+      aria-label="Keyboard shortcuts"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        ><rect width="18" height="12" x="3" y="6" rx="2" ry="2" /><path
+          d="M7 10h.01"
+        /><path d="M11 10h.01" /><path d="M15 10h.01" /><path d="M17 10h.01" /><path
+          d="M7 14h.01"
+        /><path d="M11 14h.01" /><path d="M15 14h.01" /><path d="M17 14h.01" /></svg
+      >
+    </button>
   </header>
 
   <div class="flex flex-1 overflow-hidden">
@@ -311,6 +336,33 @@
               <span>{item.label}</span>
             </a>
           {/each}
+
+          <button
+            class="nav-item bg-transparent text-left"
+            onclick={() => (showShortcuts = true)}
+          >
+            <span class="flex h-5 w-5 items-center justify-center">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                ><rect width="18" height="12" x="3" y="6" rx="2" ry="2" /><path
+                  d="M7 10h.01"
+                /><path d="M11 10h.01" /><path d="M15 10h.01" /><path
+                  d="M17 10h.01"
+                /><path d="M7 14h.01" /><path d="M11 14h.01" /><path
+                  d="M15 14h.01"
+                /><path d="M17 14h.01" /></svg
+              >
+            </span>
+            <span>Keyboard Shortcuts</span>
+          </button>
         </nav>
       </div>
     </aside>
@@ -447,4 +499,5 @@
   {/if}
 
   <PWABanner />
+  <KeyboardShortcuts bind:open={showShortcuts} />
 </div>
