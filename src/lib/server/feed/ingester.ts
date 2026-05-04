@@ -172,7 +172,7 @@ export async function ingestFeed(
 
       // Insert new article
       db.prepare(
-        'INSERT INTO articles (id, feed_id, guid, url, title, author, summary, content, image_url, categories, published_at, fetched_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO articles (id, feed_id, guid, url, title, author, summary, content, image_url, categories, published_at, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).run(
         articleId,
         feedId,
@@ -185,6 +185,7 @@ export async function ingestFeed(
         item.imageUrl || '',
         JSON.stringify(item.categories),
         item.publishedAt ? item.publishedAt.getTime() : null,
+        Date.now(),
         Date.now(),
         Date.now(),
       );
