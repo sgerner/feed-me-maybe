@@ -22,6 +22,7 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 
   return {
     feeds,
+    sessionId: locals.sessionId,
     globalSettings: {
       articleOpenMode: openMode?.value || 'app',
       hideOnOpen: hideOnOpen?.value === 'true',

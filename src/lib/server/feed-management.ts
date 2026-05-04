@@ -4,7 +4,7 @@ export function clearFeedArticles(feedId: string): number {
   const db = getDb();
   return db.transaction(() => {
     const result = db
-      .prepare('DELETE FROM articles WHERE feed_id = ?')
+      .prepare('UPDATE articles SET hidden = 1 WHERE feed_id = ? AND hidden = 0')
       .run(feedId);
     db.prepare('UPDATE feeds SET updated_at = ? WHERE id = ?').run(
       Date.now(),

@@ -8,6 +8,7 @@ import {
 import { applyPreferenceModelToArticle } from '$lib/server/preferences';
 import { processArticle } from '$lib/server/ai/processor';
 import { dispatchWebhookEvent } from '$lib/server/webhooks';
+import { broadcast } from '$lib/server/realtime';
 import crypto from 'node:crypto';
 
 interface IngestOptions {
@@ -260,6 +261,14 @@ export async function ingestFeed(
 
   try {
     const articlesNew = ingestTx();
+
+    if (articlesNew > 0) {
+      broadcast('new_articles', {
+        feedId,
+        count: articlesNew,
+        articles: newArticleIds
+      });
+    }
 
     // Trigger AI processing for new articles in background
     // We limit this to the most recent/relevant ones if there are many to avoid hammering API

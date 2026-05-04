@@ -104,6 +104,46 @@
     return unsubscribe;
   });
 
+  // Real-time updates via SSE
+  $effect(() => {
+    if (!data.sessionId) return;
+
+    let eventSource: EventSource;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+
+    function connect() {
+      eventSource = new EventSource('/api/events');
+
+      eventSource.addEventListener('new_articles', async (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          console.log('[sse] New articles received:', payload);
+          
+          // Refresh the page data
+          await invalidateAll();
+          
+          const { addToast } = await import('$lib/stores/toast.svelte');
+          addToast(`Synced ${payload.count} new articles`, 'info');
+        } catch (err) {
+          console.error('[sse] Error handling new_articles event:', err);
+        }
+      });
+
+      eventSource.onerror = (err) => {
+        console.error('[sse] EventSource error, reconnecting...', err);
+        eventSource.close();
+        reconnectTimeout = setTimeout(connect, 5000);
+      };
+    }
+
+    connect();
+
+    return () => {
+      if (eventSource) eventSource.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  });
+
 </script>
 
 <!-- Cinematic Background -->
