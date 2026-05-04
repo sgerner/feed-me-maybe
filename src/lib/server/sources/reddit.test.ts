@@ -27,12 +27,12 @@ describe('normalizeRedditUrl', () => {
   it('normalizes subreddit default feed', () => {
     const r = normalizeRedditUrl('https://reddit.com/r/codex');
     expect(r.redditKind).toBe('subreddit');
-    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex.json?limit=25');
+    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.json?limit=25');
   });
 
   it('normalizes www subreddit with trailing slash', () => {
     const r = normalizeRedditUrl('https://www.reddit.com/r/codex/');
-    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex.json?limit=25');
+    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.json?limit=25');
   });
 
   it('normalizes subreddit listing feeds', () => {
@@ -58,10 +58,8 @@ describe('normalizeRedditUrl', () => {
   });
 
   it('does not override existing limit', () => {
-    const r = normalizeRedditUrl(
-      'https://www.reddit.com/r/codex.json?limit=50',
-    );
-    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex.json?limit=50');
+    const r = normalizeRedditUrl('https://www.reddit.com/r/codex.json?limit=50');
+    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.json?limit=50');
   });
 
   it('normalizes Reddit search', () => {

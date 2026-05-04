@@ -153,9 +153,10 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
       addLimitIfMissing(listingUrl);
       fetchUrl = listingUrl.href;
     } else {
+      // Default bare subreddit URLs to /new for a chronological feed
       redditKind = 'subreddit';
       const subUrl = new URL(url.href);
-      subUrl.pathname = `${path}.json`;
+      subUrl.pathname = `${path}/new.json`;
       addLimitIfMissing(subUrl);
       fetchUrl = subUrl.href;
     }
@@ -418,6 +419,16 @@ export async function fetchRedditSource(
         items: [],
         error:
           'This looks like a Reddit URL, but Reddit did not return a readable JSON feed. Check that the subreddit, user, or search URL exists.',
+      };
+    }
+
+    // Reddit sometimes returns error objects instead of listings
+    if (json && (json.error || json.reason || json.message)) {
+      const errorDetail = json.message || json.reason || String(json.error);
+      return {
+        success: false,
+        items: [],
+        error: `Reddit API error: ${errorDetail}`,
       };
     }
 

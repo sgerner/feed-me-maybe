@@ -26,6 +26,12 @@ export function initializeDatabase(): void {
   }
 
   try {
+    db.prepare("ALTER TABLE articles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0").run();
+  } catch {
+    /* ignore */
+  }
+
+  try {
     db.prepare(
       'ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0',
     ).run();
@@ -68,6 +74,9 @@ export function initializeDatabase(): void {
   ).run();
   db.prepare(
     "CREATE TABLE IF NOT EXISTS provider_configs (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, model_id TEXT NOT NULL, api_key_encrypted TEXT DEFAULT '', api_key_nonce TEXT DEFAULT '', custom_base_url TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+  ).run();
+  db.prepare(
+    "CREATE TABLE IF NOT EXISTS webhooks (id TEXT PRIMARY KEY, url TEXT NOT NULL, name TEXT NOT NULL, secret TEXT, events TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
 
   // Create indexes for common queries
