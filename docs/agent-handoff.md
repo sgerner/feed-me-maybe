@@ -108,6 +108,7 @@ docker-compose up -d
 ## Environment Variables
 
 - `APP_PASSWORD` (required) - Password to access the app
+- `ORIGIN` (recommended for production) - Public URL for CSRF protection behind reverse proxies
 - `DATABASE_URL` (optional) - SQLite file path (default: `./data/feed-me-maybe.db`)
 - `HOST`, `PORT` (optional) - Server binding
 - `APP_SECRET` (optional) - Encryption key for API keys

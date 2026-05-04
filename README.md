@@ -74,9 +74,22 @@ The application will be available at `http://localhost:3000`.
 
 ### Persistent Storage
 
-The app stores its SQLite database in `/app/data/feed-me-maybe.db` inside the container.
-Mount `/app/data` to a persistent Docker volume or host directory so feeds, articles,
-sessions, and settings survive container restarts.
+**In Docker, you must mount `/app/data` to a persistent volume.** The Dockerfile
+already sets `DATABASE_URL=/app/data/feed-me-maybe.db`, so the database, WAL files,
+PWA manifest, and processed images all live in that directory. If you do not mount
+a persistent volume, all data will be lost when the container restarts.
+
+```bash
+# Named volume (recommended)
+-v feed-me-maybe-data:/app/data
+
+# Or bind mount
+-v /path/on/host/data:/app/data
+```
+
+**Do not override `DATABASE_URL`** unless you are intentionally moving the database
+to a different location. Overriding it to a path outside the persistent volume
+(e.g. `/data/feed-me-maybe.db`) will cause data loss on every redeploy.
 
 If you change `APP_SECRET` after storing AI provider credentials, previously saved
 encrypted values may no longer be readable.
@@ -92,7 +105,7 @@ Create a persistent directory mapping for `/app/data`.
 
 Example:
 
-- App env vars: `APP_PASSWORD`, `APP_SECRET`, `DATABASE_URL`
+- App env vars: `APP_PASSWORD`, `APP_SECRET`
 - Persistent directory: `/app/data`
 - Database path inside container: `/app/data/feed-me-maybe.db`
 
@@ -100,20 +113,23 @@ CapRover may show a warning if you enter these values as build args. That warnin
 is harmless only if the values are also set as runtime environment variables.
 The Docker image reads them at startup, not at build time.
 
-The Docker image also ships with the reverse-proxy header defaults needed by
-SvelteKit behind CapRover, so you should not need to set `ORIGIN` or the
-`X-Forwarded-*` variables manually.
+The Docker image already ships with the reverse-proxy header defaults needed by
+SvelteKit behind CapRover. `DATABASE_URL` also defaults to `/app/data/feed-me-maybe.db`
+in the image. You do not need to set these manually unless you want a different
+database location.
 
-`DATABASE_URL` already defaults to `/app/data/feed-me-maybe.db` in the image, so
-you only need to override it if you want a different database location.
+**Note:** If you deploy behind a reverse proxy (including CapRover), you may
+need to set `ORIGIN` to your public URL (e.g. `https://feed.example.com`) for
+CSRF protection to work correctly.
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
 | `APP_PASSWORD` | Yes | - | Password for application access |
-| `APP_SECRET` | Recommended | - | Secret used for session-related and encrypted AI settings; generate with `openssl rand -hex 32` |
-| `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/app/data/feed-me-maybe.db` in Docker | Path to the SQLite database file |
+| `APP_SECRET` | Recommended | - | Secret used for encrypted AI provider API keys; generate with `openssl rand -hex 32` |
+| `ORIGIN` | Recommended | - | Public URL (e.g. `https://feed.example.com`). Required for CSRF protection when behind a reverse proxy |
+| `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/app/data/feed-me-maybe.db` in Docker | Path to the SQLite database file. Already set in the Docker image; do not override unless you need a different location |
 | `HOST` | No | `0.0.0.0` | Server bind address |
 | `PORT` | No | `3000` | Server port |
 | `PROVIDER` | No | - | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq` |
@@ -123,10 +139,9 @@ you only need to override it if you want a different database location.
 ### Docker Notes
 
 - Use a persistent mount for `/app/data`.
-- Set `DATABASE_URL=/app/data/feed-me-maybe.db` when running in Docker or CapRover.
 - Keep `APP_PASSWORD` and `APP_SECRET` stable across restarts.
 - Set these as runtime environment variables. Do not rely on build args for them.
-- `ORIGIN` is not required for the CapRover setup shipped here.
+- Set `ORIGIN` to your public URL when running behind a reverse proxy.
 
 ## Project Structure
 

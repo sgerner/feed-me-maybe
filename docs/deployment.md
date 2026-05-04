@@ -24,7 +24,7 @@ docker run -d \
   --name feed-me-maybe \
   -p 3000:3000 \
   -e APP_PASSWORD=your-strong-password \
-  -v feed-me-maybe-data:/data \
+  -v feed-me-maybe-data:/app/data \
   --restart unless-stopped \
   feed-me-maybe
 ```
@@ -46,7 +46,7 @@ docker compose up -d
 
 The `docker-compose.yml` defines:
 
-- A named volume `feed-me-maybe-data` mounted at `/data` inside the container
+- A named volume `feed-me-maybe-data` mounted at `/app/data` inside the container
 - Port mapping from `${PORT:-3000}` on the host to `3000` in the container
 - `restart: unless-stopped` for automatic recovery
 
@@ -55,10 +55,11 @@ The `docker-compose.yml` defines:
 | Variable       | Required | Default                                                               | Description                                                      |
 | -------------- | -------- | --------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `APP_PASSWORD` | **Yes**  | —                                                                     | Password for application access. Must be set or login will fail. |
-| `DATABASE_URL` | No       | `./data/feed-me-maybe.db` (local) / `/data/feed-me-maybe.db` (Docker) | Path to the SQLite database file.                                |
+| `ORIGIN`       | Recommended | —                                                                  | Public URL of the app (e.g. `https://feed.example.com`). Required for CSRF protection when behind a reverse proxy. |
+| `DATABASE_URL` | No       | `./data/feed-me-maybe.db` (local) / `/app/data/feed-me-maybe.db` (Docker) | Path to the SQLite database file. Already set in the Docker image; only override if you need a different location. |
 | `HOST`         | No       | `0.0.0.0`                                                             | Network interface to bind the server to.                         |
 | `PORT`         | No       | `3000`                                                                | HTTP port to listen on.                                          |
-| `APP_SECRET`   | No       | —                                                                     | Session encryption secret. Generate with `openssl rand -hex 32`. |
+| `APP_SECRET`   | No       | —                                                                     | Encryption key for AI provider API keys. Generate with `openssl rand -hex 32`. Keep stable across deploys. |
 | `PROVIDER`     | No       | —                                                                     | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`.  |
 | `MODEL`        | No       | —                                                                     | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`).       |
 | `API_KEY`      | No       | —                                                                     | API key for the configured AI provider.                          |
@@ -146,7 +147,7 @@ docker run -d \
   --name feed-me-maybe \
   -p 3000:3000 \
   -e APP_PASSWORD=your-strong-password \
-  -v /path/on/host/data:/data \
+  -v /path/on/host/data:/app/data \
   feed-me-maybe
 ```
 
@@ -154,11 +155,11 @@ This makes the database file directly accessible on the host filesystem for easi
 
 ### Database File Location
 
-| Deployment            | Database Path                             |
-| --------------------- | ----------------------------------------- |
-| Local dev             | `./data/feed-me-maybe.db`                 |
-| Docker (named volume) | `/data/feed-me-maybe.db` inside container |
-| Docker (bind mount)   | `/path/on/host/data/feed-me-maybe.db`     |
+| Deployment            | Database Path                                 |
+| --------------------- | --------------------------------------------- |
+| Local dev             | `./data/feed-me-maybe.db`                     |
+| Docker (named volume) | `/app/data/feed-me-maybe.db` inside container |
+| Docker (bind mount)   | `/path/on/host/data/feed-me-maybe.db`         |
 
 ## Health Check
 
@@ -192,11 +193,8 @@ services:
     environment:
       - NODE_ENV=production
       - APP_PASSWORD=${APP_PASSWORD}
-      - DATABASE_URL=/data/feed-me-maybe.db
-      - HOST=0.0.0.0
-      - PORT=3000
     volumes:
-      - feed-me-maybe-data:/data
+      - feed-me-maybe-data:/app/data
     restart: unless-stopped
     healthcheck:
       test:
