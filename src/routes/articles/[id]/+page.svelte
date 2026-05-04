@@ -2,6 +2,7 @@
   import { fly, fade } from 'svelte/transition';
   import { addToast } from '$lib/stores/toast.svelte';
   import { page } from '$app/stores';
+  import RedditComments from '$lib/components/RedditComments.svelte';
   type ArticleData = {
     id: string;
     url: string;
@@ -43,8 +44,16 @@
 
   const isEmbeddedMode = $derived(mode === 'iframe' || mode === 'proxy');
   const isReaderMode = $derived(mode === 'app' || mode === 'archive');
+  const isRedditPost = $derived(
+    Boolean(
+      article.url?.includes('reddit.com') &&
+      article.url?.includes('/comments/'),
+    ),
+  );
   const sourceHref = $derived(
-    mode === 'archive' ? `https://archive.is/${encodeURIComponent(article.url)}` : article.url
+    mode === 'archive'
+      ? `https://archive.is/${encodeURIComponent(article.url)}`
+      : article.url,
   );
 
   // Prevent main scroll when in iframe/proxy mode
@@ -393,6 +402,10 @@
             </p>
           {/if}
         </div>
+
+        {#if isRedditPost}
+          <RedditComments permalink={article.url} />
+        {/if}
       </div>
     </article>
   {/if}
@@ -497,7 +510,9 @@
       target="_blank"
       rel="noopener noreferrer"
       class="action-btn h-9 px-3 rounded-full no-underline hover:!text-primary-300"
-      title={mode === 'archive' ? 'Open Archived Source' : 'Open Original Source'}
+      title={mode === 'archive'
+        ? 'Open Archived Source'
+        : 'Open Original Source'}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"

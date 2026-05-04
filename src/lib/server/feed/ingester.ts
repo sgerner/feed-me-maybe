@@ -7,6 +7,7 @@ import {
 } from '$lib/server/sources/reddit';
 import { applyPreferenceModelToArticle } from '$lib/server/preferences';
 import { processArticle } from '$lib/server/ai/processor';
+import { dispatchWebhookEvent } from '$lib/server/webhooks';
 import crypto from 'node:crypto';
 
 interface IngestOptions {
@@ -217,6 +218,19 @@ export async function ingestFeed(
         Date.now(),
       );
       applyPreferenceModelToArticle(articleId);
+
+      // Trigger webhook for new article
+      const newArticle = db
+        .prepare('SELECT * FROM articles WHERE id = ?')
+        .get(articleId) as any;
+      if (newArticle) {
+        dispatchWebhookEvent({
+          type: 'article.ingested',
+          timestamp: Date.now(),
+          payload: { article: newArticle },
+        });
+      }
+
       newArticleIds.push(articleId);
       articlesNew++;
     }

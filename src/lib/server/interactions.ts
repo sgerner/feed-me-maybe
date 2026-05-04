@@ -4,6 +4,7 @@ import {
   getPreferenceStateForArticle,
   updatePreferenceMemoryFromInteraction,
 } from '$lib/server/preferences';
+import { dispatchWebhookEvent } from '$lib/server/webhooks';
 
 export type InteractionType =
   | 'read'
@@ -29,9 +30,21 @@ export function recordInteraction(
 
   // Apply side effects to article
   switch (type) {
-    case 'save':
+    case 'save': {
       db.prepare('UPDATE articles SET saved = 1 WHERE id = ?').run(articleId);
+      // Trigger webhook
+      const article = db
+        .prepare('SELECT * FROM articles WHERE id = ?')
+        .get(articleId) as any;
+      if (article) {
+        dispatchWebhookEvent({
+          type: 'article.saved',
+          timestamp: now,
+          payload: { article },
+        });
+      }
       break;
+    }
     case 'unsave':
       db.prepare('UPDATE articles SET saved = 0 WHERE id = ?').run(articleId);
       break;
@@ -41,11 +54,23 @@ export function recordInteraction(
     case 'unhide':
       db.prepare('UPDATE articles SET hidden = 0 WHERE id = ?').run(articleId);
       break;
-    case 'thumbs_up':
+    case 'thumbs_up': {
       db.prepare(
         'UPDATE articles SET thumbs_up = 1, thumbs_down = 0 WHERE id = ?',
       ).run(articleId);
+      // Trigger webhook
+      const article = db
+        .prepare('SELECT * FROM articles WHERE id = ?')
+        .get(articleId) as any;
+      if (article) {
+        dispatchWebhookEvent({
+          type: 'article.thumbs_up',
+          timestamp: now,
+          payload: { article },
+        });
+      }
       break;
+    }
     case 'thumbs_down':
       db.prepare(
         'UPDATE articles SET thumbs_up = 0, thumbs_down = 1 WHERE id = ?',
@@ -54,6 +79,20 @@ export function recordInteraction(
     case 'open':
       // Open implies read
       db.prepare('UPDATE articles SET read = 1 WHERE id = ?').run(articleId);
+
+      // Trigger webhook for read (via open)
+      {
+        const article = db
+          .prepare('SELECT * FROM articles WHERE id = ?')
+          .get(articleId) as any;
+        if (article) {
+          dispatchWebhookEvent({
+            type: 'article.read',
+            timestamp: now,
+            payload: { article },
+          });
+        }
+      }
 
       // Handle "Hide on Open" global setting
       {
@@ -71,9 +110,21 @@ export function recordInteraction(
         }
         break;
       }
-    case 'read':
+    case 'read': {
       db.prepare('UPDATE articles SET read = 1 WHERE id = ?').run(articleId);
+      // Trigger webhook
+      const article = db
+        .prepare('SELECT * FROM articles WHERE id = ?')
+        .get(articleId) as any;
+      if (article) {
+        dispatchWebhookEvent({
+          type: 'article.read',
+          timestamp: now,
+          payload: { article },
+        });
+      }
       break;
+    }
   }
 
   updatePreferenceMemoryFromInteraction(articleId, type);

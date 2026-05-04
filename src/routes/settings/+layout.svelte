@@ -27,6 +27,12 @@
       >Memory</a
     >
     <a
+      href="/settings/webhooks"
+      class="settings-tab"
+      class:settings-tab-active={$page.url.pathname === '/settings/webhooks'}
+      >Webhooks</a
+    >
+    <a
       href="/settings/status"
       class="settings-tab"
       class:settings-tab-active={$page.url.pathname === '/settings/status'}

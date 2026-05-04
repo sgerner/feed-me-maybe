@@ -168,3 +168,15 @@ export const userPreferenceMemory = sqliteTable('user_preference_memory', {
   explanation: text('explanation').default(''),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });
+
+// ── Webhooks ──
+export const webhooks = sqliteTable('webhooks', {
+  id: text('id').primaryKey(),
+  url: text('url').notNull(),
+  name: text('name').notNull(),
+  secret: text('secret'), // signing secret
+  events: text('events').notNull().default('[]'), // JSON array of event types
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+});

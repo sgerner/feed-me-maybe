@@ -5,8 +5,9 @@ A self-hosted, AI-powered RSS reader built with SvelteKit, SQLite, and modern we
 ## Features
 
 - **RSS/Atom Feed Ingestion** — Add and manage RSS/Atom feeds with automatic background polling every 15 minutes
-- **Article Ranking** — Heuristic scoring based on user interactions (read, save, hide, thumbs up/down)
+- **Heuristic Scoring** — Articles are ranked based on user interactions (read, save, hide, thumbs up/down)
 - **AI-Powered Analysis** — Optional OpenAI-compatible AI provider integration for article classification, relevance scoring, and summarization
+- **Webhooks** — Register external URLs to receive real-time notifications when articles are saved, enabling integrations with tools like OpenCCLaw or custom research pipelines
 - **Progressive Web App** — Installable on mobile/desktop with offline support via service worker
 - **Single-Process Architecture** — SQLite database with WAL mode, no external services required
 - **Password-Gated Auth** — Simple single-user authentication with HttpOnly session cookies
@@ -37,6 +38,49 @@ npm run dev
 ```
 
 Open [http://localhost:5373](http://localhost:5373) in your browser. You'll be prompted to log in with the password you set in `.env`.
+
+## Webhooks
+
+Feed-Me-Maybe supports outbound webhooks to integrate with your favorite tools.
+
+### Available Events
+
+- `article.saved`: Triggered when you click the "Save" (bookmark) button on an article.
+- `article.ingested`: Triggered when a new article is discovered during a feed fetch.
+- `article.thumbs_up`: Triggered when you "Like" an article.
+- `article.read`: Triggered when an article is opened or explicitly marked as read.
+
+### Configuration
+
+Webhooks can be managed in the **Settings > Webhooks** tab. Each webhook requires:
+- **Name**: A label for your reference.
+- **URL**: The destination URL (must accept `POST` requests).
+- **Secret (Optional)**: If provided, Feed-Me-Maybe will sign the request using HMAC-SHA256.
+
+### Payload Schema
+
+```json
+{
+  "type": "article.saved",
+  "timestamp": 1714732800000,
+  "payload": {
+    "article": {
+      "id": "uuid",
+      "title": "Example Article",
+      "url": "https://example.com",
+      "author": "Jane Doe",
+      "content": "...",
+      "summary": "...",
+      "publishedAt": 1714732800000,
+      "feedId": "feed-uuid"
+    }
+  }
+}
+```
+
+### Security
+
+If a secret is configured, the `X-Feed-Me-Maybe-Signature` header will contain the signature in the format `sha256=HEX_DIGEST`.
 
 ## Docker Deployment
 
