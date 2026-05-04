@@ -30,7 +30,14 @@ const REDDIT_HOSTS = new Set([
 export function isRedditUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return REDDIT_HOSTS.has(parsed.hostname);
+    if (REDDIT_HOSTS.has(parsed.hostname)) return true;
+    
+    if (process.env.REDDIT_BASE_URL) {
+      const proxyUrl = new URL(process.env.REDDIT_BASE_URL);
+      if (parsed.hostname === proxyUrl.hostname) return true;
+    }
+    
+    return false;
   } catch {
     return false;
   }
