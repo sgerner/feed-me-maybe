@@ -60,6 +60,11 @@ describe('feed management', () => {
 
     const deleted = clearFeedArticles('feed-clear');
     const articles = db
+      .prepare('SELECT COUNT(*) as c FROM articles WHERE feed_id = ? AND hidden = 0')
+      .get('feed-clear') as {
+      c: number;
+    };
+    const totalArticles = db
       .prepare('SELECT COUNT(*) as c FROM articles WHERE feed_id = ?')
       .get('feed-clear') as {
       c: number;
@@ -78,8 +83,9 @@ describe('feed management', () => {
     };
 
     expect(deleted).toBe(1);
-    expect(articles.c).toBe(0);
-    expect(interactions.c).toBe(0);
+    expect(articles.c).toBe(0); // None are visible
+    expect(totalArticles.c).toBe(1); // Still in DB
+    expect(interactions.c).toBe(1); // Interactions preserved
     expect(pref.c).toBe(1);
   });
 });
