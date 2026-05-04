@@ -343,7 +343,7 @@
 
         <div
           id="article-{article.id}"
-          class="glass-card glass-card-hover group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px]md:min-h-[280px]"
+          class="glass-card glass-card-hover group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px] md:min-h-[280px]"
           style="touch-action: pan-y; transform: translateX({swipeOffsets[
             article.id
           ] || 0}px); transition: {activeSwipeId === article.id
@@ -362,17 +362,15 @@
               e.preventDefault();
               return;
             }
-            if (
-              !(
-                e.target instanceof HTMLButtonElement ||
-                (e.target as HTMLElement).closest('button')
-              )
-            ) {
-              openArticle(article);
+            if ((e.target as Element).closest('button')) {
+              return;
             }
+            openArticle(article);
           }}
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
+              if ((e.target as Element).closest('button')) return;
+              e.preventDefault();
               openArticle(article);
             }
           }}
