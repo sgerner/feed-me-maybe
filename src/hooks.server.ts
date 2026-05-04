@@ -5,9 +5,10 @@ import {
   getSessionCookieName,
 } from '$lib/server/auth/session';
 import { startPolling } from '$lib/server/poller';
-import type { Handle } from '@sveltejs/kit';
+import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
+import { recordAppError } from '$lib/server/logging';
 
 if (!building) {
   initializeDatabase();
@@ -115,4 +116,18 @@ export const handle: Handle = async ({ event, resolve }) => {
   }
 
   return resolve(event);
+};
+
+export const handleError: HandleServerError = ({ error, event, status, message }) => {
+  recordAppError({
+    source: 'handleError',
+    error,
+    details: { status, fallbackMessage: message },
+    path: event.url.pathname,
+    method: event.request.method,
+  });
+
+  return {
+    message,
+  };
 };

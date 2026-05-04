@@ -19,6 +19,9 @@ describe('isRedditUrl', () => {
   it('rejects non-Reddit URLs', () => {
     expect(isRedditUrl('https://example.com/rss')).toBe(false);
     expect(isRedditUrl('https://news.ycombinator.com')).toBe(false);
+    expect(
+      isRedditUrl('https://reddit-proxy.steven-619.workers.dev/r/codex'),
+    ).toBe(false);
     expect(isRedditUrl('not-a-url')).toBe(false);
   });
 });

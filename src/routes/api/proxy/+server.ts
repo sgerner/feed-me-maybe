@@ -1,5 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { buildProxiedUrl, getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { recordAppError } from '$lib/server/logging';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
   if (!locals.sessionId) {
@@ -12,7 +14,11 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   }
 
   try {
-    const response = await fetch(targetUrl, {
+    const fetchUrl = buildProxiedUrl(
+      targetUrl,
+      getConfiguredProxyBaseUrl(),
+    );
+    const response = await fetch(fetchUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -34,6 +40,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     });
 
     if (!response.ok) {
+      recordAppError({
+        source: 'api.proxy',
+        error: new Error(`Proxy access denied (${response.status})`),
+        details: {
+          targetUrl,
+          fetchUrl,
+        },
+        path: '/api/proxy',
+        method: 'GET',
+      });
       return new Response(
         `<html><body style="background:#0f172a;color:#94a3b8;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:20px;">
           <h2 style="color:#f8fafc;">Proxy Access Denied (${response.status})</h2>
@@ -80,6 +96,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     });
   } catch (err) {
     console.error('Proxy error:', err);
+    recordAppError({
+      source: 'api.proxy',
+      error: err,
+      details: {
+        targetUrl,
+        fetchUrl: buildProxiedUrl(targetUrl, getConfiguredProxyBaseUrl()),
+      },
+      path: '/api/proxy',
+      method: 'GET',
+    });
     throw error(500, 'Failed to proxy request');
   }
 };

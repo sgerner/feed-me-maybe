@@ -53,7 +53,7 @@ describe('Phase 2 Task 2.1 - Database schema', () => {
     }
   });
 
-  test('Schema defines all 9 tables', () => {
+  test('Schema defines all 10 tables', () => {
     expect(db).not.toBeNull();
     // Query all tables in sqlite_master
     const tables = db!
@@ -67,6 +67,7 @@ describe('Phase 2 Task 2.1 - Database schema', () => {
       'articles',
       'article_ai_metadata',
       'feed_fetch_logs',
+      'app_error_logs',
       'jobs',
       'user_interactions',
       'user_preference_memory',

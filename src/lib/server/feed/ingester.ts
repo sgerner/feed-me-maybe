@@ -9,11 +9,12 @@ import { applyPreferenceModelToArticle } from '$lib/server/preferences';
 import { processArticle } from '$lib/server/ai/processor';
 import { dispatchWebhookEvent } from '$lib/server/webhooks';
 import { broadcast } from '$lib/server/realtime';
+import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { recordAppError } from '$lib/server/logging';
 import crypto from 'node:crypto';
 
 interface IngestOptions {
   feedId: string;
-  url: string;
 }
 
 interface IngestResult {
@@ -42,28 +43,55 @@ function generateArticleId(url: string, title: string, guid?: string): string {
     .substring(0, 32);
 }
 
+function parseSourceMetadata(value: string | null | undefined): {
+  originalUrl?: string;
+} {
+  if (!value) return {};
+  try {
+    return JSON.parse(value) as { originalUrl?: string };
+  } catch {
+    return {};
+  }
+}
+
 export async function ingestFeed(
   options: IngestOptions,
 ): Promise<IngestResult> {
   const db = getDb();
-  const { feedId, url } = options;
+  const { feedId } = options;
   const logId = crypto.randomUUID();
 
-  // Get current caching headers and state
   const feedRecord = db
     .prepare(
-      'SELECT etag, last_modified_header, fetch_count_since_change, custom_title FROM feeds WHERE id = ?',
+      'SELECT url, etag, last_modified_header, fetch_count_since_change, custom_title, source_type, source_metadata, use_proxy FROM feeds WHERE id = ?',
     )
     .get(feedId) as
     | {
+        url: string;
         etag: string | null;
         last_modified_header: string | null;
         fetch_count_since_change: number;
         custom_title: number;
+        source_type: string | null;
+        source_metadata: string | null;
+        use_proxy: number | null;
       }
     | undefined;
 
-  // Record fetch start
+  if (!feedRecord) {
+    recordAppError({
+      source: 'feed.ingester',
+      error: new Error(`Feed not found: ${feedId}`),
+      details: { feedId },
+    });
+    return {
+      success: false,
+      articlesFound: 0,
+      articlesNew: 0,
+      error: 'Feed not found',
+    };
+  }
+
   db.prepare(
     'INSERT INTO feed_fetch_logs (id, feed_id, status, started_at, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(logId, feedId, 'fetching', Date.now(), Date.now());
@@ -71,15 +99,40 @@ export async function ingestFeed(
     "UPDATE feeds SET last_fetch_status = 'fetching', last_fetch_at = ? WHERE id = ?",
   ).run(Date.now(), feedId);
 
-  // Fetch the feed with caching headers
+  const sourceType = feedRecord.source_type || 'rss';
+  const sourceMetadata = parseSourceMetadata(feedRecord.source_metadata);
+  const canonicalUrl =
+    sourceType === 'reddit'
+      ? sourceMetadata.originalUrl || feedRecord.url
+      : feedRecord.url;
+  const proxyBaseUrl = getConfiguredProxyBaseUrl();
+  const proxyEnabled =
+    Boolean(feedRecord.use_proxy && proxyBaseUrl) &&
+    (sourceType !== 'reddit' ||
+      Boolean(sourceMetadata.originalUrl) ||
+      isRedditUrl(feedRecord.url));
+
   let fetchResult;
-  if (isRedditUrl(url)) {
-    const redditSource = normalizeRedditUrl(url);
-    fetchResult = await fetchRedditSource(redditSource);
+  if (sourceType === 'reddit') {
+    const shouldNormalizeReddit = Boolean(
+      sourceMetadata.originalUrl || isRedditUrl(feedRecord.url),
+    );
+    const redditSource = shouldNormalizeReddit
+      ? normalizeRedditUrl(canonicalUrl)
+      : {
+          originalUrl: canonicalUrl,
+          normalizedUrl: canonicalUrl,
+          redditKind: 'unknown' as const,
+          fetchUrl: canonicalUrl,
+        };
+    fetchResult = await fetchRedditSource(redditSource, {
+      proxyBaseUrl: proxyEnabled ? proxyBaseUrl : undefined,
+    });
   } else {
-    fetchResult = await fetchFeed(url, {
-      etag: feedRecord?.etag || undefined,
-      lastModified: feedRecord?.last_modified_header || undefined,
+    fetchResult = await fetchFeed(canonicalUrl, {
+      etag: feedRecord.etag || undefined,
+      lastModified: feedRecord.last_modified_header || undefined,
+      proxyBaseUrl: feedRecord.use_proxy ? proxyBaseUrl : undefined,
     });
   }
 
@@ -100,6 +153,18 @@ export async function ingestFeed(
     db.prepare(
       "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, updated_at = ? WHERE id = ?",
     ).run(fetchResult.error || 'Unknown error', Date.now(), feedId);
+    recordAppError({
+      source: 'feed.ingester.fetch',
+      error: fetchResult.error || 'Unknown error',
+      details: {
+        feedId,
+        sourceType,
+        proxyEnabled,
+        proxyConfigured: Boolean(proxyBaseUrl),
+        canonicalUrl,
+        httpStatus: fetchResult.httpStatus ?? null,
+      },
+    });
     return {
       success: false,
       articlesFound: 0,
@@ -224,7 +289,7 @@ export async function ingestFeed(
       const newArticle = db
         .prepare('SELECT * FROM articles WHERE id = ?')
         .get(articleId) as any;
-      if (newArticle) {
+    if (newArticle) {
         dispatchWebhookEvent({
           type: 'article.ingested',
           timestamp: Date.now(),
@@ -275,7 +340,11 @@ export async function ingestFeed(
     const articlesToProcess = newArticleIds.slice(0, 5);
     for (const articleId of articlesToProcess) {
       processArticle(articleId).catch((err) =>
-        console.error(`[ingester] AI processing failed for ${articleId}:`, err),
+        recordAppError({
+          source: 'feed.ingester.ai',
+          error: err,
+          details: { articleId, feedId },
+        }),
       );
     }
 
@@ -291,13 +360,17 @@ export async function ingestFeed(
   } catch (err) {
     const errorMessage =
       err instanceof Error ? err.message : 'Transaction failed';
-    // Log the error
     db.prepare(
       'UPDATE feed_fetch_logs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?',
     ).run('error', errorMessage, Date.now(), logId);
     db.prepare(
       "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, updated_at = ? WHERE id = ?",
     ).run(errorMessage, Date.now(), feedId);
+    recordAppError({
+      source: 'feed.ingester.transaction',
+      error: err,
+      details: { feedId, sourceType },
+    });
     return {
       success: false,
       articlesFound: 0,

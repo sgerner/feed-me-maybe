@@ -1,43 +1,63 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { isRedditUrl, normalizeRedditUrl } from './reddit';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { buildProxyRequestUrl } from '$lib/proxy';
+import { normalizeRedditUrl, fetchRedditSource } from './reddit';
 
-describe('Reddit Proxy Support', () => {
-  const originalBaseUrl = process.env.REDDIT_BASE_URL;
-
-  beforeEach(() => {
-    process.env.REDDIT_BASE_URL = 'https://reddit-proxy.steven-619.workers.dev';
-  });
-
+describe('Proxy support', () => {
   afterEach(() => {
-    process.env.REDDIT_BASE_URL = originalBaseUrl;
+    vi.unstubAllGlobals();
   });
 
-  describe('isRedditUrl with Proxy', () => {
-    it('matches official Reddit hosts', () => {
-      expect(isRedditUrl('https://reddit.com/r/codex')).toBe(true);
-      expect(isRedditUrl('https://www.reddit.com/r/codex')).toBe(true);
-    });
-
-    it('matches the configured proxy host', () => {
-      expect(isRedditUrl('https://reddit-proxy.steven-619.workers.dev/r/codex')).toBe(true);
-      expect(isRedditUrl('https://reddit-proxy.steven-619.workers.dev/r/codex/new.json')).toBe(true);
-    });
-
-    it('rejects other hosts', () => {
-      expect(isRedditUrl('https://example.com/r/codex')).toBe(false);
-    });
+  it('builds a generic proxy URL for arbitrary targets', () => {
+    expect(
+      buildProxyRequestUrl(
+        'https://proxy.example.workers.dev',
+        'https://news.ycombinator.com/rss',
+      ),
+    ).toBe(
+      'https://proxy.example.workers.dev/?url=https%3A%2F%2Fnews.ycombinator.com%2Frss',
+    );
   });
 
-  describe('normalizeRedditUrl with Proxy', () => {
-    it('normalizes a Reddit URL using the proxy hostname', () => {
-      const r = normalizeRedditUrl('https://www.reddit.com/r/codex');
-      expect(r.fetchUrl).toBe('https://reddit-proxy.steven-619.workers.dev/r/codex/new.json?limit=25');
+  it('routes reddit fetches through the configured worker', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () =>
+        JSON.stringify({
+          data: {
+            children: [
+              {
+                data: {
+                  id: 'x1',
+                  title: 'Proxy post',
+                  permalink: '/r/test/comments/x1/proxy_post/',
+                  author: 'a',
+                  selftext: 'Body',
+                  is_self: true,
+                  created_utc: 1710000000,
+                  subreddit: 'test',
+                  preview: null,
+                  thumbnail: null,
+                  media_metadata: null,
+                },
+              },
+            ],
+          },
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const source = normalizeRedditUrl('https://reddit.com/r/test');
+    const result = await fetchRedditSource(source, {
+      proxyBaseUrl: 'https://proxy.example.workers.dev',
     });
 
-    it('normalizes a Proxy URL and preserves path', () => {
-      const r = normalizeRedditUrl('https://reddit-proxy.steven-619.workers.dev/r/codex/new.json');
-      expect(r.redditKind).toBe('subreddit_listing');
-      expect(r.fetchUrl).toBe('https://reddit-proxy.steven-619.workers.dev/r/codex/new.json?limit=25');
-    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://proxy.example.workers.dev/?url=https%3A%2F%2Fwww.reddit.com%2Fr%2Ftest%2Fnew.json%3Flimit%3D25',
+    );
+    expect(result.success).toBe(true);
+    expect(result.items.length).toBe(1);
   });
 });

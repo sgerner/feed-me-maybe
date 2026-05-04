@@ -60,6 +60,7 @@ The `docker-compose.yml` defines:
 | `HOST`         | No       | `0.0.0.0`                                                             | Network interface to bind the server to.                         |
 | `PORT`         | No       | `3000`                                                                | HTTP port to listen on.                                          |
 | `APP_SECRET`   | No       | —                                                                     | Encryption key for AI provider API keys. Generate with `openssl rand -hex 32`. Keep stable across deploys. |
+| `PROXY_BASE_URL` | No     | `https://feed-me-maybe-proxy.your-name.workers.dev`                   | Generic proxy worker URL used for feed fetching, Reddit comments, and other blocked requests. `REDDIT_BASE_URL` is still accepted as a legacy alias. |
 | `PROVIDER`     | No       | —                                                                     | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`.  |
 | `MODEL`        | No       | —                                                                     | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`).       |
 | `API_KEY`      | No       | —                                                                     | API key for the configured AI provider.                          |
@@ -69,6 +70,10 @@ The `docker-compose.yml` defines:
 ```bash
 openssl rand -hex 32
 ```
+
+## Generic Proxy Worker
+
+When feeds or article/comments pages need to bypass IP-based blocking, deploy the Cloudflare worker in `reddit-proxy/` and set `PROXY_BASE_URL` to the resulting URL. The worker accepts the target URL through `?url=...` and also keeps legacy Reddit path behavior for older deployments.
 
 ## Reverse Proxy Configuration
 

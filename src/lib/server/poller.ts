@@ -1,6 +1,7 @@
 import { getDb } from '$lib/server/db';
 import { building } from '$app/environment';
 import { ingestFeed } from '$lib/server/feed/ingester';
+import { recordAppError } from '$lib/server/logging';
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let isPolling = false;
@@ -54,11 +55,10 @@ async function pollFeeds(): Promise<void> {
     // Select enabled feeds
     const feeds = db
       .prepare(
-        'SELECT id, url, last_fetch_at, poll_interval_mins, fetch_count_since_change FROM feeds WHERE enabled = 1',
+        'SELECT id, last_fetch_at, poll_interval_mins, fetch_count_since_change FROM feeds WHERE enabled = 1',
       )
       .all() as {
       id: string;
-      url: string;
       last_fetch_at: number | null;
       poll_interval_mins: number;
       fetch_count_since_change: number;
@@ -93,9 +93,14 @@ async function pollFeeds(): Promise<void> {
           console.log(
             `[poller] Polling feed: ${feed.id} (Effective interval: ${effectiveIntervalMins}m)`,
           );
-          await ingestFeed({ feedId: feed.id, url: feed.url });
+          await ingestFeed({ feedId: feed.id });
         } catch (err) {
           console.error(`[poller] Error refreshing feed ${feed.id}:`, err);
+          recordAppError({
+            source: 'poller',
+            error: err,
+            details: { feedId: feed.id },
+          });
         }
       }
     }

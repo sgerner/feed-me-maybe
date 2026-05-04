@@ -38,10 +38,11 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 
 - `sessions` - Auth sessions with expiry
 - `app_settings` - Key-value settings (setup_complete, ai_enabled)
-- `feeds` - RSS/Atom feed sources
+- `feeds` - RSS/Atom feed sources with per-feed proxy toggle
 - `articles` - Normalized feed items with scoring
 - `article_ai_metadata` - Cached AI analysis results
 - `feed_fetch_logs` - Fetch job tracking
+- `app_error_logs` - Persisted application/server errors
 - `jobs` - Background job queue
 - `user_interactions` - Read/hide/save/thumbs events
 - `user_preference_memory` - Learned preferences (type/polarity/strength)
@@ -112,6 +113,7 @@ docker-compose up -d
 - `DATABASE_URL` (optional) - SQLite file path (default: `./data/feed-me-maybe.db`)
 - `HOST`, `PORT` (optional) - Server binding
 - `APP_SECRET` (optional) - Encryption key for API keys
+- `PROXY_BASE_URL` (optional) - Generic Cloudflare Worker proxy URL used for feed fetching and Reddit comments; `REDDIT_BASE_URL` remains a legacy alias
 
 ## Known Issues
 

@@ -1,4 +1,5 @@
 import type { FetchResult, FetchedItem } from '$lib/server/feed/fetcher';
+import { buildProxiedUrl } from '$lib/server/proxy';
 
 export type RedditKind =
   | 'subreddit'
@@ -30,14 +31,7 @@ const REDDIT_HOSTS = new Set([
 export function isRedditUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    if (REDDIT_HOSTS.has(parsed.hostname)) return true;
-    
-    if (process.env.REDDIT_BASE_URL) {
-      const proxyUrl = new URL(process.env.REDDIT_BASE_URL);
-      if (parsed.hostname === proxyUrl.hostname) return true;
-    }
-    
-    return false;
+    return REDDIT_HOSTS.has(parsed.hostname);
   } catch {
     return false;
   }
@@ -46,9 +40,7 @@ export function isRedditUrl(url: string): boolean {
 function ensureHttpsWww(input: string): URL {
   const url = new URL(input);
   url.protocol = 'https:';
-  url.hostname = process.env.REDDIT_BASE_URL 
-    ? new URL(process.env.REDDIT_BASE_URL).hostname 
-    : 'www.reddit.com';
+  url.hostname = 'www.reddit.com';
   return url;
 }
 
@@ -66,7 +58,6 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   const url = ensureHttpsWww(input);
   const path = stripJsonSuffix(url.pathname).replace(/\/$/, '');
   const parts = path.split('/').filter(Boolean);
-  const baseUrl = process.env.REDDIT_BASE_URL || 'https://www.reddit.com';
 
   let redditKind: RedditKind = 'unknown';
   let fetchUrl = '';
@@ -82,7 +73,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   ) {
     redditKind = 'comments';
     subreddit = parts[1];
-    fetchUrl = `${baseUrl}${path}.json`;
+    fetchUrl = `${url.origin}${path}.json`;
     return {
       originalUrl: input,
       normalizedUrl: url.href,
@@ -356,15 +347,17 @@ function parseRedditJson(json: any): { items: FetchedItem[]; title?: string } {
 
 export async function fetchRedditSource(
   source: RedditNormalizedSource,
+  options: { proxyBaseUrl?: string } = {},
 ): Promise<FetchResult> {
   const userAgent = process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
+  const fetchUrl = buildProxiedUrl(source.fetchUrl, options.proxyBaseUrl);
   const headers: Record<string, string> = {
     'User-Agent': userAgent,
     Accept: 'application/json',
   };
 
   try {
-    const response = await fetch(source.fetchUrl, {
+    const response = await fetch(fetchUrl, {
       headers,
       signal: AbortSignal.timeout(15000),
     });

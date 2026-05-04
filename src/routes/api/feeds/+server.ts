@@ -6,6 +6,8 @@ import {
   normalizeRedditUrl,
   fetchRedditSource,
 } from '$lib/server/sources/reddit';
+import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { recordAppError } from '$lib/server/logging';
 import crypto from 'node:crypto';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -16,7 +18,7 @@ export const GET: RequestHandler = async ({ locals }) => {
   const db = getDb();
   const rows = db
     .prepare(
-      'SELECT id, url, title, description, site_url, category, icon_url, enabled, error_count, last_fetch_status, last_fetch_at, last_error, source_type, source_metadata, created_at, updated_at FROM feeds ORDER BY title ASC',
+      'SELECT id, url, title, description, site_url, category, icon_url, enabled, use_proxy, error_count, last_fetch_status, last_fetch_at, last_error, source_type, source_metadata, created_at, updated_at FROM feeds ORDER BY title ASC',
     )
     .all();
 
@@ -51,16 +53,38 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const db = getDb();
   const now = new Date();
   const id = crypto.randomUUID();
+  const proxyBaseUrl = getConfiguredProxyBaseUrl();
 
   let sourceType = 'rss';
   let sourceMetadata = '{}';
   let normalizedUrl = url;
+  let useProxy = false;
 
   // Detect and validate Reddit URLs
   if (isRedditUrl(url)) {
     const redditSource = normalizeRedditUrl(url);
-    const validation = await fetchRedditSource(redditSource);
+    let validation = await fetchRedditSource(redditSource);
+    if (!validation.success && proxyBaseUrl) {
+      const proxiedValidation = await fetchRedditSource(redditSource, {
+        proxyBaseUrl,
+      });
+      if (proxiedValidation.success) {
+        validation = proxiedValidation;
+        useProxy = true;
+      }
+    }
     if (!validation.success) {
+      recordAppError({
+        source: 'api.feeds.create',
+        error: new Error(validation.error || 'Reddit validation failed'),
+        details: {
+          url,
+          proxyConfigured: Boolean(proxyBaseUrl),
+          proxyUsed: useProxy,
+        },
+        path: '/api/feeds',
+        method: 'POST',
+      });
       return json(
         {
           error:
@@ -91,7 +115,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   try {
     db.prepare(
-      'INSERT INTO feeds (id, url, title, category, source_type, source_metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO feeds (id, url, title, category, source_type, source_metadata, use_proxy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       normalizedUrl,
@@ -99,6 +123,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       category || '',
       sourceType,
       sourceMetadata,
+      useProxy ? 1 : 0,
       now.getTime(),
       now.getTime(),
     );

@@ -1,5 +1,6 @@
 import { getDb } from './db';
 import crypto from 'node:crypto';
+import { recordAppError } from './logging';
 
 export type WebhookEvent = {
   type: 'article.saved' | 'article.read' | 'article.thumbs_up' | 'article.ingested';
@@ -13,12 +14,17 @@ export async function dispatchWebhookEvent(event: WebhookEvent) {
 
   for (const hook of hooks) {
     const events = JSON.parse(hook.events);
-    if (events.includes(event.type)) {
-      // Dispatch asynchronously
-      sendWebhook(hook, event).catch((err) => {
-        console.error(`[webhook] Failed to send to ${hook.url}:`, err);
-      });
-    }
+      if (events.includes(event.type)) {
+        // Dispatch asynchronously
+        sendWebhook(hook, event).catch((err) => {
+          console.error(`[webhook] Failed to send to ${hook.url}:`, err);
+          recordAppError({
+            source: 'webhook.dispatch',
+            error: err,
+            details: { url: hook.url, event: event.type },
+          });
+        });
+      }
   }
 }
 

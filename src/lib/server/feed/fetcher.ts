@@ -1,4 +1,5 @@
 import Parser from 'rss-parser';
+import { buildProxiedUrl } from '$lib/server/proxy';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 
@@ -43,10 +44,9 @@ const parser: FeedParser = new Parser({
 
 export async function fetchFeed(
   url: string,
-  options: { etag?: string; lastModified?: string } = {},
+  options: { etag?: string; lastModified?: string; proxyBaseUrl?: string } = {},
 ): Promise<FetchResult> {
   try {
-    // Validate URL
     const parsedUrl = new URL(url);
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       return {
@@ -55,6 +55,8 @@ export async function fetchFeed(
         error: 'Only http/https URLs are supported',
       };
     }
+
+    const fetchUrl = buildProxiedUrl(parsedUrl.href, options.proxyBaseUrl);
 
     const headers: Record<string, string> = {
       'User-Agent': 'FeedMeMaybe/1.0 RSS Reader',
@@ -69,7 +71,7 @@ export async function fetchFeed(
       headers['If-Modified-Since'] = options.lastModified;
     }
 
-    const response = await fetch(url, {
+    const response = await fetch(fetchUrl, {
       headers,
       signal: AbortSignal.timeout(15000),
     });

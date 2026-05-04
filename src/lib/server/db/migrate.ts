@@ -54,6 +54,14 @@ export function initializeDatabase(): void {
   } catch {
     /* ignore */
   }
+
+  try {
+    db.prepare(
+      'ALTER TABLE feeds ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0',
+    ).run();
+  } catch {
+    /* ignore */
+  }
   db.prepare(
     "CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT '', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', author TEXT DEFAULT '', summary TEXT DEFAULT '', content TEXT DEFAULT '', image_url TEXT DEFAULT '', categories TEXT DEFAULT '', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
@@ -77,6 +85,9 @@ export function initializeDatabase(): void {
   ).run();
   db.prepare(
     "CREATE TABLE IF NOT EXISTS webhooks (id TEXT PRIMARY KEY, url TEXT NOT NULL, name TEXT NOT NULL, secret TEXT, events TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+  ).run();
+  db.prepare(
+    "CREATE TABLE IF NOT EXISTS app_error_logs (id TEXT PRIMARY KEY, source TEXT NOT NULL, message TEXT NOT NULL, details TEXT DEFAULT '{}', path TEXT DEFAULT '', method TEXT DEFAULT '', stack TEXT DEFAULT '', created_at INTEGER NOT NULL)",
   ).run();
 
   // Create indexes for common queries

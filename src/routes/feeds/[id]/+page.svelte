@@ -31,6 +31,7 @@
     category?: string | null;
     enabled?: boolean;
     open_mode?: string | null;
+    use_proxy?: boolean | number | null;
     source_type?: string | null;
     source_metadata?: string | null;
   };
@@ -41,6 +42,7 @@
       feed: FeedData;
       feedId: string;
       totalPages: number;
+      proxyAvailable?: boolean;
     };
   }>();
 
@@ -57,6 +59,7 @@
   let category = $state('');
   let enabled = $state(true);
   let openMode = $state('');
+  let useProxy = $state(false);
 
   let pullDistance = $state(0);
   let isPulling = $state(false);
@@ -85,6 +88,7 @@
     category = String(pageData.feed.category ?? '');
     enabled = !!pageData.feed.enabled;
     openMode = pageData.feed.open_mode ?? '';
+    useProxy = Boolean(pageData.feed.use_proxy);
   });
 
   async function syncFeed() {
@@ -118,6 +122,7 @@
           category,
           enabled,
           open_mode: openMode || null,
+          use_proxy: useProxy,
         }),
       });
       if (res.ok) {
@@ -129,6 +134,7 @@
           category = data.feed.category || '';
           enabled = !!data.feed.enabled;
           openMode = data.feed.open_mode ?? '';
+          useProxy = Boolean(data.feed.use_proxy);
         }
         setTimeout(() => {
           saveSuccess = false;
@@ -298,6 +304,13 @@
           >Disabled</span
         >
       {/if}
+      {#if feed.use_proxy}
+        <span
+          class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+          style="background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); color: var(--color-primary-300); border-radius: 2px;"
+          >Proxy</span
+        >
+      {/if}
     </div>
     <button
       class="btn preset-filled-surface-200-800 flex items-center gap-2"
@@ -348,6 +361,26 @@
           <input type="checkbox" bind:checked={enabled} class="checkbox" />
           <span class="text-sm">Feed enabled</span>
         </label>
+        <div class="flex flex-col gap-2 pt-5">
+          <label class="flex items-center gap-3">
+            <input
+              type="checkbox"
+              bind:checked={useProxy}
+              class="checkbox"
+              disabled={!pageData.proxyAvailable}
+            />
+            <span class="text-sm">Fetch through proxy</span>
+          </label>
+          {#if !pageData.proxyAvailable}
+            <p
+              class="text-xs"
+              style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+            >
+              Set <code>PROXY_BASE_URL</code> to enable proxy fetching for
+              this feed.
+            </p>
+          {/if}
+        </div>
       </div>
       <div class="mt-6 flex items-center justify-between">
         <div class="flex items-center gap-4">

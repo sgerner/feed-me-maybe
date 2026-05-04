@@ -177,7 +177,7 @@ CSRF protection to work correctly.
 | `HOST` | No | `0.0.0.0` | Server bind address |
 | `PORT` | No | `3000` | Server port |
 | `REDDIT_USER_AGENT` | No | `web:feed-me-maybe:v1.0 (by /u/sgerner)` | Custom User-Agent for Reddit requests; use this to bypass 403 Forbidden blocks |
-| `REDDIT_BASE_URL` | No | `https://www.reddit.com` | Alternative Reddit frontend/proxy (e.g., a Redlib instance or custom Cloudflare Worker) to bypass IP-range blocks |
+| `PROXY_BASE_URL` | No | `https://feed-me-maybe-proxy.your-name.workers.dev` | Generic proxy worker used for per-feed proxying, Reddit comments, and other blocked fetches. `REDDIT_BASE_URL` is still accepted as a legacy alias. |
 | `PROVIDER` | No | - | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq` |
 | `MODEL` | No | - | AI model name, for example `gpt-4o` or `claude-3-5-sonnet-20241022` |
 | `API_KEY` | No | - | AI provider API key |
@@ -189,9 +189,9 @@ CSRF protection to work correctly.
 - Set these as runtime environment variables. Do not rely on build args for them.
 - Set `ORIGIN` to your public URL when running behind a reverse proxy.
 
-## Reddit Proxy Deployment
+## Generic Proxy Worker
 
-Reddit often blocks data center IP ranges (AWS, DigitalOcean, etc.) with a 403 Forbidden error. If you experience this, you can deploy a private proxy using Cloudflare Workers.
+Some publishers, including Reddit, block data center IP ranges (AWS, DigitalOcean, etc.) with a 403 Forbidden error. If you experience this, you can deploy a private proxy using Cloudflare Workers and point `PROXY_BASE_URL` at it.
 
 ### Deploying with Wrangler
 
@@ -209,10 +209,14 @@ Reddit often blocks data center IP ranges (AWS, DigitalOcean, etc.) with a 403 F
     ```
 4.  Copy the resulting URL and set it in your `.env`:
     ```env
-    REDDIT_BASE_URL="https://reddit-proxy.your-name.workers.dev"
+    PROXY_BASE_URL="https://feed-me-maybe-proxy.your-name.workers.dev"
     ```
 
-The provided proxy script automatically strips Cloudflare headers and mimics a modern browser to bypass Reddit's anti-bot filters.
+The worker accepts a target URL through `?url=...` and forwards requests with a browser-like user agent. It also keeps the older path-based Reddit proxy behavior for backward compatibility.
+
+Use the per-feed "Fetch through proxy" toggle on a feed's settings page to route that feed through the worker. If the proxy worker is not configured, the toggle is disabled.
+
+Recent server and fetch failures are stored in the SQLite database and shown on the Settings > System page so you can inspect failures after the fact.
 
 ## Project Structure
 

@@ -39,7 +39,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   // Build update SET clause dynamically
-  const allowedFields = ['title', 'category', 'enabled', 'open_mode'];
+  const allowedFields = ['title', 'category', 'enabled', 'open_mode', 'use_proxy'];
   const updates: string[] = [];
   const values: (string | number | boolean | null)[] = [];
 
@@ -48,12 +48,16 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       if (field === 'enabled' && typeof body[field] !== 'boolean') {
         return json({ error: 'enabled must be a boolean' }, { status: 400 });
       }
+      if (field === 'use_proxy' && typeof body[field] !== 'boolean') {
+        return json({ error: 'use_proxy must be a boolean' }, { status: 400 });
+      }
       if (field === 'open_mode' && body[field] !== null && !isArticleOpenMode(body[field])) {
         return json({ error: 'Invalid open mode' }, { status: 400 });
       }
       updates.push(`${field === 'open_mode' ? 'open_mode' : field} = ?`);
       let val: string | number | boolean | null = body[field] as any;
       if (field === 'enabled') val = body[field] ? 1 : 0;
+      if (field === 'use_proxy') val = body[field] ? 1 : 0;
       if (field === 'open_mode' && val === '') val = null;
       values.push(val);
 

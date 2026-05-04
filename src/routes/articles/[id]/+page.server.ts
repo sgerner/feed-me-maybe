@@ -3,6 +3,7 @@ import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
 import { recordInteraction } from '$lib/server/interactions';
 import { fetchArchivedArticle } from '$lib/server/archive';
+import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
 
 export const load: PageServerLoad = async ({ params, locals, url }) => {
   if (!locals.sessionId) {
@@ -14,6 +15,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     .prepare(
       `
     SELECT a.*, f.title as feed_title, f.url as feed_url, f.site_url as feed_site_url,
+           f.use_proxy as feed_use_proxy,
            am.summary as ai_summary, am.topics, am.content_type, am.explanation
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
@@ -43,6 +45,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     }
   }
 
-  return { article };
+  return {
+    article,
+    proxyBaseUrl: getConfiguredProxyBaseUrl() || null,
+  };
 };
-

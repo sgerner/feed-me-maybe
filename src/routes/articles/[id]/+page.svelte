@@ -14,6 +14,7 @@
     feed_title?: string | null;
     feed_url?: string | null;
     feed_site_url?: string | null;
+    feed_use_proxy?: boolean | number | null;
     published_at?: number | null;
     ai_summary?: string | null;
     thumbs_up?: boolean | null;
@@ -23,7 +24,9 @@
     archive_url?: string | null;
   };
 
-  let { data: pageData } = $props<{ data: { article: ArticleData } }>();
+  let { data: pageData } = $props<{
+    data: { article: ArticleData; proxyBaseUrl?: string | null };
+  }>();
 
   const article = $derived(pageData.article);
   const mode = $derived($page.url.searchParams.get('mode') || 'app');
@@ -404,7 +407,11 @@
         </div>
 
         {#if isRedditPost}
-          <RedditComments permalink={article.url} />
+          <RedditComments
+            permalink={article.url}
+            useProxy={Boolean(article.feed_use_proxy)}
+            proxyBaseUrl={pageData.proxyBaseUrl}
+          />
         {/if}
       </div>
     </article>

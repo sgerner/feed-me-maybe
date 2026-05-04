@@ -1,17 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { buildProxyRequestUrl } from '$lib/proxy';
+  import {
+    normalizeRedditCommentsUrl,
+    parseRedditCommentsResponse,
+    type RedditComment,
+  } from '$lib/reddit-comments';
 
-  type Comment = {
-    id: string;
-    author: string;
-    body: string;
-    score: number;
-    createdAt: string;
-    depth: number;
-    replies: Comment[];
-  };
+  type Comment = RedditComment;
 
-  let { permalink }: { permalink: string } = $props();
+  let {
+    permalink,
+    useProxy = false,
+    proxyBaseUrl = null,
+  }: {
+    permalink: string;
+    useProxy?: boolean;
+    proxyBaseUrl?: string | null;
+  } = $props();
 
   let comments = $state<Comment[]>([]);
   let loading = $state(true);
@@ -42,22 +48,60 @@
     return `${Math.floor(diff / 86400)}d`;
   }
 
+  async function fetchComments(endpointUrl: string): Promise<Comment[]> {
+    const res = await fetch(endpointUrl, {
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Error ${res.status}`);
+    }
+
+    const data = await res.json();
+    return parseRedditCommentsResponse(data);
+  }
+
+  async function fetchCommentsFromServer(): Promise<Comment[]> {
+    const res = await fetch('/api/reddit/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: permalink, useProxy }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Error ${res.status}`);
+    }
+
+    const data = await res.json();
+    return data.comments || [];
+  }
+
   onMount(async () => {
     try {
-      const res = await fetch('/api/reddit/comments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: permalink }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        error = d.error || `Error ${res.status}`;
-        return;
+      const targetUrl = normalizeRedditCommentsUrl(permalink);
+      const endpoints: string[] = [];
+
+      if (useProxy && proxyBaseUrl) {
+        endpoints.push(buildProxyRequestUrl(proxyBaseUrl, targetUrl));
       }
-      const d = await res.json();
-      comments = d.comments || [];
-    } catch (e: any) {
-      error = e.message || 'Failed to load comments';
+      endpoints.push(targetUrl);
+
+      for (const endpointUrl of endpoints) {
+        try {
+          comments = await fetchComments(endpointUrl);
+          error = '';
+          return;
+        } catch (err: unknown) {
+          error = err instanceof Error ? err.message : 'Failed to load comments';
+        }
+      }
+
+      comments = await fetchCommentsFromServer();
+      error = '';
+    } catch (err: unknown) {
+      error = err instanceof Error ? err.message : 'Failed to load comments';
     } finally {
       loading = false;
     }

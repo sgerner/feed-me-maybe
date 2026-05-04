@@ -1,10 +1,19 @@
 <script lang="ts">
-  import { fly, fade } from 'svelte/transition';
+  import { fly } from 'svelte/transition';
   type RecentJob = {
     status: string;
     created_at: number;
     articles_found?: number | null;
     articles_new?: number | null;
+  };
+
+  type RecentError = {
+    source: string;
+    message: string;
+    path?: string | null;
+    method?: string | null;
+    details?: Record<string, unknown>;
+    created_at: number;
   };
 
   let { data: pageData } = $props<{
@@ -13,6 +22,7 @@
       articleCount?: number;
       jobCount?: number;
       recentJobs?: RecentJob[];
+      recentErrors?: RecentError[];
     };
   }>();
 </script>
@@ -117,6 +127,69 @@
           style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
           >{job.articles_found || 0} found, {job.articles_new || 0} new</span
         >
+      </div>
+    {/each}
+  </div>
+{/if}
+
+{#if (pageData.recentErrors ?? []).length > 0}
+  <h3
+    class="mb-3 mt-8 flex items-center gap-2 text-sm font-semibold"
+    style="color: var(--color-surface-100);"
+  >
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      ><path
+        d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"
+      /></svg
+    >
+    Recent Errors
+  </h3>
+  <div class="space-y-2">
+    {#each pageData.recentErrors ?? [] as errorRow, i}
+      <div
+        class="glass-card flex flex-col gap-2 p-3 text-xs"
+        in:fly={{ y: 8, duration: 250, delay: Math.min(i * 40, 300) }}
+      >
+        <div class="flex flex-wrap items-center gap-2">
+          <span
+            class="inline-flex items-center gap-1 px-2 py-0.5 font-medium"
+            style="background: color-mix(in oklch, var(--color-error-500) 12%, transparent); color: var(--color-error-300); border-radius: 2px;"
+          >
+            {errorRow.source}
+          </span>
+          <span style="color: var(--color-surface-100);"
+            >{new Date(errorRow.created_at).toLocaleString()}</span
+          >
+          {#if errorRow.method}
+            <span
+              style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
+              >{errorRow.method}</span
+            >
+          {/if}
+          {#if errorRow.path}
+            <span
+              style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
+              >{errorRow.path}</span
+            >
+          {/if}
+        </div>
+        <div style="color: color-mix(in oklch, var(--color-surface-100) 82%, transparent);">
+          {errorRow.message}
+        </div>
+        {#if errorRow.details && Object.keys(errorRow.details).length > 0}
+          <pre
+            class="overflow-x-auto rounded-sm p-2 text-[11px]"
+            style="background: color-mix(in oklch, var(--color-surface-800) 30%, transparent); color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);"
+          >{JSON.stringify(errorRow.details, null, 2)}</pre
+          >
+        {/if}
       </div>
     {/each}
   </div>

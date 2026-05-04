@@ -34,6 +34,9 @@ export const feeds = sqliteTable('feeds', {
   category: text('category').default(''),
   iconUrl: text('icon_url').default(''),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  useProxy: integer('use_proxy', { mode: 'boolean' })
+    .notNull()
+    .default(false),
   errorCount: integer('error_count').notNull().default(0),
   lastFetchStatus: text('last_fetch_status').default('never'),
   lastFetchAt: integer('last_fetch_at', { mode: 'timestamp' }),
@@ -179,4 +182,15 @@ export const webhooks = sqliteTable('webhooks', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+});
+
+export const appErrorLogs = sqliteTable('app_error_logs', {
+  id: text('id').primaryKey(),
+  source: text('source').notNull(),
+  message: text('message').notNull(),
+  details: text('details').default('{}'),
+  path: text('path').default(''),
+  method: text('method').default(''),
+  stack: text('stack').default(''),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });

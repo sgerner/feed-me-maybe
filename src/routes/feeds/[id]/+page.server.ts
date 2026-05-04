@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
+import { hasConfiguredProxy } from '$lib/server/proxy';
 
 export const load: PageServerLoad = async ({ locals, params, url }) => {
   if (!locals.sessionId) {
@@ -53,5 +54,6 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     totalPages,
     totalArticles,
     feedId,
+    proxyAvailable: hasConfiguredProxy(),
   };
 };
