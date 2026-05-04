@@ -130,7 +130,7 @@
           placeholder="A secret key for HMAC-SHA256"
           class="input glass-input text-sm"
         />
-        <p class="mt-1 text-[10px] opacity-50">If provided, payloads will be signed with HMAC-SHA256 in the <code>X-Feed-Me-Maybe-Signature</code> header.</p>
+        <p class="mt-1 text-sm opacity-50">If provided, payloads will be signed with HMAC-SHA256 in the <code>X-Feed-Me-Maybe-Signature</code> header.</p>
       </label>
 
       <div class="space-y-2">
@@ -212,13 +212,13 @@
               <div class="flex items-center gap-2">
                 <span class="text-sm font-bold text-white">{hook.name}</span>
                 {#if !hook.enabled}
-                  <span class="badge variant-soft-surface text-[10px] uppercase">Disabled</span>
+                  <span class="badge variant-soft-surface text-sm uppercase">Disabled</span>
                 {/if}
               </div>
-              <code class="truncate text-[10px] opacity-40" title={hook.url}>{hook.url}</code>
+              <code class="truncate text-sm opacity-40" title={hook.url}>{hook.url}</code>
               <div class="mt-1 flex gap-2">
                 {#each hook.events as event}
-                  <span class="badge variant-soft-primary text-[9px]">{event}</span>
+                  <span class="badge variant-soft-primary text-sm">{event}</span>
                 {/each}
               </div>
             </div>
@@ -267,8 +267,8 @@
       
       <div class="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
         <div class="space-y-2">
-          <h4 class="text-[10px] font-bold uppercase tracking-wider opacity-40">Available Events</h4>
-          <ul class="m-0 list-none p-0 text-[10px] space-y-1 opacity-70">
+          <h4 class="text-sm font-bold uppercase tracking-wider opacity-40">Available Events</h4>
+          <ul class="m-0 list-none p-0 text-sm space-y-1 opacity-70">
             <li><code>article.saved</code> — When an article is bookmarked</li>
             <li><code>article.ingested</code> — When a new article is discovered</li>
             <li><code>article.thumbs_up</code> — When an article is liked</li>
@@ -276,8 +276,8 @@
           </ul>
         </div>
         <div class="space-y-2">
-          <h4 class="text-[10px] font-bold uppercase tracking-wider opacity-40">Request Headers</h4>
-          <ul class="m-0 list-none p-0 text-[10px] space-y-1 opacity-70">
+          <h4 class="text-sm font-bold uppercase tracking-wider opacity-40">Request Headers</h4>
+          <ul class="m-0 list-none p-0 text-sm space-y-1 opacity-70">
             <li><code>X-Feed-Me-Maybe-Event</code> — Event Type</li>
             <li><code>X-Feed-Me-Maybe-Delivery</code> — UUID</li>
             <li><code>X-Feed-Me-Maybe-Signature</code> — HMAC-SHA256</li>
@@ -286,8 +286,8 @@
       </div>
 
       <div class="mt-6 space-y-2">
-        <h4 class="text-[10px] font-bold uppercase tracking-wider opacity-40">Payload Example</h4>
-        <pre class="m-0 overflow-auto rounded bg-black/30 p-2 text-[9px] text-primary-200"><code>{`{
+        <h4 class="text-sm font-bold uppercase tracking-wider opacity-40">Payload Example</h4>
+        <pre class="m-0 overflow-auto rounded bg-black/30 p-2 text-sm text-primary-200"><code>{`{
   "type": "article.saved",
   "payload": {
     "article": {
