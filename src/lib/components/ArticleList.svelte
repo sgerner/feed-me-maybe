@@ -5,7 +5,7 @@
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
-  import { createWindowVirtualizer } from '@tanstack/svelte-virtual';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
 
   type Article = {
     id: string;
@@ -65,12 +65,14 @@
   let useVirtualization = $state(false);
   let virtualScrollMargin = $state(0);
   let listContainer = $state<HTMLDivElement | null>(null);
+  let scrollElement = $state<HTMLElement | null>(null);
 
-  const rowVirtualizer = createWindowVirtualizer<HTMLDivElement>({
+  const rowVirtualizer = createVirtualizer<HTMLElement, HTMLDivElement>({
     count: 0,
     estimateSize: () => 280,
     overscan: 6,
     scrollMargin: 0,
+    getScrollElement: () => scrollElement,
   });
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
@@ -207,6 +209,7 @@
 
     function updateVirtualizerLayout() {
       virtualScrollMargin = listContainer?.offsetTop || 0;
+      scrollElement = listContainer?.closest('main') || null;
       useVirtualization = window.matchMedia('(max-width: 1279px)').matches;
     }
 
@@ -238,6 +241,7 @@
     if (typeof window === 'undefined') return;
     const count = useVirtualization ? articles.length : 0;
     const scrollMargin = virtualScrollMargin;
+    const currentScrollElement = scrollElement;
     const estimateSize = window.matchMedia('(max-width: 767px)').matches
       ? 238
       : 296;
@@ -248,6 +252,7 @@
         scrollMargin,
         estimateSize: () => estimateSize,
         overscan: 6,
+        getScrollElement: () => currentScrollElement,
       });
     });
   });
