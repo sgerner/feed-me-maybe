@@ -5,6 +5,7 @@
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
+  import { createWindowVirtualizer } from '@tanstack/svelte-virtual';
 
   type Article = {
     id: string;
@@ -61,8 +62,35 @@
   let loadingMore = $state(false);
   let hasMore = $state(false);
   let disableEntryTransitions = $state(false);
+  let useVirtualization = $state(false);
+  let virtualScrollMargin = $state(0);
+  let listContainer = $state<HTMLDivElement | null>(null);
+
+  const rowVirtualizer = createWindowVirtualizer<HTMLDivElement>({
+    count: 0,
+    estimateSize: () => 280,
+    overscan: 6,
+    scrollMargin: 0,
+  });
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
+  let virtualItems = $derived.by(() =>
+    useVirtualization ? $rowVirtualizer.getVirtualItems() : [],
+  );
+  let virtualIndexes = $derived.by(() =>
+    useVirtualization
+      ? virtualItems.map((item) => item.index)
+      : articles.map((_article: Article, index: number) => index),
+  );
+  let virtualTopSpacer = $derived.by(() => {
+    if (!useVirtualization || virtualItems.length === 0) return 0;
+    return Math.max((virtualItems[0]?.start || 0) - virtualScrollMargin, 0);
+  });
+  let virtualBottomSpacer = $derived.by(() => {
+    if (!useVirtualization || virtualItems.length === 0) return 0;
+    const lastItem = virtualItems[virtualItems.length - 1];
+    return Math.max($rowVirtualizer.getTotalSize() - (lastItem?.end || 0), 0);
+  });
   let focusedIndex = $state(0);
 
   $effect(() => {
@@ -175,8 +203,17 @@
       window.matchMedia('(max-width: 1024px)').matches ||
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     disableEntryTransitions = mobileOrReducedMotion;
+    useVirtualization = window.matchMedia('(max-width: 1279px)').matches;
+
+    function updateVirtualizerLayout() {
+      virtualScrollMargin = listContainer?.offsetTop || 0;
+      useVirtualization = window.matchMedia('(max-width: 1279px)').matches;
+    }
+
+    updateVirtualizerLayout();
 
     document.addEventListener('keydown', handleKeydown);
+    window.addEventListener('resize', updateVirtualizerLayout);
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -192,8 +229,19 @@
 
     return () => {
       document.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('resize', updateVirtualizerLayout);
       observer.disconnect();
     };
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    $rowVirtualizer.setOptions({
+      count: useVirtualization ? articles.length : 0,
+      scrollMargin: virtualScrollMargin,
+      estimateSize: () => (window.matchMedia('(max-width: 767px)').matches ? 238 : 296),
+      overscan: 6,
+    });
   });
 
   let touchStartX = 0;
@@ -326,8 +374,13 @@
     </a>
   </div>
 {:else}
-  <div class="grid grid-cols-1 md:gap-4 xl:grid-cols-2">
-    {#each articles as article, i (article.id)}
+  <div bind:this={listContainer} class="grid grid-cols-1 md:gap-4 xl:grid-cols-2">
+    {#if useVirtualization}
+      <div style="height: {virtualTopSpacer}px;" aria-hidden="true"></div>
+    {/if}
+    {#each virtualIndexes as i (articles[i]?.id || `virtual-${i}`)}
+      {@const article = articles[i]}
+      {#if article}
       <div class="relative overflow-hidden rounded-sm">
         <!-- Swipe Action Indicators -->
         <div
@@ -582,7 +635,11 @@
           </div>
         </div>
       </div>
+      {/if}
     {/each}
+    {#if useVirtualization}
+      <div style="height: {virtualBottomSpacer}px;" aria-hidden="true"></div>
+    {/if}
   </div>
 
   <!-- Infinite Scroll Sentinel -->
