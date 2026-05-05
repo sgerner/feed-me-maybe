@@ -60,6 +60,7 @@
   let page = $state(1);
   let loadingMore = $state(false);
   let hasMore = $state(false);
+  let disableEntryTransitions = $state(false);
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
@@ -169,6 +170,12 @@
   }
 
   onMount(() => {
+    const mobileOrReducedMotion =
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.matchMedia('(max-width: 1024px)').matches ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    disableEntryTransitions = mobileOrReducedMotion;
+
     document.addEventListener('keydown', handleKeydown);
 
     const observer = new IntersectionObserver(
@@ -194,13 +201,19 @@
   let lastSwipeTime = 0;
   let activeSwipeId = $state<string | null>(null);
   let swipeOffsets = $state<Record<string, number>>({});
+  let swipeDirection = $state<'none' | 'undecided' | 'horizontal' | 'vertical'>(
+    'none',
+  );
+
+  const SWIPE_INTENT_THRESHOLD = 10;
+  const SWIPE_DIRECTION_RATIO = 1.2;
 
   function handlePointerDown(e: PointerEvent, articleId: string) {
     if (!e.isPrimary) return;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     touchStartX = e.clientX;
     touchStartY = e.clientY;
     activeSwipeId = articleId;
+    swipeDirection = 'undecided';
     swipeOffsets[articleId] = 0;
   }
 
@@ -209,15 +222,37 @@
     const dx = e.clientX - touchStartX;
     const dy = e.clientY - touchStartY;
 
-    // Only track drag if horizontal movement is more prominent
-    if (Math.abs(dx) > Math.abs(dy) || swipeOffsets[articleId] !== 0) {
-      swipeOffsets[articleId] = dx * 0.8; // Added friction
+    if (swipeDirection === 'undecided') {
+      if (
+        Math.abs(dx) < SWIPE_INTENT_THRESHOLD &&
+        Math.abs(dy) < SWIPE_INTENT_THRESHOLD
+      ) {
+        return;
+      }
+
+      if (Math.abs(dx) > Math.abs(dy) * SWIPE_DIRECTION_RATIO) {
+        swipeDirection = 'horizontal';
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } else {
+        swipeDirection = 'vertical';
+        return;
+      }
+    }
+
+    if (swipeDirection !== 'horizontal') return;
+
+    const nextOffset = Math.max(-180, Math.min(180, dx * 0.8));
+    if (Math.abs((swipeOffsets[articleId] || 0) - nextOffset) > 0.5) {
+      e.preventDefault();
+      swipeOffsets[articleId] = nextOffset;
     }
   }
 
   function handlePointerUp(e: PointerEvent, articleId: string) {
     if (!e.isPrimary || activeSwipeId !== articleId) return;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    }
 
     const dx = e.clientX - touchStartX;
     const dy = e.clientY - touchStartY;
@@ -225,19 +260,21 @@
     touchStartY = 0;
     activeSwipeId = null;
 
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 60) {
+    if (swipeDirection === 'horizontal' && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 60) {
       lastSwipeTime = Date.now();
       if (dx < 0) interact(articleId, 'hide');
       else interact(articleId, 'save');
     }
 
+    swipeDirection = 'none';
     // Snap back
     swipeOffsets[articleId] = 0;
   }
 
-  function handlePointerCancel(e: PointerEvent, articleId: string) {
+  function handlePointerCancel(_e: PointerEvent, articleId: string) {
     if (activeSwipeId === articleId) {
       activeSwipeId = null;
+      swipeDirection = 'none';
       swipeOffsets[articleId] = 0;
     }
   }
@@ -344,7 +381,7 @@
 
         <div
           id="article-{article.id}"
-          class="glass-card glass-card-hover group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px] md:min-h-[280px]"
+          class="glass-card glass-card-hover article-card group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px] md:min-h-[280px]"
           style="touch-action: pan-y; transform: translateX({swipeOffsets[
             article.id
           ] || 0}px); transition: {activeSwipeId === article.id
@@ -353,7 +390,9 @@
           class:article-focus-ring={focusedIndex === i}
           role="link"
           tabindex="0"
-          in:fly={{ y: 16, duration: 350, delay: Math.min(i * 35, 400) }}
+          in:fly={disableEntryTransitions
+            ? { y: 0, duration: 0, delay: 0 }
+            : { y: 16, duration: 350, delay: Math.min(i * 35, 400) }}
           onpointerdown={(e) => handlePointerDown(e, article.id)}
           onpointermove={(e) => handlePointerMove(e, article.id)}
           onpointerup={(e) => handlePointerUp(e, article.id)}
@@ -383,8 +422,7 @@
               <img
                 src={article.image_url}
                 alt=""
-                class="h-full w-full object-cover opacity-80 transition-all duration-700 group-hover:scale-110 group-hover:opacity-100"
-                style="filter: brightness(0.6);"
+                class="article-card-image h-full w-full object-cover opacity-80 transition-all duration-700"
                 loading="lazy"
               />
               <div
@@ -422,7 +460,7 @@
             </div>
 
             <h3
-              class="text-xl font-bold leading-tight transition-colors group-hover:text-primary-400"
+              class="article-card-title text-xl font-bold leading-tight transition-colors"
               style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
             >
               {article.title}
@@ -566,4 +604,3 @@
     {/if}
   </div>
 {/if}
-
