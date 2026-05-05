@@ -47,7 +47,6 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "@tanstack/svelte-virtual": "^3.13.24",
     "better-sqlite3": "^12.9.0",
     "drizzle-orm": "^0.45.2",
     "linkedom": "^0.18.12",
