@@ -9,8 +9,6 @@ type ArticleContext = {
   summary: string;
   content: string;
   categories: string;
-  feed_id: string;
-  feed_url: string;
   ai_topics: string;
   ai_entities: string;
   ai_content_type: string;
@@ -131,16 +129,6 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
   const summary = ctx.summary || '';
   const content = ctx.content || '';
 
-  // Source signals are lower priority as they are user-curated
-  features.push({ type: 'source', label: `feed:${ctx.feed_id}`, weight: 0.15 });
-
-  try {
-    const domain = new URL(ctx.feed_url).hostname.replace(/^www\./, '');
-    features.push({ type: 'source', label: `domain:${domain}`, weight: 0.2 });
-  } catch {
-    // Ignore invalid feed URL.
-  }
-
   try {
     const categories = JSON.parse(ctx.categories || '[]') as string[];
     for (const c of categories.slice(0, 5)) {
@@ -229,12 +217,11 @@ function getArticleContext(articleId: string): ArticleContext | undefined {
   return db
     .prepare(
       `
-    SELECT a.id, a.title, a.summary, a.content, a.categories, a.feed_id, f.url as feed_url,
+    SELECT a.id, a.title, a.summary, a.content, a.categories,
            COALESCE(am.topics, '[]') as ai_topics,
            COALESCE(am.entities, '[]') as ai_entities,
            COALESCE(am.content_type, '') as ai_content_type
     FROM articles a
-    JOIN feeds f ON f.id = a.feed_id
     LEFT JOIN article_ai_metadata am ON am.article_id = a.id
     WHERE a.id = ?
   `,

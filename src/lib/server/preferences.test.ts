@@ -185,52 +185,5 @@ describe('preference learning model', () => {
     const state = getPreferenceStateForArticle('a-phrase-2');
     expect(state.adjustment).toBeGreaterThan(0);
   });
-
-  it('down-weights source signals', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const {
-      updatePreferenceMemoryFromInteraction,
-      getPreferenceStateForArticle,
-    } = await import('./preferences');
-    const db = getDb();
-    const now = Date.now();
-
-    const feedId = 'feed-source-only';
-    db.prepare(
-      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(feedId, 'https://source-only.com/rss', 'Source Only', now, now);
-
-    db.prepare(
-      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(
-      's1-unique',
-      feedId,
-      'https://source-only.com/s1',
-      'Totally Unique Word One',
-      50,
-      now,
-      now,
-      now,
-    );
-
-    db.prepare(
-      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(
-      's2-unique',
-      feedId,
-      'https://source-only.com/s2',
-      'Another Completely Different Word',
-      50,
-      now,
-      now,
-      now,
-    );
-
-    updatePreferenceMemoryFromInteraction('s1-unique', 'thumbs_down');
-
-    const state = getPreferenceStateForArticle('s2-unique');
-    // Adjustment should be small/zero because source weight is low
-    expect(state.adjustment).toBeLessThanOrEqual(0);
-    expect(state.adjustment).toBeGreaterThan(-5);
-  });
 });
+

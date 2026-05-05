@@ -43,6 +43,8 @@
       feed: FeedData;
       feedId: string;
       totalPages: number;
+      hiddenContentLimit?: number | null;
+      showHiddenContent?: boolean;
       proxyAvailable?: boolean;
     };
   }>();
@@ -66,6 +68,20 @@
   let isPulling = $state(false);
   let syncing = $state(false);
   let touchStartY = 0;
+
+  function toggleHiddenContent() {
+    const next = new URL(window.location.href);
+    if (pageData.showHiddenContent) {
+      next.searchParams.delete('showHidden');
+    } else {
+      next.searchParams.set('showHidden', '1');
+    }
+    next.searchParams.delete('page');
+    goto(`${next.pathname}${next.search}`, {
+      replaceState: true,
+      noScroll: true,
+    });
+  }
 
   function parseRedditMeta(meta: string | null | undefined) {
     if (!meta) return null;
@@ -300,26 +316,67 @@
           >Proxy</span
         >
       {/if}
+      {#if pageData.showHiddenContent}
+        <span
+          class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+          style="background: color-mix(in oklch, var(--color-secondary-500) 12%, transparent); color: var(--color-secondary-300); border-radius: 2px;"
+        >
+          Hidden · {pageData.hiddenContentLimit || 30} recent
+        </span>
+      {/if}
     </div>
-    <button
-      class="btn preset-filled-surface-200-800 flex items-center gap-2"
-      onclick={() => (showSettings = !showSettings)}
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        ><path
-          d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
-        /><circle cx="12" cy="12" r="3" /></svg
+    <div class="flex items-center gap-2">
+      <button
+        class="btn flex items-center gap-2"
+        class:preset-filled-primary-500={pageData.showHiddenContent}
+        class:preset-filled-surface-200-800={!pageData.showHiddenContent}
+        onclick={toggleHiddenContent}
       >
-      Settings
-    </button>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M3 13.5V12a9 9 0 0 1 15.54-6.36" />
+          <path d="M21 12a9 9 0 0 1-15.54 6.36" />
+          <path d="m12 5 3 3-3 3" />
+        </svg>
+        {pageData.showHiddenContent ? 'Show Feed' : 'Show Hidden'}
+      </button>
+      <button
+        class="btn preset-filled-surface-200-800 flex items-center gap-2"
+        onclick={() => (showSettings = !showSettings)}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          ><path
+            d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+          /><circle cx="12" cy="12" r="3" /></svg
+        >
+        Settings
+      </button>
+    </div>
   </div>
+
+  {#if pageData.showHiddenContent}
+    <div
+      class="mb-6 rounded-sm border px-4 py-3 text-sm"
+      style="border-color: color-mix(in oklch, var(--color-secondary-500) 18%, transparent); background: color-mix(in oklch, var(--color-secondary-500) 7%, transparent); color: color-mix(in oklch, var(--color-surface-100) 88%, transparent);"
+    >
+      Showing the {pageData.hiddenContentLimit || 30} most recent auto-hidden
+      articles. Manually hidden articles and hide-on-open items are excluded.
+    </div>
+  {/if}
 
   {#if showSettings}
     <div class="glass-card mb-12 p-6" in:fly={{ y: -10, duration: 200 }}>
@@ -410,5 +467,15 @@
     bind:articles
     totalPages={pageData.totalPages}
     feedId={pageData.feedId}
+    showInfiniteScroll={!pageData.showHiddenContent}
+    emptyTitle={
+      pageData.showHiddenContent ? 'No auto-hidden articles yet' : undefined
+    }
+    emptyMessage={
+      pageData.showHiddenContent
+        ? 'This feed has not produced any model-hidden items yet.'
+        : undefined
+    }
+    emptyCtaHref={pageData.showHiddenContent ? null : undefined}
   />
 </div>

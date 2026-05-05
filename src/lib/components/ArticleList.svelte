@@ -23,10 +23,20 @@
     articles = $bindable(),
     totalPages,
     feedId = null,
+    showInfiniteScroll = true,
+    emptyTitle = 'No articles yet',
+    emptyMessage = 'Import some RSS feeds to get started.',
+    emptyCtaHref = '/settings',
+    emptyCtaLabel = 'Go to Settings',
   } = $props<{
     articles: Article[];
     totalPages: number;
     feedId?: string | null;
+    showInfiniteScroll?: boolean;
+    emptyTitle?: string;
+    emptyMessage?: string;
+    emptyCtaHref?: string | null;
+    emptyCtaLabel?: string;
   }>();
 
   async function openArticle(article: Article) {
@@ -304,29 +314,31 @@
         /><circle cx="5" cy="19" r="1" />
       </svg>
     </div>
-    <p class="text-surface-300 mb-2 text-lg font-medium">No articles yet</p>
-    <p class="section-subtitle mb-6">Import some RSS feeds to get started.</p>
-    <a
-      href="/settings"
-      class="btn preset-filled-primary-500 inline-flex items-center gap-2"
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        ><line x1="12" y1="5" x2="12" y2="19" /><line
-          x1="5"
-          y1="12"
-          x2="19"
-          y2="12"
-        /></svg
+    <p class="text-surface-300 mb-2 text-lg font-medium">{emptyTitle}</p>
+    <p class="section-subtitle mb-6">{emptyMessage}</p>
+    {#if emptyCtaHref}
+      <a
+        href={emptyCtaHref}
+        class="btn preset-filled-primary-500 inline-flex items-center gap-2"
       >
-      Go to Settings
-    </a>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          ><line x1="12" y1="5" x2="12" y2="19" /><line
+            x1="5"
+            y1="12"
+            x2="19"
+            y2="12"
+          /></svg
+        >
+        {emptyCtaLabel}
+      </a>
+    {/if}
   </div>
 {:else}
   <div class="grid grid-cols-1 md:gap-4 xl:grid-cols-2">
@@ -589,21 +601,23 @@
   </div>
 
   <!-- Infinite Scroll Sentinel -->
-  <div id="infinite-sentinel" class="flex h-32 items-center justify-center">
-    {#if loadingMore}
-      <div
-        class="flex items-center gap-3 text-sm"
-        style="color: var(--color-surface-300);"
-      >
+  {#if showInfiniteScroll}
+    <div id="infinite-sentinel" class="flex h-32 items-center justify-center">
+      {#if loadingMore}
         <div
-          class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
-        ></div>
-        Loading more...
-      </div>
-    {:else if !hasMore && articles.length > 0}
-      <p class="text-sm" style="color: var(--color-surface-400);">
-        No more articles to show.
-      </p>
-    {/if}
-  </div>
+          class="flex items-center gap-3 text-sm"
+          style="color: var(--color-surface-300);"
+        >
+          <div
+            class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+          ></div>
+          Loading more...
+        </div>
+      {:else if !hasMore && articles.length > 0}
+        <p class="text-sm" style="color: var(--color-surface-400);">
+          No more articles to show.
+        </p>
+      {/if}
+    </div>
+  {/if}
 {/if}

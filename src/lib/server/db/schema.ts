@@ -163,7 +163,7 @@ export const userInteractions = sqliteTable('user_interactions', {
 export const userPreferenceMemory = sqliteTable('user_preference_memory', {
   id: text('id').primaryKey(),
   label: text('label').notNull(),
-  type: text('type').notNull(), // topic, source, style, entity, content_type, negative_filter
+  type: text('type').notNull(), // topic, style, entity, content_type, negative_filter
   polarity: text('polarity').notNull().default('positive'), // positive, negative
   strength: real('strength').notNull().default(0.5),
   evidenceCount: integer('evidence_count').notNull().default(1),
