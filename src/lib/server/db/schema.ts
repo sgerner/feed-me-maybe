@@ -110,8 +110,7 @@ export const articleAiMetadata = sqliteTable('article_ai_metadata', {
   noveltyScore: real('novelty_score').default(0),
   qualityScore: real('quality_score').default(0),
   likelyUserInterest: text('likely_user_interest').default(''),
-  positiveSignals: text('positive_signals').default('[]'),
-  negativeSignals: text('negative_signals').default('[]'),
+  signals: text('signals').default('[]'),
   explanation: text('explanation').default(''),
   processedAt: integer('processed_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
@@ -163,7 +162,7 @@ export const userInteractions = sqliteTable('user_interactions', {
 export const userPreferenceMemory = sqliteTable('user_preference_memory', {
   id: text('id').primaryKey(),
   label: text('label').notNull(),
-  type: text('type').notNull(), // topic, style, entity, content_type, negative_filter
+  type: text('type').notNull(), // topic, entity, signal, author, content_type, negative_filter
   polarity: text('polarity').notNull().default('positive'), // positive, negative
   strength: real('strength').notNull().default(0.5),
   evidenceCount: integer('evidence_count').notNull().default(1),

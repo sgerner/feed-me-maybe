@@ -182,10 +182,10 @@ function recalculateScore(articleId: string): void {
 
   const score =
     50 + // Base score
-    (opened ? 3 : 0) + // slight positive bias for opened articles
+    (opened ? 2 : 0) + // weak positive bias for opened articles
     (thumbsUp ? 25 : 0) - // significant positive bias for liked articles
     (thumbsDown ? 20 : 0) -
-    (explicitHidden ? 20 : 0) +
+    (explicitHidden ? 10 : 0) +
     preferenceState.adjustment;
 
   const clamped = Math.max(0, Math.min(100, score));

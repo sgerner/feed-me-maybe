@@ -1,6 +1,5 @@
 import { getDb } from '$lib/server/db';
 import type { InteractionType } from '$lib/server/interactions';
-import type { ArticleScore } from '$lib/server/ai/types';
 import crypto from 'node:crypto';
 
 type ArticleContext = {
@@ -8,10 +7,12 @@ type ArticleContext = {
   title: string;
   summary: string;
   content: string;
+  author: string;
   categories: string;
   ai_topics: string;
   ai_entities: string;
   ai_content_type: string;
+  ai_signals: string;
 };
 
 type Feature = {
@@ -27,6 +28,27 @@ type PreferenceState = {
 
 const TITLE_PHRASE_LIMIT = 8;
 const DECAY_HALF_LIFE_DAYS = 45;
+const SIGNAL_WEIGHTS: Record<string, number> = {
+  official_announcement: 1.25,
+  primary_source: 1.25,
+  specific_details: 1.1,
+  technical_depth: 1.25,
+  data_driven: 1.2,
+  actionable: 1.05,
+  hands_on: 1.1,
+  concrete_update: 1.1,
+  cited_sources: 1.15,
+  speculation: 1.35,
+  rumor: 1.45,
+  leak: 1.4,
+  hype: 1.2,
+  clickbait: 1.3,
+  seo_filler: 1.1,
+  opinion_only: 1.2,
+  future_guessing: 1.3,
+  thin_rewrite: 1.1,
+  ad_copy: 1.1,
+};
 const STOPWORDS = new Set([
   'the',
   'and',
@@ -85,6 +107,38 @@ function normalizeToken(text: string): string {
     .trim();
 }
 
+function normalizeLabel(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .trim();
+}
+
+function parseJsonStringArray(
+  value: string | null | undefined,
+  normalizer: (value: string) => string,
+  limit: number,
+): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const item of parsed) {
+      const normalized = normalizer(String(item || ''));
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
@@ -117,6 +171,30 @@ function detectContentType(
   ) {
     return 'obituary';
   }
+  if (/\bpodcast\b|\bepisode\b|\baudio\b/.test(blob)) {
+    return 'podcast';
+  }
+  if (/\bvideo\b|\bwatch\b|\bstream\b/.test(blob)) {
+    return 'video';
+  }
+  if (/\btutorial\b|\bguide\b|\bhow to\b|\bwalkthrough\b|\bexplainer\b/.test(blob)) {
+    return 'tutorial';
+  }
+  if (/\brelease notes?\b|\bchangelog\b|\bwhat'?s new\b|\bversion \d+/.test(blob)) {
+    return 'release_note';
+  }
+  if (/\breview\b|\bhands[- ]on\b|\bfirst look\b|\bpreview\b/.test(blob)) {
+    return 'review';
+  }
+  if (/\binterview\b|\bq&a\b|\bquestions and answers\b/.test(blob)) {
+    return 'interview';
+  }
+  if (/\bannouncement\b|\bannounces?\b|\blaunches?\b|\bintroduces?\b|\bdebuts?\b/.test(blob)) {
+    return 'announcement';
+  }
+  if (/\banalysis\b|\bdeep dive\b|\bexplainer\b/.test(blob)) {
+    return 'analysis';
+  }
   if (/\bopinion\b|\beditorial\b|\bguest essay\b/.test(blob)) {
     return 'opinion';
   }
@@ -129,44 +207,45 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
   const summary = ctx.summary || '';
   const content = ctx.content || '';
 
-  try {
-    const categories = JSON.parse(ctx.categories || '[]') as string[];
-    for (const c of categories.slice(0, 5)) {
-      const token = normalizeToken(c);
-      if (token) {
-        features.push({ type: 'topic', label: `topic:${token}`, weight: 1.1 });
-      }
-    }
-  } catch {
-    // Ignore malformed category payload.
+  const author = normalizeLabel(ctx.author || '');
+  if (author) {
+    features.push({
+      type: 'author',
+      label: `author:${author}`,
+      weight: 0.65,
+    });
   }
 
-  try {
-    const aiTopics = JSON.parse(ctx.ai_topics || '[]') as string[];
-    for (const topic of aiTopics.slice(0, 8)) {
-      const token = normalizeToken(topic);
-      if (token) {
-        features.push({ type: 'topic', label: `topic:${token}`, weight: 1.5 });
-      }
-    }
-  } catch {
-    // Ignore malformed AI topic payload.
+  for (const category of parseJsonStringArray(ctx.categories || '[]', normalizeToken, 5)) {
+    features.push({
+      type: 'topic',
+      label: `topic:${category}`,
+      weight: 1.1,
+    });
   }
 
-  try {
-    const aiEntities = JSON.parse(ctx.ai_entities || '[]') as string[];
-    for (const entity of aiEntities.slice(0, 8)) {
-      const token = normalizeToken(entity);
-      if (token) {
-        features.push({
-          type: 'entity',
-          label: `entity:${token}`,
-          weight: 1.2,
-        });
-      }
-    }
-  } catch {
-    // Ignore malformed AI entity payload.
+  for (const topic of parseJsonStringArray(ctx.ai_topics || '[]', normalizeToken, 8)) {
+    features.push({
+      type: 'topic',
+      label: `topic:${topic}`,
+      weight: 1.5,
+    });
+  }
+
+  for (const entity of parseJsonStringArray(ctx.ai_entities || '[]', normalizeToken, 8)) {
+    features.push({
+      type: 'entity',
+      label: `entity:${entity}`,
+      weight: 1.2,
+    });
+  }
+
+  for (const signal of parseJsonStringArray(ctx.ai_signals || '[]', normalizeLabel, 8)) {
+    features.push({
+      type: 'signal',
+      label: `signal:${signal}`,
+      weight: SIGNAL_WEIGHTS[signal] || 1.05,
+    });
   }
 
   const contentType =
@@ -217,10 +296,11 @@ function getArticleContext(articleId: string): ArticleContext | undefined {
   return db
     .prepare(
       `
-    SELECT a.id, a.title, a.summary, a.content, a.categories,
+    SELECT a.id, a.title, a.summary, a.content, a.author, a.categories,
            COALESCE(am.topics, '[]') as ai_topics,
            COALESCE(am.entities, '[]') as ai_entities,
-           COALESCE(am.content_type, '') as ai_content_type
+           COALESCE(am.content_type, '') as ai_content_type,
+           COALESCE(am.signals, '[]') as ai_signals
     FROM articles a
     LEFT JOIN article_ai_metadata am ON am.article_id = a.id
     WHERE a.id = ?
@@ -279,7 +359,7 @@ function upsertPreference(
     label,
     type,
     polarity,
-    Math.max(0.1, Math.min(1, delta)),
+    Math.max(0.02, Math.min(1, delta)),
     1,
     now,
     '',
@@ -295,12 +375,12 @@ export function updatePreferenceMemoryFromInteraction(
     type === 'thumbs_up'
       ? 0.2
       : type === 'open'
-        ? 0.05
+        ? 0.03
         : type === 'read'
-          ? 0.03
+          ? 0.02
           : 0;
   const negativeDelta =
-    type === 'thumbs_down' ? 0.2 : type === 'hide' ? 0.15 : 0;
+    type === 'thumbs_down' ? 0.2 : type === 'hide' ? 0.08 : 0;
   if (!positiveDelta && !negativeDelta) return;
 
   const ctx = getArticleContext(articleId);
@@ -382,54 +462,6 @@ export function getPreferenceStateForArticle(
 
   const adjustment = Math.max(-25, Math.min(25, Math.round(signal * 8)));
   return { adjustment, totalNegativeEvidence };
-}
-
-export function incorporateAiClassificationIntoMemory(
-  articleId: string,
-  classification: Partial<ArticleScore>,
-): void {
-  const topics = (classification.topics || [])
-    .map((t) => normalizeToken(String(t)))
-    .filter(Boolean)
-    .slice(0, 5);
-  const entities = (classification.entities || [])
-    .map((e) => normalizeToken(String(e)))
-    .filter(Boolean)
-    .slice(0, 5);
-  const contentType = normalizeToken(String(classification.contentType || ''));
-
-  // Seed weak neutral-positive priors so future interactions have richer feature context.
-  for (const topic of topics) {
-    upsertPreference('topic', `topic:${topic}`, 'positive', 0.01);
-  }
-  for (const entity of entities) {
-    upsertPreference('entity', `entity:${entity}`, 'positive', 0.005);
-  }
-  if (contentType) {
-    upsertPreference(
-      'content_type',
-      `content_type:${contentType}`,
-      'positive',
-      0.01,
-    );
-  }
-
-  // If AI identifies obituary-like content, pre-seed a weak negative filter.
-  if (
-    contentType === 'obituary' ||
-    topics.includes('obituary') ||
-    topics.includes('obituaries')
-  ) {
-    upsertPreference(
-      'negative_filter',
-      'negative_filter:obituary',
-      'negative',
-      0.02,
-    );
-  }
-
-  // Keep article score aligned with new memory.
-  applyPreferenceModelToArticle(articleId);
 }
 
 export function applyPreferenceModelToArticle(articleId: string): void {

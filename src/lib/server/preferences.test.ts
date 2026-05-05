@@ -185,5 +185,169 @@ describe('preference learning model', () => {
     const state = getPreferenceStateForArticle('a-phrase-2');
     expect(state.adjustment).toBeGreaterThan(0);
   });
-});
 
+  it('learns neutral signal and author preferences from article feedback', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const {
+      updatePreferenceMemoryFromInteraction,
+      getPreferenceStateForArticle,
+      applyPreferenceModelToArticle,
+    } = await import('./preferences');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-signal', 'https://example.com/rss', 'Example', now, now);
+
+    const insertArticle = (id: string, slug: string) => {
+      db.prepare(
+        'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        id,
+        'feed-signal',
+        `https://example.com/articles/${slug}`,
+        slug,
+        'Jane Doe',
+        JSON.stringify(['AI']),
+        0,
+        50,
+        now,
+        now,
+        now,
+      );
+    };
+
+    const insertMetadata = (articleId: string) => {
+      db.prepare(
+        'INSERT OR REPLACE INTO article_ai_metadata (id, article_id, summary, topics, entities, content_type, ai_relevance_score, novelty_score, quality_score, likely_user_interest, signals, explanation, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        `meta-${articleId}`,
+        articleId,
+        'Speculation about Gemini future models.',
+        JSON.stringify(['Gemini']),
+        JSON.stringify(['Gemini']),
+        'news',
+        0.6,
+        0.3,
+        0.2,
+        'low',
+        JSON.stringify(['specific_details', 'speculation', 'future_guessing']),
+        '',
+        now,
+        now,
+      );
+    };
+
+    insertArticle('a-signal-1', 'speculation');
+    insertArticle('a-signal-2', 'update');
+    insertMetadata('a-signal-1');
+    insertMetadata('a-signal-2');
+
+    updatePreferenceMemoryFromInteraction('a-signal-1', 'thumbs_down');
+
+    const rows = db
+      .prepare(
+        'SELECT type, label, polarity FROM user_preference_memory WHERE label IN (?, ?)',
+      )
+      .all('signal:speculation', 'author:jane_doe') as Array<{
+      type: string;
+      label: string;
+      polarity: string;
+    }>;
+
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'signal',
+          label: 'signal:speculation',
+          polarity: 'negative',
+        }),
+        expect.objectContaining({
+          type: 'author',
+          label: 'author:jane_doe',
+          polarity: 'negative',
+        }),
+      ]),
+    );
+
+    const state = getPreferenceStateForArticle('a-signal-2');
+    expect(state.adjustment).toBeLessThan(0);
+
+    applyPreferenceModelToArticle('a-signal-2');
+    const future = db
+      .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+      .get('a-signal-2') as { heuristic_score: number };
+    expect(future.heuristic_score).toBeLessThan(50);
+  });
+
+  it('treats open and manual hide as weaker feedback than thumbs', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { recordInteraction } = await import('$lib/server/interactions');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ).run('hide_on_open', 'false', now);
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-feedback', 'https://example.com/feedback', 'Feedback Feed', now, now);
+
+    const insertArticle = (id: string, title: string, author: string) => {
+      db.prepare(
+        'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        id,
+        'feed-feedback',
+        `https://example.com/articles/${id}`,
+        title,
+        author,
+        50,
+        now,
+        now,
+        now,
+      );
+    };
+
+    insertArticle('a-open-feedback', 'Open feedback article', 'Open Example');
+    insertArticle('a-hide-feedback', 'Hide feedback article', 'Hide Example');
+    insertArticle('a-thumb-up-feedback', 'Thumb up feedback article', 'Thumb Up Example');
+    insertArticle('a-thumb-down-feedback', 'Thumb down feedback article', 'Thumb Down Example');
+
+    recordInteraction('a-open-feedback', 'open');
+    recordInteraction('a-hide-feedback', 'hide');
+    recordInteraction('a-thumb-up-feedback', 'thumbs_up');
+    recordInteraction('a-thumb-down-feedback', 'thumbs_down');
+
+    const rows = db
+      .prepare(
+        'SELECT type, label, polarity, strength FROM user_preference_memory WHERE label IN (?, ?, ?, ?)',
+      )
+      .all(
+        'author:open_example',
+        'author:hide_example',
+        'author:thumb_up_example',
+        'author:thumb_down_example',
+      ) as Array<{
+      type: string;
+      label: string;
+      polarity: string;
+      strength: number;
+    }>;
+
+    const getStrength = (label: string, polarity: 'positive' | 'negative') =>
+      rows.find((row) => row.label === label && row.polarity === polarity)
+        ?.strength || 0;
+
+    const openStrength = getStrength('author:open_example', 'positive');
+    const hideStrength = getStrength('author:hide_example', 'negative');
+    const thumbsUpStrength = getStrength('author:thumb_up_example', 'positive');
+    const thumbsDownStrength = getStrength('author:thumb_down_example', 'negative');
+
+    expect(openStrength).toBeGreaterThan(0);
+    expect(hideStrength).toBeGreaterThan(0);
+    expect(openStrength).toBeLessThan(thumbsUpStrength);
+    expect(hideStrength).toBeLessThan(thumbsDownStrength);
+  });
+});

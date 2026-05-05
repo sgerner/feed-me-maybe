@@ -21,6 +21,15 @@ export interface AiModel {
   structuredOutput?: boolean;
 }
 
+export interface ArticleAnalysisInput {
+  title: string;
+  summary?: string;
+  content?: string;
+  author?: string;
+  publishedAge?: string;
+  categories?: string[];
+}
+
 export interface ArticleScore {
   summary: string;
   topics: string[];
@@ -30,8 +39,7 @@ export interface ArticleScore {
   noveltyScore: number;
   qualityScore: number;
   likelyUserInterest: string;
-  positiveSignals: string[];
-  negativeSignals: string[];
+  signals: string[];
   explanation: string;
 }
 

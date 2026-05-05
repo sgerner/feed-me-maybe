@@ -66,8 +66,27 @@ export function initializeDatabase(): void {
     "CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT '', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', author TEXT DEFAULT '', summary TEXT DEFAULT '', content TEXT DEFAULT '', image_url TEXT DEFAULT '', categories TEXT DEFAULT '', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
   db.prepare(
-    "CREATE TABLE IF NOT EXISTS article_ai_metadata (id TEXT PRIMARY KEY, article_id TEXT NOT NULL UNIQUE REFERENCES articles(id) ON DELETE CASCADE, summary TEXT DEFAULT '', topics TEXT DEFAULT '[]', entities TEXT DEFAULT '[]', content_type TEXT DEFAULT '', ai_relevance_score REAL DEFAULT 0, novelty_score REAL DEFAULT 0, quality_score REAL DEFAULT 0, likely_user_interest TEXT DEFAULT '', positive_signals TEXT DEFAULT '[]', negative_signals TEXT DEFAULT '[]', explanation TEXT DEFAULT '', processed_at INTEGER, created_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS article_ai_metadata (id TEXT PRIMARY KEY, article_id TEXT NOT NULL UNIQUE REFERENCES articles(id) ON DELETE CASCADE, summary TEXT DEFAULT '', topics TEXT DEFAULT '[]', entities TEXT DEFAULT '[]', content_type TEXT DEFAULT '', ai_relevance_score REAL DEFAULT 0, novelty_score REAL DEFAULT 0, quality_score REAL DEFAULT 0, likely_user_interest TEXT DEFAULT '', signals TEXT DEFAULT '[]', explanation TEXT DEFAULT '', processed_at INTEGER, created_at INTEGER NOT NULL)",
   ).run();
+  try {
+    db.prepare(
+      'ALTER TABLE article_ai_metadata DROP COLUMN positive_signals',
+    ).run();
+  } catch {
+    /* ignore */
+  }
+  try {
+    db.prepare(
+      'ALTER TABLE article_ai_metadata DROP COLUMN negative_signals',
+    ).run();
+  } catch {
+    /* ignore */
+  }
+  try {
+    db.prepare("ALTER TABLE article_ai_metadata ADD COLUMN signals TEXT DEFAULT '[]'").run();
+  } catch {
+    /* ignore */
+  }
   db.prepare(
     "CREATE TABLE IF NOT EXISTS feed_fetch_logs (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'pending', articles_found INTEGER DEFAULT 0, articles_new INTEGER DEFAULT 0, error_message TEXT DEFAULT '', started_at INTEGER, completed_at INTEGER, created_at INTEGER NOT NULL)",
   ).run();

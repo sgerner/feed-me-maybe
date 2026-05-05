@@ -1,16 +1,33 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createWebhook, dispatchWebhookEvent, deleteWebhook, getWebhooks } from './webhooks';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { createWebhook, dispatchWebhookEvent, deleteWebhook } from './webhooks';
 import { recordInteraction } from './interactions';
-import { getDb } from './db';
+import { closeDb, getDb } from './db';
+import { initializeDatabase } from './db/migrate';
 import http from 'node:http';
+import { unlinkSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 describe('Webhooks', () => {
   let server: http.Server;
   let receivedRequest: any = null;
   const PORT = 5555;
   const WEBHOOK_URL = `http://localhost:${PORT}/webhook`;
+  const testDbPath = join(process.cwd(), 'data', 'test-webhooks.db');
+  const originalDbUrl = process.env.DATABASE_URL;
+
+  beforeAll(() => {
+    closeDb();
+    process.env.DATABASE_URL = testDbPath;
+    const dataDir = join(process.cwd(), 'data');
+    if (!existsSync(dataDir)) {
+      mkdirSync(dataDir, { recursive: true });
+    }
+    initializeDatabase();
+  });
 
   beforeEach(async () => {
+    closeDb();
+
     // Start a local mock server
     receivedRequest = null;
     server = http.createServer((req, res) => {
@@ -33,6 +50,14 @@ describe('Webhooks', () => {
 
   afterEach(() => {
     server.close();
+    closeDb();
+  });
+
+  afterAll(() => {
+    process.env.DATABASE_URL = originalDbUrl ?? '';
+    if (existsSync(testDbPath)) {
+      unlinkSync(testDbPath);
+    }
   });
 
   it('should register and dispatch a webhook event', async () => {

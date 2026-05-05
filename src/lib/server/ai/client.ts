@@ -1,4 +1,8 @@
-import type { ArticleScore } from './types';
+import type { ArticleAnalysisInput, ArticleScore } from './types';
+import {
+  ARTICLE_ANALYSIS_SYSTEM_PROMPT,
+  buildArticleAnalysisPrompt,
+} from './prompts';
 
 interface AiClientConfig {
   baseUrl: string;
@@ -7,12 +11,88 @@ interface AiClientConfig {
   defaultHeaders?: Record<string, string>;
 }
 
+function clampScore(value: unknown): number {
+  const parsed =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function normalizeText(value: unknown): string {
+  return String(value || '').trim();
+}
+
+function normalizeTag(value: unknown): string {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function normalizeStringArray(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    const text = normalizeText(item);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function normalizeTagArray(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    const tag = normalizeTag(item);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    result.push(tag);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function normalizeSignals(data: Record<string, unknown>): string[] {
+  return normalizeTagArray(data.signals, 8);
+}
+
+function normalizeLikelihood(value: unknown): string {
+  const normalized = normalizeTag(value);
+  if (normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+    return normalized;
+  }
+  return '';
+}
+
+function normalizeAnalysis(raw: unknown): Partial<ArticleScore> {
+  if (!raw || typeof raw !== 'object') return {};
+  const data = raw as Record<string, unknown>;
+  return {
+    summary: normalizeText(data.summary),
+    topics: normalizeStringArray(data.topics, 8),
+    entities: normalizeStringArray(data.entities, 8),
+    contentType: normalizeTag(data.contentType),
+    relevanceScore: clampScore(data.relevanceScore),
+    noveltyScore: clampScore(data.noveltyScore),
+    qualityScore: clampScore(data.qualityScore),
+    likelyUserInterest: normalizeLikelihood(data.likelyUserInterest),
+    signals: normalizeSignals(data),
+    explanation: normalizeText(data.explanation),
+  };
+}
+
 export function createAiClient(config: AiClientConfig) {
   const { baseUrl, apiKey, model, defaultHeaders = {} } = config;
 
   async function chatComplete(
     systemPrompt: string,
     userPrompt: string,
+    maxTokens = 512,
   ): Promise<string | null> {
     try {
       const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -29,7 +109,7 @@ export function createAiClient(config: AiClientConfig) {
             { role: 'user', content: userPrompt },
           ],
           temperature: 0.1,
-          max_tokens: 1024,
+          max_tokens: maxTokens,
         }),
       });
       if (!res.ok) return null;
@@ -40,33 +120,17 @@ export function createAiClient(config: AiClientConfig) {
     }
   }
 
-  async function classifyArticle(
-    title: string,
-    content: string,
+  async function analyzeArticle(
+    input: ArticleAnalysisInput,
   ): Promise<Partial<ArticleScore>> {
     const result = await chatComplete(
-      'You are an article classifier. Return JSON only.',
-      `Classify this article:\nTitle: ${title}\nContent: ${content?.substring(0, 2000)}`,
+      ARTICLE_ANALYSIS_SYSTEM_PROMPT,
+      buildArticleAnalysisPrompt(input),
+      512,
     );
     if (!result) return {};
     try {
-      return JSON.parse(result);
-    } catch {
-      return {};
-    }
-  }
-
-  async function scoreArticle(
-    title: string,
-    summary: string,
-  ): Promise<Partial<ArticleScore>> {
-    const result = await chatComplete(
-      'You are a relevance scorer. Return JSON only with relevanceScore (0-1).',
-      `Score: ${title}\n${summary?.substring(0, 1000)}`,
-    );
-    if (!result) return {};
-    try {
-      return JSON.parse(result);
+      return normalizeAnalysis(JSON.parse(result));
     } catch {
       return {};
     }
@@ -76,16 +140,16 @@ export function createAiClient(config: AiClientConfig) {
     return chatComplete(
       'Summarize concisely in 2-3 sentences.',
       content.substring(0, 3000),
+      256,
     );
   }
 
-  return { classifyArticle, scoreArticle, summarizeArticle };
+  return { analyzeArticle, summarizeArticle };
 }
 
 export function createNullAiClient() {
   return {
-    classifyArticle: async () => ({}),
-    scoreArticle: async () => ({ relevanceScore: 0 }),
+    analyzeArticle: async () => ({}),
     summarizeArticle: async () => null,
   };
 }
