@@ -1,7 +1,7 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import { formatContent } from '$lib/utils/format';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
@@ -236,11 +236,19 @@
 
   $effect(() => {
     if (typeof window === 'undefined') return;
-    $rowVirtualizer.setOptions({
-      count: useVirtualization ? articles.length : 0,
-      scrollMargin: virtualScrollMargin,
-      estimateSize: () => (window.matchMedia('(max-width: 767px)').matches ? 238 : 296),
-      overscan: 6,
+    const count = useVirtualization ? articles.length : 0;
+    const scrollMargin = virtualScrollMargin;
+    const estimateSize = window.matchMedia('(max-width: 767px)').matches
+      ? 238
+      : 296;
+
+    untrack(() => {
+      $rowVirtualizer.setOptions({
+        count,
+        scrollMargin,
+        estimateSize: () => estimateSize,
+        overscan: 6,
+      });
     });
   });
 
