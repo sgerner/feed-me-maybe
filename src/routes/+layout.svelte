@@ -8,6 +8,8 @@
   import PWABanner from '$lib/components/PWABanner.svelte';
   import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 
+  import { syncFeeds } from '$lib/feeds';
+
   let sidebarOpen = $state(false);
   let showShortcuts = $state(false);
   let syncing = $state(false);
@@ -17,22 +19,19 @@
   let toasts = $state<Toast[]>([]);
   let { children, data } = $props();
 
-  async function syncFeeds() {
+  async function handleManualSync() {
     if (syncing) return;
     syncing = true;
-    try {
-      const res = await fetch('/api/feeds/refresh', { method: 'POST' });
-      if (res.ok) {
-        const { addToast } = await import('$lib/stores/toast.svelte');
-        addToast('Syncing feeds in background', 'success');
-      }
-    } catch {
-      const { addToast } = await import('$lib/stores/toast.svelte');
-      addToast('Sync failed', 'error');
-    } finally {
-      syncing = false;
-    }
+    await syncFeeds();
+    syncing = false;
   }
+
+  // Trigger sync on open
+  $effect(() => {
+    if (data.sessionId) {
+      syncFeeds({ silent: true });
+    }
+  });
 
   async function addFeed(e: Event) {
     e.preventDefault();
@@ -327,7 +326,7 @@
 
           <button
             class="nav-item mt-4 hidden w-full items-center gap-3 bg-transparent text-left md:flex"
-            onclick={syncFeeds}
+            onclick={handleManualSync}
             disabled={syncing}
           >
             <span class="flex h-5 w-5 items-center justify-center">

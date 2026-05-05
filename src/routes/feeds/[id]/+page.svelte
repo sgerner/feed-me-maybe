@@ -1,6 +1,7 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import ArticleList from '$lib/components/ArticleList.svelte';
+  import { syncFeed } from '$lib/feeds';
   import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
@@ -91,23 +92,11 @@
     useProxy = Boolean(pageData.feed.use_proxy);
   });
 
-  async function syncFeed() {
+  async function handleSync() {
     if (syncing) return;
     syncing = true;
-    try {
-      const res = await fetch(`/api/feeds/${pageData.feedId}/refresh`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        addToast('Syncing feed...', 'success');
-        // Refresh article list could be done here if needed,
-        // but background sync doesn't return articles.
-      }
-    } catch {
-      addToast('Sync failed', 'error');
-    } finally {
-      syncing = false;
-    }
+    await syncFeed(pageData.feedId);
+    syncing = false;
   }
 
   async function saveSettings() {
@@ -224,7 +213,7 @@
 
   function handleTouchEnd() {
     if (isPulling && pullDistance >= 60) {
-      syncFeed();
+      handleSync();
     }
     pullDistance = 0;
     isPulling = false;

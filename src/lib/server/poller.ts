@@ -9,7 +9,7 @@ let isPolling = false;
 export function startPolling(): void {
   if (building || pollTimer) return;
   console.log('[poller] Starting background feed polling loop');
-  scheduleNextPoll(10000); // Start first poll in 10 seconds
+  scheduleNextPoll(1000); // Start first poll in 1 second
 }
 
 export function stopPolling(): void {

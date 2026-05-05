@@ -2,6 +2,8 @@
   import { addToast } from '$lib/stores/toast.svelte';
   import ArticleList from '$lib/components/ArticleList.svelte';
 
+  import { syncFeeds } from '$lib/feeds';
+
   type Article = {
     id: string;
     url: string;
@@ -23,19 +25,11 @@
     articles = pageData.articles;
   });
 
-  async function syncFeeds() {
+  async function handleSync() {
     if (syncing) return;
     syncing = true;
-    try {
-      const res = await fetch('/api/feeds/refresh', { method: 'POST' });
-      if (res.ok) {
-        addToast('Syncing feeds in background', 'success');
-      }
-    } catch {
-      addToast('Sync failed', 'error');
-    } finally {
-      syncing = false;
-    }
+    await syncFeeds();
+    syncing = false;
   }
 
   function handleTouchStart(e: TouchEvent) {
@@ -59,7 +53,7 @@
 
   function handleTouchEnd() {
     if (isPulling && pullDistance >= 60) {
-      syncFeeds();
+      handleSync();
     }
     pullDistance = 0;
     isPulling = false;
