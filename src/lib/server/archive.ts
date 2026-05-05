@@ -1,5 +1,6 @@
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
+import { formatContent } from '../utils/format';
 
 const ARCHIVE_MIRRORS = [
   'https://archive.is',
@@ -406,16 +407,8 @@ async function tryJinaAi(originalUrl: string, fallbackTitle: string): Promise<Ar
       return null;
     }
 
-    // Convert markdown-like content to HTML (basic)
-    const htmlContent = content
-      .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-      .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-      .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>')
-      .replace(/\n/g, '<br>');
+    // Convert markdown-like content to HTML
+    const htmlContent = formatContent(content);
 
     return {
       archiveUrl: jinaUrl,

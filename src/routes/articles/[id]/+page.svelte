@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { fly, fade } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
+  import { formatContent } from '$lib/utils/format';
   import { addToast } from '$lib/stores/toast.svelte';
   import { page } from '$app/stores';
   import RedditComments from '$lib/components/RedditComments.svelte';
@@ -382,12 +383,12 @@
               >
               AI Summary
             </div>
-            <p
-              class="text-sm leading-relaxed"
+            <div
+              class="text-sm leading-relaxed prose prose-sm max-w-none"
               style="color: color-mix(in oklch, var(--color-surface-100) 75%, transparent);"
             >
-              {article.ai_summary}
-            </p>
+              {@html formatContent(article.ai_summary)}
+            </div>
           </div>
         {/if}
 
@@ -395,7 +396,7 @@
           {#if article.content}
             {@html article.content}
           {:else if article.summary}
-            <p class="leading-relaxed">{article.summary}</p>
+            <div class="leading-relaxed">{@html formatContent(article.summary)}</div>
           {:else}
             <p
               class="italic"

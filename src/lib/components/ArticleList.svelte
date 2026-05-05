@@ -1,5 +1,6 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
+  import { formatContent } from '$lib/utils/format';
   import { onMount } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
@@ -428,12 +429,12 @@
             </h3>
 
             {#if article.summary}
-              <p
-                class="mt-3 line-clamp-2 text-sm leading-relaxed"
-                style="color: color-mix(in oklch, var(--color-surface-100) 80%, transparent);"
+              <div
+                class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
+                style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
               >
-                {article.summary}
-              </p>
+                {@html formatContent(article.summary)}
+              </div>
             {/if}
 
             <div class="mt-auto pt-2 md:pt-6">

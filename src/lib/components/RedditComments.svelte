@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { formatContent } from '$lib/utils/format';
   import { buildProxyRequestUrl } from '$lib/proxy';
   import {
     normalizeRedditCommentsUrl,
@@ -213,12 +214,12 @@
                 {timeAgo(comment.createdAt)}
               </span>
             </div>
-            <p
-              class="whitespace-pre-wrap text-sm leading-relaxed"
+            <div
+              class="prose prose-sm max-w-none text-sm leading-relaxed"
               style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
             >
-              {comment.body}
-            </p>
+              {@html formatContent(comment.body)}
+            </div>
           </div>
         {/each}
       {/if}
