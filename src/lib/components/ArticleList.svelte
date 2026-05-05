@@ -210,6 +210,7 @@
 
   function handlePointerDown(e: PointerEvent, articleId: string) {
     if (!e.isPrimary) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     touchStartX = e.clientX;
     touchStartY = e.clientY;
     activeSwipeId = articleId;
@@ -232,9 +233,11 @@
 
       if (Math.abs(dx) > Math.abs(dy) * SWIPE_DIRECTION_RATIO) {
         swipeDirection = 'horizontal';
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       } else {
         swipeDirection = 'vertical';
+        if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
+          (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        }
         return;
       }
     }
