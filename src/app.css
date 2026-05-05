@@ -529,26 +529,6 @@
 
 /* ── Mobile Performance Fallbacks ── */
 @media (pointer: coarse), (max-width: 1024px) {
-  .cinematic-bg-orb {
-    filter: blur(56px) saturate(1.2);
-    opacity: 0.18;
-  }
-
-  .cinematic-bg-orb-1 {
-    width: 72vmax;
-    height: 72vmax;
-  }
-
-  .cinematic-bg-orb-2 {
-    width: 64vmax;
-    height: 64vmax;
-  }
-
-  .cinematic-bg-orb-3 {
-    width: 56vmax;
-    height: 56vmax;
-  }
-
   .glass-card,
   .glass-header,
   .glass-sidebar,
@@ -562,6 +542,26 @@
   .glass-card,
   .glass-header,
   .glass-sidebar {
-    background: color-mix(in oklch, var(--color-surface-950) 84%, transparent);
+    background:
+      radial-gradient(
+        circle at top left,
+        color-mix(in oklch, var(--color-primary-500) 16%, transparent) 0%,
+        transparent 48%
+      ),
+      radial-gradient(
+        circle at bottom right,
+        color-mix(in oklch, var(--color-secondary-500) 10%, transparent) 0%,
+        transparent 42%
+      ),
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--color-surface-950) 82%, var(--color-primary-500) 18%),
+        color-mix(in oklch, var(--color-surface-900) 90%, var(--color-secondary-500) 10%)
+      );
+    border-color: color-mix(
+      in oklch,
+      var(--color-primary-500) 16%,
+      var(--color-surface-100) 6%
+    );
   }
 }
