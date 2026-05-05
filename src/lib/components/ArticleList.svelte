@@ -441,6 +441,8 @@
                 <button
                   type="button"
                   class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
                     e.stopPropagation();
                     interact(article.id, 'hide');
@@ -464,8 +466,9 @@
                 <button
                   type="button"
                   class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
-                    e.preventDefault();
                     e.stopPropagation();
                     interact(article.id, 'save');
                   }}
@@ -489,6 +492,8 @@
                   <button
                     type="button"
                     class="action-btn !bg-surface-900/50 backdrop-blur-sm"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onpointerup={(e) => e.stopPropagation()}
                     onclick={(e) => {
                       e.stopPropagation();
                       interact(article.id, 'thumbs_up');
@@ -511,6 +516,8 @@
                   <button
                     type="button"
                     class="action-btn !bg-surface-900/50 backdrop-blur-sm"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onpointerup={(e) => e.stopPropagation()}
                     onclick={(e) => {
                       e.stopPropagation();
                       interact(article.id, 'thumbs_down');
