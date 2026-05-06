@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { addToast } from '$lib/stores/toast.svelte';
   import { fly, fade } from 'svelte/transition';
   type SavedArticle = {
     id: string;
@@ -8,22 +9,55 @@
   };
 
   let { data: pageData } = $props<{ data: { articles: SavedArticle[] } }>();
+  let articles = $state<SavedArticle[]>([]);
+  let pendingArticleIds = $state<Record<string, boolean>>({});
+
+  $effect(() => {
+    articles = pageData.articles;
+  });
+
   async function unsave(articleId: string) {
-    await fetch('/api/interactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ articleId, type: 'unsave' }),
-    });
-    window.location.reload();
+    if (pendingArticleIds[articleId]) return;
+
+    const articleIndex = articles.findIndex((article: SavedArticle) => article.id === articleId);
+    const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
+
+    if (!previousArticle) return;
+
+    articles = articles.filter((article: SavedArticle) => article.id !== articleId);
+    pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
+
+    try {
+      const res = await fetch('/api/interactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ articleId, type: 'unsave' }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Request failed');
+      }
+
+      addToast('Removed from Saved', 'success');
+    } catch (err) {
+      const next = [...articles];
+      next.splice(Math.min(articleIndex, next.length), 0, previousArticle);
+      articles = next;
+      console.error('Failed to unsave article', err);
+      addToast('Action failed', 'error');
+    } finally {
+      const { [articleId]: _pending, ...rest } = pendingArticleIds;
+      pendingArticleIds = rest;
+    }
   }
 </script>
 
 <div class="mx-auto max-w-7xl">
   <div class="mb-8">
     <h1 class="section-title">Saved</h1>
-    <p class="section-subtitle">{pageData.articles.length} saved articles</p>
+    <p class="section-subtitle">{articles.length} saved articles</p>
   </div>
-  {#if pageData.articles.length === 0}
+  {#if articles.length === 0}
     <div class="glass-card mt-16 p-8 text-center" in:fade={{ duration: 300 }}>
       <div
         class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full"
@@ -51,7 +85,7 @@
     </div>
   {:else}
     <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-      {#each pageData.articles as article, i (article.id)}
+      {#each articles as article, i (article.id)}
         <div
           class="glass-card glass-card-hover flex items-start justify-between p-4 md:p-5"
           in:fly={{ y: 14, duration: 320, delay: Math.min(i * 35, 350) }}
@@ -70,6 +104,7 @@
           </div>
           <button
             class="action-btn ml-3 flex-shrink-0"
+            disabled={Boolean(pendingArticleIds[article.id])}
             onclick={() => unsave(article.id)}
           >
             <svg

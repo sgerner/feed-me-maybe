@@ -17,6 +17,8 @@ export type FeedArticleRow = {
   read: number;
   saved: number;
   hidden: number;
+  thumbs_up: number;
+  thumbs_down: number;
   heuristic_score: number | null;
   combined_score: number | null;
   feed_title: string | null;
@@ -66,7 +68,8 @@ function buildAutoHiddenWhereClause(alias: string): string {
 function buildFeedArticleSelect(): string {
   return `
     SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url, a.categories,
-           a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.heuristic_score, a.combined_score,
+           a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.thumbs_up, a.thumbs_down,
+           a.heuristic_score, a.combined_score,
            f.title as feed_title, f.url as feed_url, f.open_mode as feed_open_mode
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id

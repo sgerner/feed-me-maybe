@@ -6,6 +6,9 @@
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
 
+  type InteractionType = 'open' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down';
+  type ReactionType = 'thumbs_up' | 'thumbs_down';
+
   type Article = {
     id: string;
     url: string;
@@ -17,6 +20,8 @@
     feed_open_mode?: string | null;
     feed_url?: string | null;
     feed_site_url?: string | null;
+    thumbs_up?: boolean | null;
+    thumbs_down?: boolean | null;
   };
 
   let {
@@ -43,22 +48,35 @@
     // Determine mode: feed override or global default
     const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
     const mode = article.feed_open_mode || globalMode;
+    const shouldMarkOpened = mode === 'tab';
+    const articleIndex = shouldMarkOpened
+      ? articles.findIndex((a: Article) => a.id === article.id)
+      : -1;
+    const previousArticle =
+      shouldMarkOpened && articleIndex >= 0 ? articles[articleIndex] : null;
 
-    // Record interaction
-    try {
-      fetch('/api/interactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ articleId: article.id, type: 'open' }),
-      });
-
-      // If "hide on open" is active, remove from local list
-      if ($pageStore.data.globalSettings?.hideOnOpen) {
-        articles = articles.filter((a: Article) => a.id !== article.id);
-      }
-    } catch (err) {
-      console.error('Failed to record open interaction', err);
+    if (shouldMarkOpened && previousArticle) {
+      articles = articles.filter((a: Article) => a.id !== article.id);
     }
+
+    void fetch('/api/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ articleId: article.id, type: 'open' }),
+      keepalive: true,
+    }).catch((err) => {
+      console.error('Failed to record open interaction', err);
+
+      if (
+        shouldMarkOpened &&
+        previousArticle &&
+        !articles.some((a: Article) => a.id === article.id)
+      ) {
+        const next = [...articles];
+        next.splice(Math.min(articleIndex, next.length), 0, previousArticle);
+        articles = next;
+      }
+    });
 
     if (mode === 'tab') {
       window.open(article.url, '_blank', 'noopener,noreferrer');
@@ -71,6 +89,9 @@
   let loadingMore = $state(false);
   let hasMore = $state(false);
   let disableEntryTransitions = $state(false);
+  let pendingArticleIds = $state<Record<string, boolean>>({});
+  let sentinelEl = $state<HTMLDivElement | null>(null);
+  let scrollContainerEl: HTMLElement | null = null;
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
@@ -89,7 +110,39 @@
     return new Date(date).toLocaleDateString();
   }
 
-  async function interact(articleId: string, type: string) {
+  async function interact(articleId: string, type: InteractionType) {
+    if (pendingArticleIds[articleId]) return;
+
+    const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
+    const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
+    const shouldRemove = type === 'hide';
+    const isReaction = type === 'thumbs_up' || type === 'thumbs_down';
+    const previousReaction = previousArticle
+      ? {
+          thumbs_up: previousArticle.thumbs_up,
+          thumbs_down: previousArticle.thumbs_down,
+        }
+      : null;
+
+    if (shouldRemove && previousArticle) {
+      articles = articles.filter((a: Article) => a.id !== articleId);
+    }
+
+    if (isReaction && previousArticle) {
+      const reactionType = type as ReactionType;
+      articles = articles.map((a: Article) =>
+        a.id === articleId
+          ? {
+              ...a,
+              thumbs_up: reactionType === 'thumbs_up',
+              thumbs_down: reactionType === 'thumbs_down',
+            }
+          : a,
+      );
+    }
+
+    pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
+
     try {
       const res = await fetch('/api/interactions', {
         method: 'POST',
@@ -104,12 +157,37 @@
           thumbs_down: 'Disliked',
         };
         addToast(labels[type] || type, 'success');
-        if (type === 'hide') {
-          articles = articles.filter((a: Article) => a.id !== articleId);
-        }
+      } else {
+        throw new Error('Request failed');
       }
-    } catch {
+    } catch (err) {
+      if (
+        shouldRemove &&
+        previousArticle &&
+        !articles.some((a: Article) => a.id === articleId)
+      ) {
+        const next = [...articles];
+        next.splice(Math.min(articleIndex, next.length), 0, previousArticle);
+        articles = next;
+      }
+
+      if (isReaction && previousArticle && previousReaction) {
+        articles = articles.map((a: Article) =>
+          a.id === articleId
+            ? {
+                ...a,
+                thumbs_up: previousReaction.thumbs_up,
+                thumbs_down: previousReaction.thumbs_down,
+              }
+            : a,
+        );
+      }
+
+      console.error('Action failed', err);
       addToast('Action failed', 'error');
+    } finally {
+      const { [articleId]: _pending, ...rest } = pendingArticleIds;
+      pendingArticleIds = rest;
     }
   }
 
@@ -170,12 +248,29 @@
           if (data.articles.length < 25) hasMore = false;
         }
       } else {
-        hasMore = false;
+        console.error('Failed to load more articles', res.status);
       }
     } catch (err) {
       console.error(err);
     } finally {
       loadingMore = false;
+      if (hasMore && isNearBottom()) {
+        window.requestAnimationFrame(() => maybeLoadMore());
+      }
+    }
+  }
+
+  function isNearBottom(): boolean {
+    if (!scrollContainerEl) return false;
+    return (
+      scrollContainerEl.scrollTop + scrollContainerEl.clientHeight >=
+      scrollContainerEl.scrollHeight - 600
+    );
+  }
+
+  function maybeLoadMore() {
+    if (hasMore && !loadingMore && isNearBottom()) {
+      void loadMore();
     }
   }
 
@@ -187,21 +282,40 @@
     disableEntryTransitions = mobileOrReducedMotion;
 
     document.addEventListener('keydown', handleKeydown);
+    scrollContainerEl = document.querySelector('main');
+
+    let scrollRaf = 0;
+    const onScroll = () => {
+      if (scrollRaf) return;
+      scrollRaf = window.requestAnimationFrame(() => {
+        scrollRaf = 0;
+        maybeLoadMore();
+      });
+    };
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loadingMore) {
-          loadMore();
+        if (entries[0].isIntersecting) {
+          maybeLoadMore();
         }
       },
-      { rootMargin: '400px' },
+      { root: scrollContainerEl, rootMargin: '400px' },
     );
 
-    const sentinel = document.getElementById('infinite-sentinel');
-    if (sentinel) observer.observe(sentinel);
+    if (scrollContainerEl) {
+      scrollContainerEl.addEventListener('scroll', onScroll, { passive: true });
+    }
+
+    if (sentinelEl) observer.observe(sentinelEl);
+
+    maybeLoadMore();
 
     return () => {
       document.removeEventListener('keydown', handleKeydown);
+      if (scrollContainerEl) {
+        scrollContainerEl.removeEventListener('scroll', onScroll);
+      }
+      if (scrollRaf) window.cancelAnimationFrame(scrollRaf);
       observer.disconnect();
     };
   });
@@ -495,6 +609,7 @@
                 <button
                   type="button"
                   class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
+                  disabled={Boolean(pendingArticleIds[article.id])}
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
@@ -520,6 +635,7 @@
                 <button
                   type="button"
                   class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
+                  disabled={Boolean(pendingArticleIds[article.id])}
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
@@ -543,49 +659,55 @@
                   Save
                 </button>
                 <div class="ml-auto flex items-center gap-1">
-                  <button
-                    type="button"
-                    class="action-btn !bg-surface-900/50 backdrop-blur-sm"
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onpointerup={(e) => e.stopPropagation()}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      interact(article.id, 'thumbs_up');
-                    }}
-                    title="Like"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      ><path d="M7 10v12" /><path
-                        d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
+                <button
+                  type="button"
+                  class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_up
+                    ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
+                    : ''}"
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'thumbs_up');
+                  }}
+                  aria-pressed={Boolean(article.thumbs_up)}
+                  title="Like"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill={article.thumbs_up ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    stroke-width="2"
+                    ><path d="M7 10v12" /><path
+                      d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
                       /></svg
                     >
                   </button>
-                  <button
-                    type="button"
-                    class="action-btn !bg-surface-900/50 backdrop-blur-sm"
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onpointerup={(e) => e.stopPropagation()}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      interact(article.id, 'thumbs_down');
-                    }}
-                    title="Dislike"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
+                <button
+                  type="button"
+                  class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_down
+                    ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
+                    : ''}"
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'thumbs_down');
+                  }}
+                  aria-pressed={Boolean(article.thumbs_down)}
+                  title="Dislike"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill={article.thumbs_down ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    stroke-width="2"
                       ><path d="M17 14V2" /><path
                         d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
                       /></svg
@@ -601,17 +723,21 @@
   </div>
 
   <!-- Infinite Scroll Sentinel -->
-  {#if showInfiniteScroll}
-    <div id="infinite-sentinel" class="flex h-32 items-center justify-center">
+      {#if showInfiniteScroll}
+    <div bind:this={sentinelEl} class="flex h-32 items-center justify-center">
       {#if loadingMore}
-        <div
-          class="flex items-center gap-3 text-sm"
-          style="color: var(--color-surface-300);"
-        >
-          <div
-            class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
-          ></div>
-          Loading more...
+        <div class="flex flex-col items-center gap-3 text-sm" style="color: var(--color-surface-300);">
+          <div class="flex items-center gap-2">
+            <div class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.2s]"></div>
+            <div class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.1s]"></div>
+            <div class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400"></div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div
+              class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+            ></div>
+            <span class="font-medium">Loading more articles...</span>
+          </div>
         </div>
       {:else if !hasMore && articles.length > 0}
         <p class="text-sm" style="color: var(--color-surface-400);">

@@ -25,30 +25,50 @@
     articles = pageData.articles;
   });
 
+  function getScrollContainer(): HTMLElement | null {
+    return document.querySelector('main');
+  }
+
+  function isAtTop(): boolean {
+    const container = getScrollContainer();
+    return !container || container.scrollTop <= 0;
+  }
+
   async function handleSync() {
     if (syncing) return;
     syncing = true;
-    await syncFeeds();
-    syncing = false;
+    try {
+      await syncFeeds();
+    } finally {
+      syncing = false;
+    }
   }
 
   function handleTouchStart(e: TouchEvent) {
-    if (window.scrollY <= 0) {
-      isPulling = true;
-      touchStartY = e.changedTouches[0].screenY;
-    }
+    touchStartY = e.changedTouches[0].screenY;
+    isPulling = false;
+    pullDistance = 0;
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (!isPulling) return;
+    if (!isAtTop()) return;
+
     const currentY = e.changedTouches[0].screenY;
     const diff = currentY - touchStartY;
-    if (diff > 0) {
-      pullDistance = Math.min(diff * 0.4, 80);
-    } else {
+    if (diff <= 0) {
       pullDistance = 0;
       isPulling = false;
+      return;
     }
+
+    if (diff < 12 && !isPulling) return;
+
+    if (!isPulling) {
+      isPulling = true;
+    }
+
+    e.preventDefault();
+    pullDistance = Math.min(diff * 0.4, 80);
   }
 
   function handleTouchEnd() {
@@ -63,6 +83,7 @@
 <div
   class="mx-auto max-w-7xl"
   role="presentation"
+  style="overscroll-behavior-y: contain; touch-action: pan-y;"
   ontouchstart={handleTouchStart}
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
@@ -85,9 +106,9 @@
       >
         <path d="M12 5v14M19 12l-7 7-7-7" />
       </svg>
-      <span class="text-xs font-bold uppercase tracking-wider"
-        >{pullDistance >= 60 ? 'Release to sync' : 'Pull to sync'}</span
-      >
+      <span class="text-xs font-bold uppercase tracking-wider">
+        {syncing ? 'Syncing...' : pullDistance >= 60 ? 'Release to sync' : 'Pull to sync'}
+      </span>
     </div>
   </div>
 

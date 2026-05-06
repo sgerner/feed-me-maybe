@@ -237,6 +237,10 @@
   color: var(--color-primary-300);
 }
 
+main {
+  overscroll-behavior-y: none;
+}
+
 /* ── Gradient Text ── */
 .gradient-text {
   background: linear-gradient(
