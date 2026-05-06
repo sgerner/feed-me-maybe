@@ -1,7 +1,7 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import { formatContent } from '$lib/utils/format';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
@@ -59,6 +59,12 @@
       articles = articles.filter((a: Article) => a.id !== article.id);
     }
 
+    if (openingTimeout) clearTimeout(openingTimeout);
+    openingArticle = {
+      id: article.id,
+      label: mode === 'tab' ? 'Opening in new tab...' : 'Loading article...',
+    };
+
     void fetch('/api/interactions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -80,7 +86,13 @@
 
     if (mode === 'tab') {
       window.open(article.url, '_blank', 'noopener,noreferrer');
+      openingTimeout = setTimeout(() => {
+        if (openingArticle?.id === article.id) {
+          openingArticle = null;
+        }
+      }, 1200);
     } else {
+      await tick();
       goto(`/articles/${article.id}?mode=${mode}`);
     }
   }
@@ -92,6 +104,8 @@
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
+  let openingArticle = $state<{ id: string; label: string } | null>(null);
+  let openingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
@@ -721,6 +735,23 @@
         </div>
     {/each}
   </div>
+
+  {#if openingArticle}
+    <div class="pointer-events-none fixed inset-x-0 top-20 z-[70] flex justify-center px-4">
+      <div
+        class="flex items-center gap-3 rounded-sm border px-4 py-3 shadow-2xl backdrop-blur-xl"
+        style="background: color-mix(in oklch, var(--color-surface-900) 86%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
+        in:fade={{ duration: 160 }}
+        out:fade={{ duration: 160 }}
+      >
+        <div class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
+        <div class="flex flex-col">
+          <span class="text-sm font-semibold text-surface-50">{openingArticle.label}</span>
+          <span class="text-xs text-surface-300">Please wait a moment.</span>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <!-- Infinite Scroll Sentinel -->
       {#if showInfiniteScroll}

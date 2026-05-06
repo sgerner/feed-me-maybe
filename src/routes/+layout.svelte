@@ -415,7 +415,7 @@
     </main>
   </div>
 
-  {#if navigating.to?.url?.searchParams?.get('mode') === 'archive'}
+  {#if navigating.to?.url?.pathname?.startsWith('/articles/')}
     <div
       class="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-4 bg-surface-950/80 backdrop-blur-sm"
       transition:fade={{ duration: 200 }}
@@ -424,11 +424,19 @@
         class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
       ></div>
       <p class="text-sm font-medium text-surface-200">
-        Loading from Archive...
+        {navigating.to?.url?.searchParams?.get('mode') === 'archive'
+          ? 'Loading from Archive...'
+          : 'Loading article...'}
       </p>
-      <p class="max-w-xs text-center text-xs text-surface-400">
-        This may take a few moments as we retrieve the archived version.
-      </p>
+      {#if navigating.to?.url?.searchParams?.get('mode') === 'archive'}
+        <p class="max-w-xs text-center text-xs text-surface-400">
+          This may take a few moments as we retrieve the archived version.
+        </p>
+      {:else}
+        <p class="max-w-xs text-center text-xs text-surface-400">
+          We’re opening the article in the reader.
+        </p>
+      {/if}
     </div>
   {/if}
 
