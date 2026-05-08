@@ -57,6 +57,9 @@
       article.url?.includes('/comments/'),
     ),
   );
+  const renderedArticleContent = $derived(
+    article.content ? formatContent(article.content) : '',
+  );
   const sourceHref = $derived(
     mode === 'archive'
       ? `https://archive.is/${encodeURIComponent(article.url)}`
@@ -77,8 +80,14 @@
   // Check if the hero image is already the first thing in the content to avoid duplicates
   function contentFirstImg(): string | null {
     if (!article.content) return null;
-    const match = article.content.match(/<img[^>]+src=["']([^"']+)["']/i);
-    return match ? match[1] : null;
+
+    const htmlMatch = article.content.match(/<img[^>]+src=["']([^"']+)["']/i);
+    if (htmlMatch) return htmlMatch[1];
+
+    const markdownMatch = article.content.match(
+      /!\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/,
+    );
+    return markdownMatch ? markdownMatch[1] : null;
   }
 
   function shouldShowHero(): boolean {
@@ -418,7 +427,7 @@
 
           <div class="prose prose-sm max-w-none prose-glass">
             {#if article.content}
-              {@html article.content}
+              {@html renderedArticleContent}
             {:else if article.summary}
               <div class="leading-relaxed">{@html formatContent(article.summary)}</div>
             {:else}
