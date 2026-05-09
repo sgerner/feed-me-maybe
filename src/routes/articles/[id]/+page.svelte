@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
-  import { formatContent } from '$lib/utils/format';
+  import { formatContent, renderContent } from '$lib/utils/format';
+  import { extractArticleImages } from '$lib/utils/article-images';
   import { addToast } from '$lib/stores/toast.svelte';
   import { page } from '$app/stores';
   import RedditComments from '$lib/components/RedditComments.svelte';
@@ -41,6 +42,10 @@
   let dismissing = $state(false);
   let pendingAction = $state<InteractionType | null>(null);
   let iframeLoading = $state(true);
+  let lightboxOpen = $state(false);
+  let lightboxIndex = $state(0);
+  let articleContentEl = $state<HTMLDivElement | null>(null);
+  let lightboxBackdropEl = $state<HTMLDivElement | null>(null);
 
   $effect(() => {
     liked = !!article.thumbs_up;
@@ -58,8 +63,16 @@
     ),
   );
   const renderedArticleContent = $derived(
-    article.content ? formatContent(article.content) : '',
+    article.content ? renderContent(article.content) : '',
   );
+  const articleImages = $derived(
+    extractArticleImages({
+      articleUrl: article.url,
+      heroUrl: article.image_url,
+      content: article.content,
+    }),
+  );
+  const activeLightboxImage = $derived(articleImages[lightboxIndex] ?? null);
   const sourceHref = $derived(
     mode === 'archive'
       ? `https://archive.is/${encodeURIComponent(article.url)}`
@@ -75,6 +88,44 @@
         if (main) main.style.overflow = '';
       };
     }
+  });
+
+  $effect(() => {
+    if (!lightboxOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  });
+
+  $effect(() => {
+    if (!articleContentEl) return;
+
+    const onClick = (event: MouseEvent) => handleContentClick(event);
+    articleContentEl.addEventListener('click', onClick);
+
+    return () => {
+      articleContentEl?.removeEventListener('click', onClick);
+    };
+  });
+
+  $effect(() => {
+    if (!lightboxBackdropEl) return;
+
+    const onClick = (event: MouseEvent) => {
+      if (event.target === lightboxBackdropEl) {
+        closeLightbox();
+      }
+    };
+
+    lightboxBackdropEl.addEventListener('click', onClick);
+
+    return () => {
+      lightboxBackdropEl?.removeEventListener('click', onClick);
+    };
   });
 
   // Check if the hero image is already the first thing in the content to avoid duplicates
@@ -102,6 +153,52 @@
       return heroUrl !== firstUrl;
     } catch {
       return article.image_url !== firstImg;
+    }
+  }
+
+  function openLightbox(index: number) {
+    if (!articleImages.length) return;
+    lightboxIndex = Math.max(0, Math.min(index, articleImages.length - 1));
+    lightboxOpen = true;
+  }
+
+  function closeLightbox() {
+    lightboxOpen = false;
+  }
+
+  function goToLightboxImage(delta: number) {
+    if (!articleImages.length) return;
+    lightboxIndex =
+      (lightboxIndex + delta + articleImages.length) % articleImages.length;
+  }
+
+  function handleContentClick(event: MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    const image = target?.closest('img') as HTMLImageElement | null;
+    if (!image) return;
+
+    const src = image.getAttribute('src');
+    if (!src) return;
+
+    const imageIndex = articleImages.findIndex((item) => item.src === src);
+    if (imageIndex === -1) return;
+
+    event.preventDefault();
+    openLightbox(imageIndex);
+  }
+
+  function handleLightboxKeydown(event: KeyboardEvent) {
+    if (!lightboxOpen) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeLightbox();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      goToLightboxImage(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      goToLightboxImage(1);
     }
   }
 
@@ -203,6 +300,8 @@
   }
 </script>
 
+<svelte:window onkeydown={handleLightboxKeydown} />
+
 <div
   class={isEmbeddedMode
     ? 'absolute inset-0 z-0 bg-surface-950'
@@ -281,20 +380,25 @@
         </div>
       {:else}
         {#if shouldShowHero()}
-          <div class="relative">
+          <button
+            type="button"
+            class="group relative block w-full overflow-hidden text-left"
+            onclick={() => openLightbox(0)}
+            aria-label="Open article image"
+          >
             <img
               src={article.image_url}
               alt=""
-              class="h-64 w-full object-cover md:h-80"
+              class="h-64 w-full object-cover transition-transform duration-300 group-hover:scale-[1.01] md:h-80 cursor-zoom-in"
               loading="lazy"
             />
             <div
-              class="absolute inset-0 bg-gradient-to-t from-[var(--color-surface-950)] via-transparent to-transparent opacity-80"
+              class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-surface-950)] via-transparent to-transparent opacity-80"
             ></div>
-          </div>
+          </button>
         {/if}
 
-        <div class="p-5 md:p-8">
+        <div class="p-5 pb-28 md:p-8 md:pb-32">
           <div class="mb-6">
             <div
               class="flex flex-wrap items-center gap-2 text-xs"
@@ -425,7 +529,10 @@
             </div>
           {/if}
 
-          <div class="prose prose-sm max-w-none prose-glass">
+          <div
+            class="prose prose-sm max-w-none prose-glass [&_img]:cursor-zoom-in"
+            bind:this={articleContentEl}
+          >
             {#if article.content}
               {@html renderedArticleContent}
             {:else if article.summary}
@@ -450,6 +557,122 @@
         </div>
       {/if}
     </article>
+  {/if}
+
+  {#if lightboxOpen && activeLightboxImage}
+    <div
+      class="fixed inset-0 z-[70] bg-black/95"
+      role="dialog"
+      tabindex="0"
+      aria-modal="true"
+      aria-label="Article image viewer"
+      in:fade={{ duration: 160 }}
+      bind:this={lightboxBackdropEl}
+    >
+      <div class="flex h-full w-full flex-col">
+        <div class="flex items-center justify-between gap-3 p-3 md:p-4">
+          <div class="text-xs font-medium text-white/70">
+            {lightboxIndex + 1} / {articleImages.length}
+          </div>
+          <button
+            type="button"
+            class="action-btn h-10 w-10 rounded-full !p-0 !bg-white/10 !text-white hover:!bg-white/15"
+            onclick={closeLightbox}
+            aria-label="Close image viewer"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.25"
+            >
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="flex min-h-0 flex-1 items-center justify-center px-3 pb-3 md:px-6 md:pb-6">
+          {#if articleImages.length > 1}
+            <button
+              type="button"
+              class="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-white/10 bg-black/40 p-3 text-white/90 backdrop-blur-sm transition hover:bg-black/60 md:left-6"
+              onclick={() => goToLightboxImage(-1)}
+              aria-label="Previous image"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+          {/if}
+
+          <div class="flex h-full w-full min-h-0 min-w-0 items-center justify-center">
+            <img
+              src={activeLightboxImage.src}
+              alt=""
+              class="max-h-full max-w-full select-none object-contain"
+              draggable="false"
+            />
+          </div>
+
+          {#if articleImages.length > 1}
+            <button
+              type="button"
+              class="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-white/10 bg-black/40 p-3 text-white/90 backdrop-blur-sm transition hover:bg-black/60 md:right-6"
+              onclick={() => goToLightboxImage(1)}
+              aria-label="Next image"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
+          {/if}
+        </div>
+
+        {#if articleImages.length > 1}
+          <div class="border-t border-white/10 bg-black/65 px-3 py-3 backdrop-blur-md md:px-6">
+            <div class="flex gap-2 overflow-x-auto pb-1">
+              {#each articleImages as image, index (image.src)}
+                <button
+                  type="button"
+                  class="relative h-16 w-24 flex-none overflow-hidden rounded-sm border transition md:h-20 md:w-28 {index === lightboxIndex
+                    ? 'border-primary-400 ring-1 ring-primary-400'
+                    : 'border-white/10 opacity-70 hover:opacity-100'}"
+                  onclick={() => (lightboxIndex = index)}
+                  aria-label={`Show image ${index + 1}`}
+                >
+                  <img
+                    src={image.src}
+                    alt=""
+                    class="h-full w-full object-cover"
+                    draggable="false"
+                  />
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+    </div>
   {/if}
 
   <!-- Floating Action Bar -->
