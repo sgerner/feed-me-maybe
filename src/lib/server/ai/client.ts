@@ -89,7 +89,7 @@ function normalizeAnalysis(raw: unknown): Partial<ArticleScore> {
 export function createAiClient(config: AiClientConfig) {
   const { baseUrl, apiKey, model, defaultHeaders = {} } = config;
 
-  async function chatComplete(
+  async function completeChat(
     systemPrompt: string,
     userPrompt: string,
     maxTokens = 512,
@@ -123,7 +123,7 @@ export function createAiClient(config: AiClientConfig) {
   async function analyzeArticle(
     input: ArticleAnalysisInput,
   ): Promise<Partial<ArticleScore>> {
-    const result = await chatComplete(
+    const result = await completeChat(
       ARTICLE_ANALYSIS_SYSTEM_PROMPT,
       buildArticleAnalysisPrompt(input),
       512,
@@ -137,18 +137,19 @@ export function createAiClient(config: AiClientConfig) {
   }
 
   async function summarizeArticle(content: string): Promise<string | null> {
-    return chatComplete(
+    return completeChat(
       'Summarize concisely in 2-3 sentences.',
       content.substring(0, 3000),
       256,
     );
   }
 
-  return { analyzeArticle, summarizeArticle };
+  return { completeChat, analyzeArticle, summarizeArticle };
 }
 
 export function createNullAiClient() {
   return {
+    completeChat: async () => null,
     analyzeArticle: async () => ({}),
     summarizeArticle: async () => null,
   };
