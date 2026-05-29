@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { isRedditUrl, normalizeRedditUrl } from './sources/reddit';
 import crypto from 'node:crypto';
 
 export function exportOpml(): string {
@@ -112,9 +113,12 @@ export function importOpml(xml: string): {
     if (!outline.xmlUrl) continue;
     try {
       new URL(outline.xmlUrl);
+      const storedUrl = isRedditUrl(outline.xmlUrl)
+        ? normalizeRedditUrl(outline.xmlUrl).normalizedUrl
+        : outline.xmlUrl;
       const existing = db
         .prepare('SELECT id FROM feeds WHERE url = ?')
-        .get(outline.xmlUrl);
+        .get(storedUrl);
       if (existing) continue;
 
       const now = Date.now();
@@ -122,7 +126,7 @@ export function importOpml(xml: string): {
         'INSERT INTO feeds (id, url, title, site_url, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(
         crypto.randomUUID(),
-        outline.xmlUrl,
+        storedUrl,
         outline.text || '',
         outline.htmlUrl || '',
         outline.category || '',

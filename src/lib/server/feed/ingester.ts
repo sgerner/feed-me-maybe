@@ -136,6 +136,17 @@ export async function ingestFeed(
     });
   }
 
+  if (sourceType === 'reddit') {
+    const normalizedUrl = normalizeRedditUrl(canonicalUrl).normalizedUrl;
+    if (feedRecord.url !== normalizedUrl) {
+      db.prepare('UPDATE feeds SET url = ?, updated_at = ? WHERE id = ?').run(
+        normalizedUrl,
+        Date.now(),
+        feedId,
+      );
+    }
+  }
+
   if (fetchResult.notModified) {
     db.prepare(
       'UPDATE feed_fetch_logs SET status = ?, articles_found = 0, articles_new = 0, completed_at = ? WHERE id = ?',

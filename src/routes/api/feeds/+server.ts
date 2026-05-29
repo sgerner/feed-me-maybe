@@ -102,7 +102,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       username: redditSource.username,
       query: redditSource.query,
     });
-    normalizedUrl = redditSource.fetchUrl;
+    normalizedUrl = redditSource.normalizedUrl;
     // Use subreddit or username as default title if none provided
     if (!title) {
       title =
