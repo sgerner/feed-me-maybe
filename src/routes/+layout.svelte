@@ -26,11 +26,24 @@
     syncing = false;
   }
 
-  // Trigger sync on open
+  // Trigger sync on open and visibility change
   $effect(() => {
-    if (data.sessionId) {
-      syncFeeds({ silent: true });
-    }
+    if (!data.sessionId) return;
+
+    // Initial sync
+    syncFeeds({ silent: true });
+
+    // Sync on visibility change (re-opening the tab/app)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncFeeds({ silent: true });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   });
 
   async function addFeed(e: Event) {
