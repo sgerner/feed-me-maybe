@@ -36,19 +36,52 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   const proxyBaseUrl = getConfiguredProxyBaseUrl();
-  const fetchUrl =
-    body.useProxy && proxyBaseUrl
-      ? buildProxiedUrl(jsonUrl, proxyBaseUrl)
-      : jsonUrl;
+  const userAgent = process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
 
+  // Always use proxy for Reddit if available, regardless of what the client said,
+  // because we know Reddit blocks most server IPs.
+  const fetchUrl = proxyBaseUrl ? buildProxiedUrl(jsonUrl, proxyBaseUrl) : jsonUrl;
+
+  let response;
   try {
-    const response = await fetch(fetchUrl, {
+    response = await fetch(fetchUrl, {
       headers: {
-        'User-Agent': 'FeedMeMaybe/1.0 by sgerner',
+        'User-Agent': userAgent,
         Accept: 'application/json',
       },
       signal: AbortSignal.timeout(15000),
     });
+
+    // If we get a 403, try old.reddit.com as it sometimes has different blocking rules
+    if (response.status === 403 && fetchUrl.includes('www.reddit.com')) {
+      const oldRedditUrl = fetchUrl.replace('www.reddit.com', 'old.reddit.com');
+      const secondAttempt = await fetch(oldRedditUrl, {
+        headers: {
+          'User-Agent': userAgent,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (secondAttempt.ok) {
+        response = secondAttempt;
+      }
+    }
+
+    // If still 403, try with a browser User-Agent
+    if (response.status === 403) {
+      const browserUA =
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+      const thirdAttempt = await fetch(fetchUrl, {
+        headers: {
+          'User-Agent': browserUA,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (thirdAttempt.ok) {
+        response = thirdAttempt;
+      }
+    }
 
     if (!response.ok) {
       recordAppError({
