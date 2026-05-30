@@ -1,4 +1,4 @@
-import type { FetchResult, FetchedItem } from '$lib/server/feed/fetcher';
+import { fetchFeed, type FetchResult, type FetchedItem } from '$lib/server/feed/fetcher';
 import { buildProxiedUrl } from '$lib/server/proxy';
 
 export type RedditKind =
@@ -44,8 +44,8 @@ function ensureHttpsWww(input: string): URL {
   return url;
 }
 
-function stripJsonSuffix(path: string): string {
-  return path.replace(/\.json$/i, '');
+function stripRedditSuffix(path: string): string {
+  return path.replace(/\.(json|rss)$/i, '');
 }
 
 function addLimitIfMissing(url: URL, defaultLimit = 25): void {
@@ -56,7 +56,7 @@ function addLimitIfMissing(url: URL, defaultLimit = 25): void {
 
 export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   const url = ensureHttpsWww(input);
-  const path = stripJsonSuffix(url.pathname).replace(/\/$/, '');
+  const path = stripRedditSuffix(url.pathname).replace(/\/$/, '');
   const parts = path.split('/').filter(Boolean);
 
   let redditKind: RedditKind = 'unknown';
@@ -73,7 +73,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   ) {
     redditKind = 'comments';
     subreddit = parts[1];
-    fetchUrl = `${url.origin}${path}.json`;
+    fetchUrl = `${url.origin}${path}.rss`;
     return {
       originalUrl: input,
       normalizedUrl: url.href,
@@ -93,7 +93,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     subreddit = parts[1];
     query = url.searchParams.get('q') || undefined;
     const searchUrl = new URL(url.href);
-    searchUrl.pathname = `${path}.json`;
+    searchUrl.pathname = `${path}.rss`;
     addLimitIfMissing(searchUrl);
     fetchUrl = searchUrl.href;
     return {
@@ -111,7 +111,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     redditKind = 'search';
     query = url.searchParams.get('q') || undefined;
     const searchUrl = new URL(url.href);
-    searchUrl.pathname = `${path}.json`;
+    searchUrl.pathname = `${path}.rss`;
     addLimitIfMissing(searchUrl);
     fetchUrl = searchUrl.href;
     return {
@@ -129,7 +129,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     username = parts[1];
     const userPath = parts.slice(0, 3).join('/');
     const userUrl = new URL(url.href);
-    userUrl.pathname = `/${userPath}.json`;
+    userUrl.pathname = `/${userPath}.rss`;
     addLimitIfMissing(userUrl);
     fetchUrl = userUrl.href;
     return {
@@ -150,14 +150,14 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     ) {
       redditKind = 'subreddit_listing';
       const listingUrl = new URL(url.href);
-      listingUrl.pathname = `${path}.json`;
+      listingUrl.pathname = `${path}.rss`;
       addLimitIfMissing(listingUrl);
       fetchUrl = listingUrl.href;
     } else {
       // Default bare subreddit URLs to /new for a chronological feed
       redditKind = 'subreddit';
       const subUrl = new URL(url.href);
-      subUrl.pathname = `${path}/new.json`;
+      subUrl.pathname = `${path}/new.rss`;
       addLimitIfMissing(subUrl);
       fetchUrl = subUrl.href;
     }
@@ -170,13 +170,14 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     };
   }
 
-  // Fallback: append .json to whatever path we have
+  // Fallback: append .rss to whatever path we have
   const fallbackUrl = new URL(url.href);
-  fallbackUrl.pathname = `${path}.json`;
+  fallbackUrl.pathname = `${path}.rss`;
   addLimitIfMissing(fallbackUrl);
   fetchUrl = fallbackUrl.href;
   return { originalUrl: input, normalizedUrl: url.href, redditKind, fetchUrl };
 }
+
 
 export function extractBestRedditImage(post: any): string | undefined {
   if (!post || typeof post !== 'object') return undefined;
@@ -349,8 +350,17 @@ export async function fetchRedditSource(
   source: RedditNormalizedSource,
   options: { proxyBaseUrl?: string } = {},
 ): Promise<FetchResult> {
-  const userAgent = process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
-  const fetchUrl = buildProxiedUrl(source.fetchUrl, options.proxyBaseUrl);
+  // Try RSS first as it is more reliable (less likely to be 403'd)
+  const rssResult = await fetchFeed(source.fetchUrl, options);
+  if (rssResult.success && rssResult.items.length > 0) {
+    return rssResult;
+  }
+
+  // If RSS failed or returned nothing, try the JSON API as a fallback
+  const jsonUrl = source.fetchUrl.replace(/\.rss(\?|$)/, '.json$1');
+  const userAgent =
+    process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
+  const fetchUrl = buildProxiedUrl(jsonUrl, options.proxyBaseUrl);
   const headers: Record<string, string> = {
     'User-Agent': userAgent,
     Accept: 'application/json',

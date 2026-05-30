@@ -56,7 +56,11 @@ function buildForwardHeaders(request) {
     headers.set(key, value);
   }
 
-  headers.set('User-Agent', BROWSER_UA);
+  // Use the incoming User-Agent if provided, otherwise fallback to BROWSER_UA
+  if (!headers.has('User-Agent')) {
+    headers.set('User-Agent', BROWSER_UA);
+  }
+
   if (!headers.has('Accept-Language')) {
     headers.set('Accept-Language', 'en-US,en;q=0.9');
   }

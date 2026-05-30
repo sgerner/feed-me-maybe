@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { fetchFeed } from '$lib/server/feed/fetcher';
 import {
   isRedditUrl,
   normalizeRedditUrl,
@@ -6,6 +7,14 @@ import {
   parseRedditPost,
   fetchRedditSource,
 } from './reddit';
+
+vi.mock('$lib/server/feed/fetcher', async (importOriginal) => {
+  const actual = (await importOriginal()) as any;
+  return {
+    ...actual,
+    fetchFeed: vi.fn(),
+  };
+});
 
 describe('isRedditUrl', () => {
   it('matches common Reddit hosts', () => {
@@ -30,46 +39,46 @@ describe('normalizeRedditUrl', () => {
   it('normalizes subreddit default feed', () => {
     const r = normalizeRedditUrl('https://reddit.com/r/codex');
     expect(r.redditKind).toBe('subreddit');
-    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.json?limit=25');
+    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.rss?limit=25');
   });
 
   it('normalizes www subreddit with trailing slash', () => {
     const r = normalizeRedditUrl('https://www.reddit.com/r/codex/');
-    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.json?limit=25');
+    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.rss?limit=25');
   });
 
   it('normalizes subreddit listing feeds', () => {
     expect(
       normalizeRedditUrl('https://www.reddit.com/r/codex/new').fetchUrl,
-    ).toBe('https://www.reddit.com/r/codex/new.json?limit=25');
+    ).toBe('https://www.reddit.com/r/codex/new.rss?limit=25');
     expect(
       normalizeRedditUrl('https://www.reddit.com/r/codex/hot').fetchUrl,
-    ).toBe('https://www.reddit.com/r/codex/hot.json?limit=25');
+    ).toBe('https://www.reddit.com/r/codex/hot.rss?limit=25');
     expect(
       normalizeRedditUrl('https://www.reddit.com/r/codex/top').fetchUrl,
-    ).toBe('https://www.reddit.com/r/codex/top.json?limit=25');
+    ).toBe('https://www.reddit.com/r/codex/top.rss?limit=25');
     expect(
       normalizeRedditUrl('https://www.reddit.com/r/codex/rising').fetchUrl,
-    ).toBe('https://www.reddit.com/r/codex/rising.json?limit=25');
+    ).toBe('https://www.reddit.com/r/codex/rising.rss?limit=25');
   });
 
   it('preserves query params like t and limit', () => {
     const r = normalizeRedditUrl('https://old.reddit.com/r/codex/top?t=week');
     expect(r.fetchUrl).toBe(
-      'https://www.reddit.com/r/codex/top.json?t=week&limit=25',
+      'https://www.reddit.com/r/codex/top.rss?t=week&limit=25',
     );
   });
 
   it('does not override existing limit', () => {
-    const r = normalizeRedditUrl('https://www.reddit.com/r/codex.json?limit=50');
-    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.json?limit=50');
+    const r = normalizeRedditUrl('https://www.reddit.com/r/codex.rss?limit=50');
+    expect(r.fetchUrl).toBe('https://www.reddit.com/r/codex/new.rss?limit=50');
   });
 
   it('normalizes Reddit search', () => {
     const r = normalizeRedditUrl('https://www.reddit.com/search?q=openclaw');
     expect(r.redditKind).toBe('search');
     expect(r.fetchUrl).toBe(
-      'https://www.reddit.com/search.json?q=openclaw&limit=25',
+      'https://www.reddit.com/search.rss?q=openclaw&limit=25',
     );
     expect(r.query).toBe('openclaw');
   });
@@ -80,7 +89,7 @@ describe('normalizeRedditUrl', () => {
     );
     expect(r.redditKind).toBe('search');
     expect(r.fetchUrl).toBe(
-      'https://www.reddit.com/r/selfhosted/search.json?q=caprover&restrict_sr=1&limit=25',
+      'https://www.reddit.com/r/selfhosted/search.rss?q=caprover&restrict_sr=1&limit=25',
     );
     expect(r.subreddit).toBe('selfhosted');
     expect(r.query).toBe('caprover');
@@ -89,13 +98,13 @@ describe('normalizeRedditUrl', () => {
   it('normalizes user feeds', () => {
     expect(
       normalizeRedditUrl('https://www.reddit.com/user/spez').fetchUrl,
-    ).toBe('https://www.reddit.com/user/spez.json?limit=25');
+    ).toBe('https://www.reddit.com/user/spez.rss?limit=25');
     expect(
       normalizeRedditUrl('https://www.reddit.com/user/spez/submitted').fetchUrl,
-    ).toBe('https://www.reddit.com/user/spez/submitted.json?limit=25');
+    ).toBe('https://www.reddit.com/user/spez/submitted.rss?limit=25');
     expect(
       normalizeRedditUrl('https://www.reddit.com/user/spez/comments').fetchUrl,
-    ).toBe('https://www.reddit.com/user/spez/comments.json?limit=25');
+    ).toBe('https://www.reddit.com/user/spez/comments.rss?limit=25');
   });
 
   it('normalizes comments / single post', () => {
@@ -104,7 +113,7 @@ describe('normalizeRedditUrl', () => {
     );
     expect(r.redditKind).toBe('comments');
     expect(r.fetchUrl).toBe(
-      'https://www.reddit.com/r/codex/comments/abc123/example_post_title.json',
+      'https://www.reddit.com/r/codex/comments/abc123/example_post_title.rss',
     );
     expect(r.subreddit).toBe('codex');
   });
@@ -241,6 +250,11 @@ describe('parseRedditPost', () => {
 describe('fetchRedditSource', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
+    vi.mocked(fetchFeed).mockResolvedValue({
+      success: false,
+      items: [],
+      error: 'Default RSS failure for JSON tests',
+    });
   });
 
   afterEach(() => {
@@ -361,12 +375,75 @@ describe('fetchRedditSource', () => {
     expect(result.error).toContain('rate limiting');
   });
 
-  it('returns structured error on 403', async () => {
+  it('tries RSS first and returns it if successful', async () => {
+    vi.mocked(fetchFeed).mockResolvedValue({
+      success: true,
+      items: [{ title: 'RSS Post', url: 'https://reddit.com/post' } as any],
+    });
+
+    const source = normalizeRedditUrl('https://reddit.com/r/test');
+    const result = await fetchRedditSource(source);
+
+    expect(result.success).toBe(true);
+    expect(result.items[0].title).toBe('RSS Post');
+    expect(fetchFeed).toHaveBeenCalledWith(
+      expect.stringContaining('.rss'),
+      expect.anything(),
+    );
+  });
+
+  it('falls back to JSON if RSS fetch returns no items', async () => {
+    vi.mocked(fetchFeed).mockResolvedValue({
+      success: true,
+      items: [],
+    });
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () =>
+        JSON.stringify({
+          data: {
+            children: [
+              {
+                data: {
+                  id: 'j1',
+                  title: 'JSON Post',
+                  permalink: '/r/test/comments/j1/p1/',
+                  is_self: true,
+                  subreddit: 'test',
+                },
+              },
+            ],
+          },
+        }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const source = normalizeRedditUrl('https://reddit.com/r/test');
+    const result = await fetchRedditSource(source);
+
+    expect(result.success).toBe(true);
+    expect(result.items[0].title).toBe('JSON Post');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('.json'),
+      expect.anything(),
+    );
+  });
+
+  it('returns structured error on 403 if both RSS and JSON fail', async () => {
+    vi.mocked(fetchFeed).mockResolvedValue({
+      success: false,
+      items: [],
+      error: 'RSS failed',
+    });
+
     const mockFetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 403,
       headers: new Headers(),
-      text: async () => '',
+      text: async () => 'Blocked',
     });
     vi.stubGlobal('fetch', mockFetch);
 
