@@ -213,6 +213,8 @@
     const prevDismissing = dismissing;
     pendingAction = type;
 
+    const shouldDismiss = type === 'hide' || type === 'thumbs_down';
+
     if (type === 'thumbs_up') {
       liked = !liked;
       if (liked) disliked = false;
@@ -221,7 +223,7 @@
       if (disliked) liked = false;
     } else if (type === 'save') {
       saved = !saved;
-    } else if (type === 'hide') {
+    } else if (shouldDismiss) {
       hidden = true;
       dismissing = true;
     }
@@ -245,11 +247,11 @@
           save: 'Saved',
           unsave: 'Removed from Saved',
           thumbs_up: 'Liked',
-          thumbs_down: 'Disliked',
+          thumbs_down: 'Disliked and hidden',
         };
         addToast(labels[actualType] || type, 'success');
 
-        if (type === 'hide') {
+        if (shouldDismiss) {
           // If hidden, go back after a delay
           setTimeout(() => {
             window.history.back();
@@ -277,8 +279,10 @@
       : article.url,
   );
 
-  let touchStartX = 0;
-  let touchStartY = 0;
+  let touchStartX: number | null = null;
+  let touchStartY: number | null = null;
+  const SWIPE_ACTION_THRESHOLD = 40;
+  const SWIPE_LONG_LEFT_THRESHOLD = 140;
 
   function handlePointerDown(e: PointerEvent) {
     if (!e.isPrimary) return;
@@ -287,15 +291,16 @@
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!e.isPrimary || !touchStartX) return;
+    if (!e.isPrimary || touchStartX === null || touchStartY === null) return;
     const dx = e.clientX - touchStartX;
     const dy = e.clientY - touchStartY;
-    touchStartX = 0;
-    touchStartY = 0;
+    touchStartX = null;
+    touchStartY = null;
 
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
-      if (dx < 0) interact('hide');
-      else interact('save');
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if (dx < -SWIPE_LONG_LEFT_THRESHOLD) interact('thumbs_down');
+      else if (dx < -SWIPE_ACTION_THRESHOLD) interact('hide');
+      else if (dx > SWIPE_ACTION_THRESHOLD) interact('save');
     }
   }
 </script>
@@ -710,7 +715,7 @@
         type="button"
         class="action-btn h-9 w-9 rounded-full !p-0 {liked
           ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
-          : ''}"
+          : ''} {hidden || dismissing ? 'opacity-50 pointer-events-none' : ''}"
         disabled={Boolean(pendingAction)}
         onclick={() => interact('thumbs_up')}
         title="Like"
@@ -732,10 +737,10 @@
         type="button"
         class="action-btn h-9 w-9 rounded-full !p-0 {disliked
           ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
-          : ''}"
+          : ''} {hidden || dismissing ? 'opacity-50 pointer-events-none' : ''}"
         disabled={Boolean(pendingAction)}
         onclick={() => interact('thumbs_down')}
-        title="Dislike"
+        title="Dislike and hide"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"

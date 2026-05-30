@@ -129,7 +129,7 @@
 
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
-    const shouldRemove = type === 'hide';
+    const shouldRemove = type === 'hide' || type === 'thumbs_down';
     const isReaction = type === 'thumbs_up' || type === 'thumbs_down';
     const previousReaction = previousArticle
       ? {
@@ -168,7 +168,7 @@
           hide: 'Hidden',
           save: 'Saved',
           thumbs_up: 'Liked',
-          thumbs_down: 'Disliked',
+          thumbs_down: 'Disliked and hidden',
         };
         addToast(labels[type] || type, 'success');
       } else {
@@ -345,6 +345,8 @@
 
   const SWIPE_INTENT_THRESHOLD = 10;
   const SWIPE_DIRECTION_RATIO = 1.2;
+  const SWIPE_ACTION_THRESHOLD = 60;
+  const SWIPE_LONG_LEFT_THRESHOLD = 140;
 
   function handlePointerDown(e: PointerEvent, articleId: string) {
     if (!e.isPrimary) return;
@@ -401,10 +403,22 @@
     touchStartY = 0;
     activeSwipeId = null;
 
-    if (swipeDirection === 'horizontal' && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 60) {
+    let triggeredAction = false;
+    if (swipeDirection === 'horizontal' && Math.abs(dx) > Math.abs(dy)) {
+      if (dx < -SWIPE_LONG_LEFT_THRESHOLD) {
+        triggeredAction = true;
+        interact(articleId, 'thumbs_down');
+      } else if (dx < -SWIPE_ACTION_THRESHOLD) {
+        triggeredAction = true;
+        interact(articleId, 'hide');
+      } else if (dx > SWIPE_ACTION_THRESHOLD) {
+        triggeredAction = true;
+        interact(articleId, 'save');
+      }
+    }
+
+    if (triggeredAction) {
       lastSwipeTime = Date.now();
-      if (dx < 0) interact(articleId, 'hide');
-      else interact(articleId, 'save');
     }
 
     swipeDirection = 'none';
@@ -506,7 +520,11 @@
             class="flex items-center gap-2 text-white font-bold"
             style="opacity: {(swipeOffsets[article.id] || 0) < 0 ? 1 : 0}"
           >
-            Hide
+            {#if (swipeOffsets[article.id] || 0) < -SWIPE_LONG_LEFT_THRESHOLD}
+              Dislike + Hide
+            {:else}
+              Hide
+            {/if}
             <svg
               xmlns="http://www.w3.org/2000/svg"
               width="20"
@@ -712,7 +730,7 @@
                     interact(article.id, 'thumbs_down');
                   }}
                   aria-pressed={Boolean(article.thumbs_down)}
-                  title="Dislike"
+                  title="Dislike and hide"
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"

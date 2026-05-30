@@ -73,7 +73,7 @@ export function recordInteraction(
     }
     case 'thumbs_down':
       db.prepare(
-        'UPDATE articles SET thumbs_up = 0, thumbs_down = 1 WHERE id = ?',
+        'UPDATE articles SET thumbs_up = 0, thumbs_down = 1, hidden = 1 WHERE id = ?',
       ).run(articleId);
       break;
     case 'open':
