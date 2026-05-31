@@ -46,6 +46,7 @@
   let lightboxIndex = $state(0);
   let articleContentEl = $state<HTMLDivElement | null>(null);
   let lightboxBackdropEl = $state<HTMLDivElement | null>(null);
+  let swipeActionsEnabled = $state(false);
 
   $effect(() => {
     liked = !!article.thumbs_up;
@@ -88,6 +89,13 @@
         if (main) main.style.overflow = '';
       };
     }
+  });
+
+  $effect(() => {
+    const touchLikeDevice =
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.matchMedia('(max-width: 1024px)').matches;
+    swipeActionsEnabled = !touchLikeDevice;
   });
 
   $effect(() => {
@@ -285,12 +293,14 @@
   const SWIPE_LONG_LEFT_THRESHOLD = 140;
 
   function handlePointerDown(e: PointerEvent) {
+    if (!swipeActionsEnabled) return;
     if (!e.isPrimary) return;
     touchStartX = e.clientX;
     touchStartY = e.clientY;
   }
 
   function handlePointerUp(e: PointerEvent) {
+    if (!swipeActionsEnabled) return;
     if (!e.isPrimary || touchStartX === null || touchStartY === null) return;
     const dx = e.clientX - touchStartX;
     const dy = e.clientY - touchStartY;
@@ -311,7 +321,7 @@
   class={isEmbeddedMode
     ? 'absolute inset-0 z-0 bg-surface-950'
     : 'mx-auto max-w-4xl'}
-  style="touch-action: pan-y;"
+  style:touch-action={swipeActionsEnabled ? 'pan-y' : 'auto'}
   role="presentation"
   onpointerdown={handlePointerDown}
   onpointerup={handlePointerUp}
