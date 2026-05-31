@@ -66,6 +66,8 @@
     const previousArticle =
       shouldMarkOpened && articleIndex >= 0 ? articles[articleIndex] : null;
 
+    writeScrollRestoreState();
+
     if (shouldMarkOpened && previousArticle) {
       articles = articles.filter((a: Article) => a.id !== article.id);
     }
@@ -117,10 +119,61 @@
   let scrollContainerEl: HTMLElement | null = null;
   let openingArticle = $state<{ id: string; label: string } | null>(null);
   let openingTimeout: ReturnType<typeof setTimeout> | null = null;
+  let isRestoringScroll = $state(false);
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
   let isBoostReview = $derived(feedbackMode === 'boost');
+
+  type ScrollRestoreState = {
+    scrollTop: number;
+    page: number;
+  };
+
+  function getScrollRestoreKey(): string {
+    return `feed-me-maybe:article-list-scroll:${$pageStore.url.pathname}${$pageStore.url.search}`;
+  }
+
+  function readScrollRestoreState(): ScrollRestoreState | null {
+    try {
+      const raw = sessionStorage.getItem(getScrollRestoreKey());
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<ScrollRestoreState>;
+      if (
+        typeof parsed.scrollTop !== 'number' ||
+        typeof parsed.page !== 'number'
+      ) {
+        return null;
+      }
+      return {
+        scrollTop: Math.max(0, parsed.scrollTop),
+        page: Math.max(1, Math.floor(parsed.page)),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeScrollRestoreState(): void {
+    if (!scrollContainerEl) return;
+    try {
+      const state: ScrollRestoreState = {
+        scrollTop: scrollContainerEl.scrollTop,
+        page,
+      };
+      sessionStorage.setItem(getScrollRestoreKey(), JSON.stringify(state));
+    } catch {
+      // Session storage may be unavailable in some privacy modes.
+    }
+  }
+
+  function clearScrollRestoreState(): void {
+    try {
+      sessionStorage.removeItem(getScrollRestoreKey());
+    } catch {
+      // Ignore storage failures.
+    }
+  }
 
   $effect(() => {
     hasMore = totalPages > 1;
@@ -289,7 +342,7 @@
       console.error(err);
     } finally {
       loadingMore = false;
-      if (hasMore && isNearBottom()) {
+      if (!isRestoringScroll && hasMore && isNearBottom()) {
         window.requestAnimationFrame(() => maybeLoadMore());
       }
     }
@@ -304,6 +357,7 @@
   }
 
   function maybeLoadMore() {
+    if (isRestoringScroll) return;
     if (hasMore && !loadingMore && isNearBottom()) {
       void loadMore();
     }
@@ -318,18 +372,22 @@
 
     document.addEventListener('keydown', handleKeydown);
     scrollContainerEl = document.querySelector('main');
+    const restoreState = readScrollRestoreState();
 
     let scrollRaf = 0;
     const onScroll = () => {
+      if (isRestoringScroll) return;
       if (scrollRaf) return;
       scrollRaf = window.requestAnimationFrame(() => {
         scrollRaf = 0;
+        writeScrollRestoreState();
         maybeLoadMore();
       });
     };
 
     const observer = new IntersectionObserver(
       (entries) => {
+        if (isRestoringScroll) return;
         if (entries[0].isIntersecting) {
           maybeLoadMore();
         }
@@ -343,7 +401,27 @@
 
     if (sentinelEl) observer.observe(sentinelEl);
 
-    maybeLoadMore();
+    const restoreScrollPosition = async () => {
+      if (!restoreState || !scrollContainerEl) {
+        maybeLoadMore();
+        return;
+      }
+
+      isRestoringScroll = true;
+      try {
+        while (page < restoreState.page && hasMore) {
+          await loadMore();
+        }
+        await tick();
+        scrollContainerEl.scrollTop = restoreState.scrollTop;
+        clearScrollRestoreState();
+      } finally {
+        isRestoringScroll = false;
+        maybeLoadMore();
+      }
+    };
+
+    void restoreScrollPosition();
 
     return () => {
       document.removeEventListener('keydown', handleKeydown);
