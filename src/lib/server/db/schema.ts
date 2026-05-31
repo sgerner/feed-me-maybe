@@ -153,7 +153,7 @@ export const userInteractions = sqliteTable('user_interactions', {
   articleId: text('article_id')
     .notNull()
     .references(() => articles.id, { onDelete: 'cascade' }),
-  interactionType: text('interaction_type').notNull(), // read, hide, save, thumbs_up, thumbs_down
+  interactionType: text('interaction_type').notNull(), // read, hide, save, thumbs_up, thumbs_down, boost
   timestamp: integer('timestamp', { mode: 'timestamp' }).notNull(),
   metadata: text('metadata').default('{}'), // JSON for extra data
 });

@@ -405,11 +405,55 @@
 
   {#if pageData.showHiddenContent}
     <div
-      class="mb-6 rounded-sm border px-4 py-3 text-sm"
-      style="border-color: color-mix(in oklch, var(--color-secondary-500) 18%, transparent); background: color-mix(in oklch, var(--color-secondary-500) 7%, transparent); color: color-mix(in oklch, var(--color-surface-100) 88%, transparent);"
+      class="mb-6 overflow-hidden rounded-sm border"
+      style="border-color: color-mix(in oklch, var(--color-secondary-500) 18%, transparent); background: linear-gradient(135deg, color-mix(in oklch, var(--color-secondary-500) 14%, transparent), color-mix(in oklch, var(--color-primary-500) 8%, transparent));"
     >
-      Showing the {pageData.hiddenContentLimit || 30} most recent auto-hidden
-      articles. Manually hidden articles and hide-on-open items are excluded.
+      <div class="flex flex-col gap-4 p-4 md:flex-row md:items-center md:justify-between md:p-5">
+        <div class="flex min-w-0 items-start gap-3">
+          <div
+            class="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+            style="background: color-mix(in oklch, var(--color-secondary-500) 16%, transparent); color: var(--color-secondary-300);"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z" />
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-surface-50">Auto-hidden review</p>
+            <p
+              class="mt-1 max-w-2xl text-sm"
+              style="color: color-mix(in oklch, var(--color-surface-100) 84%, transparent);"
+            >
+              These are the {pageData.hiddenContentLimit || 30} most recent
+              articles the model hid automatically. Use <strong>Keep &amp;
+              boost</strong> to restore a story to your feeds and give it a much
+              stronger positive signal than a standard thumbs-up.
+            </p>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <span
+            class="inline-flex items-center gap-1 px-2 py-1 font-medium"
+            style="border-radius: 2px; background: color-mix(in oklch, var(--color-secondary-500) 12%, transparent); color: var(--color-secondary-200);"
+          >
+            Review queue
+          </span>
+          <span
+            class="inline-flex items-center gap-1 px-2 py-1 font-medium"
+            style="border-radius: 2px; background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); color: var(--color-primary-200);"
+          >
+            Boost removes it from this view
+          </span>
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -503,6 +547,7 @@
     totalPages={pageData.totalPages}
     feedId={pageData.feedId}
     showInfiniteScroll={!pageData.showHiddenContent}
+    feedbackMode={pageData.showHiddenContent ? 'boost' : 'standard'}
     emptyTitle={
       pageData.showHiddenContent ? 'No auto-hidden articles yet' : undefined
     }

@@ -53,8 +53,11 @@ describe('Proxy support', () => {
       proxyBaseUrl: 'https://proxy.example.workers.dev',
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://proxy.example.workers.dev/?url=https%3A%2F%2Fwww.reddit.com%2Fr%2Ftest%2Fnew.rss%3Flimit%3D25',
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
       'https://proxy.example.workers.dev/?url=https%3A%2F%2Fwww.reddit.com%2Fr%2Ftest%2Fnew.json%3Flimit%3D25',
     );
     expect(result.success).toBe(true);

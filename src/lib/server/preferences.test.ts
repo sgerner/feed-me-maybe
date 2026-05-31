@@ -314,21 +314,24 @@ describe('preference learning model', () => {
     insertArticle('a-hide-feedback', 'Hide feedback article', 'Hide Example');
     insertArticle('a-thumb-up-feedback', 'Thumb up feedback article', 'Thumb Up Example');
     insertArticle('a-thumb-down-feedback', 'Thumb down feedback article', 'Thumb Down Example');
+    insertArticle('a-boost-feedback', 'Boost feedback article', 'Boost Example');
 
     recordInteraction('a-open-feedback', 'open');
     recordInteraction('a-hide-feedback', 'hide');
     recordInteraction('a-thumb-up-feedback', 'thumbs_up');
     recordInteraction('a-thumb-down-feedback', 'thumbs_down');
+    recordInteraction('a-boost-feedback', 'boost');
 
     const rows = db
       .prepare(
-        'SELECT type, label, polarity, strength FROM user_preference_memory WHERE label IN (?, ?, ?, ?)',
+        'SELECT type, label, polarity, strength FROM user_preference_memory WHERE label IN (?, ?, ?, ?, ?)',
       )
       .all(
         'author:open_example',
         'author:hide_example',
         'author:thumb_up_example',
         'author:thumb_down_example',
+        'author:boost_example',
       ) as Array<{
       type: string;
       label: string;
@@ -344,10 +347,12 @@ describe('preference learning model', () => {
     const hideStrength = getStrength('author:hide_example', 'negative');
     const thumbsUpStrength = getStrength('author:thumb_up_example', 'positive');
     const thumbsDownStrength = getStrength('author:thumb_down_example', 'negative');
+    const boostStrength = getStrength('author:boost_example', 'positive');
 
     expect(openStrength).toBeGreaterThan(0);
     expect(hideStrength).toBeGreaterThan(0);
     expect(openStrength).toBeLessThan(thumbsUpStrength);
     expect(hideStrength).toBeLessThan(thumbsDownStrength);
+    expect(boostStrength).toBeGreaterThan(thumbsUpStrength);
   });
 });

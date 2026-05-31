@@ -12,6 +12,7 @@ export type InteractionType =
   | 'save'
   | 'thumbs_up'
   | 'thumbs_down'
+  | 'boost'
   | 'unhide'
   | 'unsave'
   | 'open';
@@ -54,6 +55,25 @@ export function recordInteraction(
     case 'unhide':
       db.prepare('UPDATE articles SET hidden = 0 WHERE id = ?').run(articleId);
       break;
+    case 'boost': {
+      db.prepare(
+        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0, hidden = 0 WHERE id = ?',
+      ).run(articleId);
+      db.prepare(
+        'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+      ).run(crypto.randomUUID(), articleId, 'unhide', now, '{"boost":true}');
+      const article = db
+        .prepare('SELECT * FROM articles WHERE id = ?')
+        .get(articleId) as any;
+      if (article) {
+        dispatchWebhookEvent({
+          type: 'article.thumbs_up',
+          timestamp: now,
+          payload: { article },
+        });
+      }
+      break;
+    }
     case 'thumbs_up': {
       db.prepare(
         'UPDATE articles SET thumbs_up = 1, thumbs_down = 0 WHERE id = ?',

@@ -24,6 +24,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     'save',
     'thumbs_up',
     'thumbs_down',
+    'boost',
     'unhide',
     'unsave',
     'open',

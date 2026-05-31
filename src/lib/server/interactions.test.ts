@@ -62,4 +62,49 @@ describe('interaction side effects', () => {
     expect(article.thumbs_down).toBe(1);
     expect(interaction.interaction_type).toBe('thumbs_down');
   });
+
+  it('restores and strongly boosts an auto-hidden article', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { recordInteraction } = await import('./interactions');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-boost', 'https://example.com/rss', 'Example Boost', now, now);
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, hidden, thumbs_up, thumbs_down, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'article-boost',
+      'feed-boost',
+      'https://example.com/articles/boost',
+      'Boosted Article',
+      1,
+      0,
+      1,
+      now,
+      now,
+      now,
+    );
+
+    recordInteraction('article-boost', 'boost');
+
+    const article = db
+      .prepare('SELECT hidden, thumbs_up, thumbs_down FROM articles WHERE id = ?')
+      .get('article-boost') as {
+      hidden: number;
+      thumbs_up: number;
+      thumbs_down: number;
+    };
+    const interaction = db
+      .prepare(
+        'SELECT interaction_type FROM user_interactions WHERE article_id = ? ORDER BY timestamp DESC LIMIT 1',
+      )
+      .get('article-boost') as { interaction_type: string };
+
+    expect(article.hidden).toBe(0);
+    expect(article.thumbs_up).toBe(1);
+    expect(article.thumbs_down).toBe(0);
+    expect(interaction.interaction_type).toBe('boost');
+  });
 });

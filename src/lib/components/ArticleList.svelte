@@ -6,8 +6,14 @@
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
 
-  type InteractionType = 'open' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down';
-  type ReactionType = 'thumbs_up' | 'thumbs_down';
+  type InteractionType =
+    | 'open'
+    | 'hide'
+    | 'save'
+    | 'thumbs_up'
+    | 'thumbs_down'
+    | 'boost';
+  type ReactionType = 'thumbs_up' | 'thumbs_down' | 'boost';
 
   type Article = {
     id: string;
@@ -16,10 +22,13 @@
     summary?: string | null;
     image_url?: string | null;
     published_at?: number | null;
+    fetched_at?: number | null;
     feed_title?: string | null;
     feed_open_mode?: string | null;
     feed_url?: string | null;
     feed_site_url?: string | null;
+    saved?: boolean | null;
+    hidden?: boolean | null;
     thumbs_up?: boolean | null;
     thumbs_down?: boolean | null;
   };
@@ -29,6 +38,7 @@
     totalPages,
     feedId = null,
     showInfiniteScroll = true,
+    feedbackMode = 'standard',
     emptyTitle = 'No articles yet',
     emptyMessage = 'Import some RSS feeds to get started.',
     emptyCtaHref = '/settings',
@@ -38,6 +48,7 @@
     totalPages: number;
     feedId?: string | null;
     showInfiniteScroll?: boolean;
+    feedbackMode?: 'standard' | 'boost';
     emptyTitle?: string;
     emptyMessage?: string;
     emptyCtaHref?: string | null;
@@ -109,9 +120,16 @@
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
+  let isBoostReview = $derived(feedbackMode === 'boost');
 
   $effect(() => {
     hasMore = totalPages > 1;
+  });
+
+  $effect(() => {
+    if (focusedIndex >= articleIds.length) {
+      focusedIndex = Math.max(0, articleIds.length - 1);
+    }
   });
 
   function timeAgo(date: number | null): string {
@@ -129,8 +147,9 @@
 
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
-    const shouldRemove = type === 'hide' || type === 'thumbs_down';
-    const isReaction = type === 'thumbs_up' || type === 'thumbs_down';
+    const shouldRemove = type === 'hide' || type === 'thumbs_down' || type === 'boost';
+    const isReaction =
+      type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
     const previousReaction = previousArticle
       ? {
           thumbs_up: previousArticle.thumbs_up,
@@ -150,6 +169,7 @@
               ...a,
               thumbs_up: reactionType === 'thumbs_up',
               thumbs_down: reactionType === 'thumbs_down',
+              hidden: reactionType === 'boost' ? false : a.hidden,
             }
           : a,
       );
@@ -169,6 +189,7 @@
           save: 'Saved',
           thumbs_up: 'Liked',
           thumbs_down: 'Disliked and hidden',
+          boost: 'Boosted and restored',
         };
         addToast(labels[type] || type, 'success');
       } else {
@@ -384,6 +405,8 @@
 
     if (swipeDirection !== 'horizontal') return;
 
+    if (isBoostReview && dx < 0) return;
+
     const nextOffset = Math.max(-180, Math.min(180, dx * 0.8));
     if (Math.abs((swipeOffsets[articleId] || 0) - nextOffset) > 0.5) {
       e.preventDefault();
@@ -405,10 +428,10 @@
 
     let triggeredAction = false;
     if (swipeDirection === 'horizontal' && Math.abs(dx) > Math.abs(dy)) {
-      if (dx < -SWIPE_LONG_LEFT_THRESHOLD) {
+      if (!isBoostReview && dx < -SWIPE_LONG_LEFT_THRESHOLD) {
         triggeredAction = true;
         interact(articleId, 'thumbs_down');
-      } else if (dx < -SWIPE_ACTION_THRESHOLD) {
+      } else if (!isBoostReview && dx < -SWIPE_ACTION_THRESHOLD) {
         triggeredAction = true;
         interact(articleId, 'hide');
       } else if (dx > SWIPE_ACTION_THRESHOLD) {
@@ -485,67 +508,67 @@
 {:else}
   <div class="grid grid-cols-1 md:gap-4 xl:grid-cols-2">
     {#each articles as article, i (article.id)}
+      {@const swipeOffset = swipeOffsets[article.id] || 0}
       <div class="relative overflow-hidden rounded-sm">
         <!-- Swipe Action Indicators -->
         <div
-          class="absolute inset-0 flex items-center justify-between px-6 z-0 pointer-events-none transition-colors duration-200"
-          style="background: {(swipeOffsets[article.id] || 0) > 0
+          class="absolute inset-0 z-0 pointer-events-none transition-colors duration-200"
+          style="background: {swipeOffset > 0
             ? 'var(--color-success-500)'
-            : (swipeOffsets[article.id] || 0) < 0
+            : !isBoostReview && swipeOffset < 0
               ? 'var(--color-error-500)'
               : 'transparent'}; opacity: {Math.min(
-            Math.abs(swipeOffsets[article.id] || 0) / 60,
+            Math.abs(swipeOffset) / 60,
             0.8,
           )};"
         >
-          <div
-            class="flex items-center gap-2 text-white font-bold"
-            style="opacity: {(swipeOffsets[article.id] || 0) > 0 ? 1 : 0}"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              stroke="currentColor"
-              stroke-width="2"
-              ><path
-                d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
-              /></svg
-            >
-            Save
-          </div>
-          <div
-            class="flex items-center gap-2 text-white font-bold"
-            style="opacity: {(swipeOffsets[article.id] || 0) < 0 ? 1 : 0}"
-          >
-            {#if (swipeOffsets[article.id] || 0) < -SWIPE_LONG_LEFT_THRESHOLD}
-              Dislike + Hide
-            {:else}
-              Hide
-            {/if}
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              ><path d="M3 6h18" /><path
-                d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"
-              /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg
-            >
-          </div>
+          {#if swipeOffset > 0}
+            <div class="flex h-full items-center justify-start px-6">
+              <div class="flex items-center gap-2 text-white font-bold">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  ><path
+                    d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
+                  /></svg
+                >
+                Save
+              </div>
+            </div>
+          {/if}
+          {#if !isBoostReview && swipeOffset < 0}
+            <div class="flex h-full items-center justify-end px-6">
+              <div class="flex items-center gap-2 text-white font-bold">
+                {#if swipeOffset < -SWIPE_LONG_LEFT_THRESHOLD}
+                  Dislike + Hide
+                {:else}
+                  Hide
+                {/if}
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  ><path d="M3 6h18" /><path
+                    d="M19 6v14c1 1-1 2-2 2H7c-1 0-2-1-2-2V6"
+                  /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+              </div>
+            </div>
+          {/if}
         </div>
 
         <div
           id="article-{article.id}"
           class="glass-card glass-card-hover article-card group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px] md:min-h-[280px]"
-          style="touch-action: pan-y; transform: translateX({swipeOffsets[
-            article.id
-          ] || 0}px); transition: {activeSwipeId === article.id
+          style="touch-action: pan-y; transform: translateX({swipeOffset}px); transition: {activeSwipeId === article.id
             ? 'none'
             : 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)'};"
           class:article-focus-ring={focusedIndex === i}
@@ -637,44 +660,20 @@
             {/if}
 
             <div class="mt-auto pt-2 md:pt-6">
-              <div class="flex items-center gap-1.5">
+              <div class="flex items-center gap-1.5 {isBoostReview ? 'flex-wrap' : ''}">
                 <button
                   type="button"
-                  class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
-                  disabled={Boolean(pendingArticleIds[article.id])}
-                  onpointerdown={(e) => e.stopPropagation()}
-                  onpointerup={(e) => e.stopPropagation()}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    interact(article.id, 'hide');
-                  }}
-                  title="Hide (h)"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    ><path d="M3 6h18" /><path
-                      d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"
-                    /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg
-                  >
-                  Hide
-                </button>
-                <button
-                  type="button"
-                  class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm"
-                  disabled={Boolean(pendingArticleIds[article.id])}
+                  class="action-btn {isBoostReview ? '' : '!hidden lg:!inline-flex'} !bg-surface-900/50 backdrop-blur-sm {article.saved
+                    ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
+                    : ''}"
+                  disabled={Boolean(pendingArticleIds[article.id]) || Boolean(article.saved)}
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
                     e.stopPropagation();
                     interact(article.id, 'save');
                   }}
-                  title="Save (s)"
+                  title={article.saved ? 'Already saved' : 'Save (s)'}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -688,64 +687,99 @@
                       d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
                     /></svg
                   >
-                  Save
+                  {article.saved ? 'Saved' : 'Save'}
                 </button>
-                <div class="ml-auto flex items-center gap-1">
-                <button
-                  type="button"
-                  class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_up
-                    ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
-                    : ''}"
-                  onpointerdown={(e) => e.stopPropagation()}
-                  onpointerup={(e) => e.stopPropagation()}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    interact(article.id, 'thumbs_up');
-                  }}
-                  aria-pressed={Boolean(article.thumbs_up)}
-                  title="Like"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill={article.thumbs_up ? 'currentColor' : 'none'}
-                    stroke="currentColor"
-                    stroke-width="2"
-                    ><path d="M7 10v12" /><path
-                      d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
-                      /></svg
+                {#if isBoostReview}
+                  <button
+                    type="button"
+                    class="ml-auto inline-flex items-center gap-2 rounded-sm border px-4 py-2 text-sm font-semibold text-white transition hover:border-primary-400/60 hover:bg-primary-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/60 {article.thumbs_up
+                      ? 'border-primary-500/40 bg-primary-500/20 shadow-[0_0_0_1px_rgba(59,130,246,0.2)]'
+                      : 'border-primary-500/20 bg-primary-500/10'}"
+                    disabled={Boolean(pendingArticleIds[article.id])}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onpointerup={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      interact(article.id, 'boost');
+                    }}
+                    aria-pressed={Boolean(article.thumbs_up)}
+                    title="Restore to feeds and strongly boost relevance"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill={article.thumbs_up ? 'currentColor' : 'none'}
+                      stroke="currentColor"
+                      stroke-width="2"
                     >
+                      <path d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z" />
+                    </svg>
+                    Keep &amp; boost
                   </button>
-                <button
-                  type="button"
-                  class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_down
-                    ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
-                    : ''}"
-                  onpointerdown={(e) => e.stopPropagation()}
-                  onpointerup={(e) => e.stopPropagation()}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    interact(article.id, 'thumbs_down');
-                  }}
-                  aria-pressed={Boolean(article.thumbs_down)}
-                  title="Dislike and hide"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill={article.thumbs_down ? 'currentColor' : 'none'}
-                    stroke="currentColor"
-                    stroke-width="2"
-                      ><path d="M17 14V2" /><path
-                        d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
-                      /></svg
+                {:else}
+                  <div class="ml-auto flex items-center gap-1">
+                    <button
+                      type="button"
+                      class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_up
+                        ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
+                        : ''}"
+                      onpointerdown={(e) => e.stopPropagation()}
+                      onpointerup={(e) => e.stopPropagation()}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        interact(article.id, 'thumbs_up');
+                      }}
+                      aria-pressed={Boolean(article.thumbs_up)}
+                      title="Like"
                     >
-                  </button>
-                </div>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill={article.thumbs_up ? 'currentColor' : 'none'}
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M7 10v12" />
+                        <path
+                          d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_down
+                        ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
+                        : ''}"
+                      onpointerdown={(e) => e.stopPropagation()}
+                      onpointerup={(e) => e.stopPropagation()}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        interact(article.id, 'thumbs_down');
+                      }}
+                      aria-pressed={Boolean(article.thumbs_down)}
+                      title="Dislike and hide"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill={article.thumbs_down ? 'currentColor' : 'none'}
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M17 14V2" />
+                        <path
+                          d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                {/if}
               </div>
             </div>
           </div>

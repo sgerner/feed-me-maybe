@@ -372,7 +372,9 @@ export function updatePreferenceMemoryFromInteraction(
   type: InteractionType,
 ): void {
   const positiveDelta =
-    type === 'thumbs_up'
+    type === 'boost'
+      ? 0.45
+      : type === 'thumbs_up'
       ? 0.2
       : type === 'open'
         ? 0.03
