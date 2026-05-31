@@ -1,5 +1,7 @@
 # Feed Me Maybe
 
+![Feed Me Maybe screenshot](static/projects/feed-me-maybe.png)
+
 A self-hosted, AI-powered RSS reader built with SvelteKit, SQLite, and modern web standards.
 
 ## Features
