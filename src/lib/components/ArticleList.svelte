@@ -3,7 +3,7 @@
   import { formatContent } from '$lib/utils/format';
   import { onMount, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
-  import { goto } from '$app/navigation';
+  import { goto, invalidateAll } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
 
   type InteractionType =
@@ -55,11 +55,33 @@
     emptyCtaLabel?: string;
   }>();
 
+  const RETURNING_FROM_ARTICLE_KEY = 'feed-me-maybe:returning-from-article';
+
+  function markNeedsRefreshOnReturn(): void {
+    try {
+      sessionStorage.setItem(RETURNING_FROM_ARTICLE_KEY, 'true');
+    } catch {
+      // Session storage may be unavailable in some privacy modes.
+    }
+  }
+
+  async function refreshIfReturningFromArticle(): Promise<void> {
+    try {
+      if (sessionStorage.getItem(RETURNING_FROM_ARTICLE_KEY) !== 'true') return;
+      sessionStorage.removeItem(RETURNING_FROM_ARTICLE_KEY);
+    } catch {
+      return;
+    }
+
+    await invalidateAll();
+  }
+
   async function openArticle(article: Article) {
     // Determine mode: feed override or global default
     const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
+    const hideOnOpen = Boolean($pageStore.data.globalSettings?.hideOnOpen);
     const mode = article.feed_open_mode || globalMode;
-    const shouldMarkOpened = mode === 'tab';
+    const shouldMarkOpened = mode === 'tab' || hideOnOpen;
     const articleIndex = shouldMarkOpened
       ? articles.findIndex((a: Article) => a.id === article.id)
       : -1;
@@ -105,6 +127,7 @@
         }
       }, 1200);
     } else {
+      markNeedsRefreshOnReturn();
       await tick();
       goto(`/articles/${article.id}?mode=${mode}`);
     }
@@ -374,6 +397,15 @@
     scrollContainerEl = document.querySelector('main');
     const restoreState = readScrollRestoreState();
 
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        void refreshIfReturningFromArticle();
+      }
+    };
+
+    window.addEventListener('pageshow', onPageShow);
+    void refreshIfReturningFromArticle();
+
     let scrollRaf = 0;
     const onScroll = () => {
       if (isRestoringScroll) return;
@@ -429,6 +461,7 @@
         scrollContainerEl.removeEventListener('scroll', onScroll);
       }
       if (scrollRaf) window.cancelAnimationFrame(scrollRaf);
+      window.removeEventListener('pageshow', onPageShow);
       observer.disconnect();
     };
   });
