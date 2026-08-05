@@ -3,7 +3,7 @@
   import { formatContent } from '$lib/utils/format';
   import { onMount, tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
-  import { goto, invalidateAll } from '$app/navigation';
+  import { afterNavigate, goto, invalidateAll } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
 
   type InteractionType =
@@ -56,6 +56,7 @@
   }>();
 
   const RETURNING_FROM_ARTICLE_KEY = 'feed-me-maybe:returning-from-article';
+  let returnRefreshPromise: Promise<void> | null = null;
 
   function markNeedsRefreshOnReturn(): void {
     try {
@@ -66,14 +67,33 @@
   }
 
   async function refreshIfReturningFromArticle(): Promise<void> {
+    if (returnRefreshPromise) return returnRefreshPromise;
+
+    let needsRefresh = false;
     try {
-      if (sessionStorage.getItem(RETURNING_FROM_ARTICLE_KEY) !== 'true') return;
-      sessionStorage.removeItem(RETURNING_FROM_ARTICLE_KEY);
+      needsRefresh =
+        sessionStorage.getItem(RETURNING_FROM_ARTICLE_KEY) === 'true';
     } catch {
       return;
     }
 
-    await invalidateAll();
+    if (!needsRefresh) return;
+
+    returnRefreshPromise = (async () => {
+      try {
+        await invalidateAll();
+        sessionStorage.removeItem(RETURNING_FROM_ARTICLE_KEY);
+      } catch (error) {
+        // Leave the marker in place so a later navigation can retry.
+        console.error('Failed to refresh articles after returning', error);
+      }
+    })();
+
+    try {
+      await returnRefreshPromise;
+    } finally {
+      returnRefreshPromise = null;
+    }
   }
 
   async function openArticle(article: Article) {
@@ -386,6 +406,12 @@
     }
   }
 
+  // A back/forward navigation handled by SvelteKit does not necessarily
+  // recreate the document, so also cover that lifecycle explicitly.
+  afterNavigate(() => {
+    void refreshIfReturningFromArticle();
+  });
+
   onMount(() => {
     const mobileOrReducedMotion =
       window.matchMedia('(pointer: coarse)').matches ||
@@ -395,7 +421,6 @@
 
     document.addEventListener('keydown', handleKeydown);
     scrollContainerEl = document.querySelector('main');
-    const restoreState = readScrollRestoreState();
 
     const onPageShow = (event: PageTransitionEvent) => {
       if (event.persisted) {
@@ -404,7 +429,6 @@
     };
 
     window.addEventListener('pageshow', onPageShow);
-    void refreshIfReturningFromArticle();
 
     let scrollRaf = 0;
     const onScroll = () => {
@@ -434,6 +458,13 @@
     if (sentinelEl) observer.observe(sentinelEl);
 
     const restoreScrollPosition = async () => {
+      // Revalidate before restoring the list. Otherwise the stale page data
+      // from browser history can overwrite the optimistic list state while
+      // the old scroll snapshot is being reconstructed.
+      await refreshIfReturningFromArticle();
+      await tick();
+
+      const restoreState = readScrollRestoreState();
       if (!restoreState || !scrollContainerEl) {
         maybeLoadMore();
         return;
