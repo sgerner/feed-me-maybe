@@ -117,6 +117,15 @@ export function initializeDatabase(): void {
     'CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at DESC)',
   ).run();
   db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_articles_visible_rank ON articles(COALESCE(combined_score, heuristic_score, 0) DESC, published_at DESC) WHERE hidden = 0',
+  ).run();
+  db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_articles_feed_visible_rank ON articles(feed_id, COALESCE(combined_score, heuristic_score, 0) DESC, published_at DESC) WHERE hidden = 0',
+  ).run();
+  db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_articles_saved_published ON articles(published_at DESC) WHERE saved = 1',
+  ).run();
+  db.prepare(
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_feed_url ON articles(feed_id, url)',
   ).run();
   db.prepare(

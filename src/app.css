@@ -135,10 +135,14 @@
 }
 
 .article-card {
-  will-change: transform;
-  transform: translateZ(0);
   backface-visibility: hidden;
-  contain: paint;
+  contain: layout paint style;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
+}
+
+.article-card:active {
+  will-change: transform;
 }
 
 .article-card-image {

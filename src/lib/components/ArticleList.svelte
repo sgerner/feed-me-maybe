@@ -2,7 +2,7 @@
   import { addToast } from '$lib/stores/toast.svelte';
   import { formatContent } from '$lib/utils/format';
   import { onMount, tick } from 'svelte';
-  import { fly, fade } from 'svelte/transition';
+  import { fade } from 'svelte/transition';
   import { afterNavigate, goto, invalidateAll } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
 
@@ -156,7 +156,6 @@
   let page = $state(1);
   let loadingMore = $state(false);
   let hasMore = $state(false);
-  let disableEntryTransitions = $state(false);
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
@@ -413,12 +412,6 @@
   });
 
   onMount(() => {
-    const mobileOrReducedMotion =
-      window.matchMedia('(pointer: coarse)').matches ||
-      window.matchMedia('(max-width: 1024px)').matches ||
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    disableEntryTransitions = mobileOrReducedMotion;
-
     document.addEventListener('keydown', handleKeydown);
     scrollContainerEl = document.querySelector('main');
 
@@ -716,9 +709,6 @@
           class:article-focus-ring={focusedIndex === i}
           role="link"
           tabindex="0"
-          in:fly={disableEntryTransitions
-            ? { y: 0, duration: 0, delay: 0 }
-            : { y: 16, duration: 350, delay: Math.min(i * 35, 400) }}
           onpointerdown={(e) => handlePointerDown(e, article.id)}
           onpointermove={(e) => handlePointerMove(e, article.id)}
           onpointerup={(e) => handlePointerUp(e, article.id)}
@@ -750,6 +740,8 @@
                 alt=""
                 class="article-card-image h-full w-full object-cover opacity-80 transition-all duration-700"
                 loading="lazy"
+                decoding="async"
+                fetchpriority={i < 2 ? 'high' : 'low'}
               />
               <div
                 class="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/40 to-transparent opacity-90"

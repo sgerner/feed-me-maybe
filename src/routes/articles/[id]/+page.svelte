@@ -379,7 +379,6 @@
   {:else}
     <article
       class="glass-card glass-card-hover overflow-hidden"
-      in:fly={{ y: 16, duration: 350 }}
     >
       {#if dismissing}
         <div class="flex min-h-[32rem] flex-col items-center justify-center gap-4 p-8 text-center">
@@ -405,7 +404,8 @@
               src={article.image_url}
               alt=""
               class="h-64 w-full object-cover transition-transform duration-300 group-hover:scale-[1.01] md:h-80 cursor-zoom-in"
-              loading="lazy"
+              decoding="async"
+              fetchpriority="high"
             />
             <div
               class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-surface-950)] via-transparent to-transparent opacity-80"
@@ -638,6 +638,7 @@
               alt=""
               class="max-h-full max-w-full select-none object-contain"
               draggable="false"
+              decoding="async"
             />
           </div>
 
@@ -680,6 +681,8 @@
                     alt=""
                     class="h-full w-full object-cover"
                     draggable="false"
+                    loading="lazy"
+                    decoding="async"
                   />
                 </button>
               {/each}

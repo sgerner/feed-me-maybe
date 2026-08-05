@@ -44,6 +44,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp}'],
+        // Project screenshots are documentation, not runtime assets. Excluding
+        // them keeps install/update downloads small and prevents oversized
+        // screenshots from breaking service-worker generation.
+        globIgnores: ['**/projects/**'],
+        cleanupOutdatedCaches: true,
       },
     }),
   ],

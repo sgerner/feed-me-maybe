@@ -6,6 +6,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 // ── Auth ──
 export const sessions = sqliteTable('sessions', {
@@ -88,6 +89,22 @@ export const articles = sqliteTable(
   (table) => ({
     feedIdIdx: index('idx_articles_feed_id').on(table.feedId),
     publishedAtIdx: index('idx_articles_published_at').on(table.publishedAt),
+    visibleRankIdx: index('idx_articles_visible_rank')
+      .on(
+        sql`COALESCE(${table.combinedScore}, ${table.heuristicScore}, 0) DESC`,
+        sql`${table.publishedAt} DESC`,
+      )
+      .where(sql`${table.hidden} = 0`),
+    feedVisibleRankIdx: index('idx_articles_feed_visible_rank')
+      .on(
+        table.feedId,
+        sql`COALESCE(${table.combinedScore}, ${table.heuristicScore}, 0) DESC`,
+        sql`${table.publishedAt} DESC`,
+      )
+      .where(sql`${table.hidden} = 0`),
+    savedPublishedAtIdx: index('idx_articles_saved_published')
+      .on(sql`${table.publishedAt} DESC`)
+      .where(sql`${table.saved} = 1`),
     feedUrlUnique: uniqueIndex('idx_articles_feed_url').on(
       table.feedId,
       table.url,
