@@ -148,6 +148,13 @@
       }, 1200);
     } else {
       markNeedsRefreshOnReturn();
+      // The app shell keeps the <main> element mounted between routes, so
+      // SvelteKit's document-level scroll handling does not reset this
+      // container for us. Reset it before the reader route renders.
+      if (scrollContainerEl) {
+        scrollContainerEl.scrollTop = 0;
+        scrollContainerEl.scrollLeft = 0;
+      }
       await tick();
       goto(`/articles/${article.id}?mode=${mode}`);
     }

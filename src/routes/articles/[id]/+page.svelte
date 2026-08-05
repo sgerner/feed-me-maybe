@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
+  import { onMount } from 'svelte';
   import { formatContent, renderContent } from '$lib/utils/format';
   import { extractArticleImages } from '$lib/utils/article-images';
   import { addToast } from '$lib/stores/toast.svelte';
@@ -79,6 +80,17 @@
       ? `https://archive.is/${encodeURIComponent(article.url)}`
       : article.url,
   );
+
+  // The root layout owns the scrolling <main> element and remains mounted
+  // during client-side navigation. Always start a newly opened article at
+  // the top, regardless of where the reader was opened from in the feed.
+  onMount(() => {
+    const main = document.querySelector('main');
+    if (main) {
+      main.scrollTop = 0;
+      main.scrollLeft = 0;
+    }
+  });
 
   // Prevent main scroll when in iframe/proxy mode
   $effect(() => {
