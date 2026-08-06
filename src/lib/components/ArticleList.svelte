@@ -804,7 +804,7 @@
               <div class="flex items-center gap-1.5 {isBoostReview ? 'flex-wrap' : ''}">
                 <button
                   type="button"
-                  class="action-btn {isBoostReview ? '' : 'desktop-action'} !bg-surface-900/50 backdrop-blur-sm {article.saved
+                  class="action-btn {isBoostReview ? '' : '!hidden lg:!inline-flex'} !bg-surface-900/50 backdrop-blur-sm {article.saved
                     ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
                     : ''}"
                   disabled={Boolean(pendingArticleIds[article.id]) || Boolean(article.saved)}
@@ -860,6 +860,35 @@
                     Keep &amp; boost
                   </button>
                 {:else}
+                  <button
+                    type="button"
+                    class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm hover:!text-error-400"
+                    disabled={Boolean(pendingArticleIds[article.id])}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onpointerup={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      interact(article.id, 'hide');
+                    }}
+                    title="Hide article"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M3 6h18" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                    Hide
+                  </button>
                   <div class="ml-auto flex items-center gap-1">
                     <button
                       type="button"

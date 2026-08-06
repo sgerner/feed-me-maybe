@@ -241,16 +241,10 @@
   color: var(--color-primary-300);
 }
 
-/* Desktop-only actions should follow the input device, not the viewport
-   width. Desktop windows can be narrower than the `lg` breakpoint. */
-.desktop-action {
-  display: none !important;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .desktop-action {
-    display: inline-flex !important;
-  }
+.reader-action-bar {
+  max-width: calc(100vw - 1rem);
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 main {

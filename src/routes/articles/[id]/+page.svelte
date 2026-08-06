@@ -233,7 +233,9 @@
     const prevDismissing = dismissing;
     pendingAction = type;
 
-    const shouldDismiss = type === 'hide' || type === 'thumbs_down';
+    const restoring = type === 'hide' && hidden;
+    const shouldDismiss =
+      (!restoring && type === 'hide') || type === 'thumbs_down';
 
     if (type === 'thumbs_up') {
       liked = !liked;
@@ -243,6 +245,8 @@
       if (disliked) liked = false;
     } else if (type === 'save') {
       saved = !saved;
+    } else if (restoring) {
+      hidden = false;
     } else if (shouldDismiss) {
       hidden = true;
       dismissing = true;
@@ -264,6 +268,7 @@
       if (res.ok) {
         const labels: Record<string, string> = {
           hide: 'Hidden',
+          unhide: 'Restored',
           save: 'Saved',
           unsave: 'Removed from Saved',
           thumbs_up: 'Liked',
@@ -707,7 +712,7 @@
 
   <!-- Floating Action Bar -->
   <div
-    class="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border p-1.5 shadow-2xl backdrop-blur-xl"
+    class="reader-action-bar fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border p-1.5 shadow-2xl backdrop-blur-xl"
     style="background: color-mix(in oklch, var(--color-surface-900) 80%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
     in:fly={{ y: 20, duration: 400, delay: 400 }}
   >
@@ -784,7 +789,7 @@
 
     <button
       type="button"
-      class="action-btn desktop-action h-9 px-3 rounded-full {saved
+      class="action-btn h-9 px-3 rounded-full !hidden lg:!inline-flex {saved
         ? '!text-success-400 !bg-success-500/10 !border-success-500/30'
         : ''}"
       disabled={Boolean(pendingAction)}
@@ -835,13 +840,12 @@
 
     <button
       type="button"
-      class="action-btn desktop-action h-9 px-3 rounded-full hover:!text-error-400 {hidden
-        || dismissing
-        ? 'opacity-50 pointer-events-none'
+      class="action-btn h-9 px-3 rounded-full !hidden lg:!inline-flex hover:!text-error-400 {hidden
+        ? '!text-success-400'
         : ''}"
       disabled={Boolean(pendingAction)}
       onclick={() => interact('hide')}
-      title="Hide Article"
+      title={hidden ? 'Restore Article' : 'Hide Article'}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -855,7 +859,7 @@
           d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"
         /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg
       >
-      <span class="ml-1.5 hidden sm:inline">Hide</span>
+      <span class="ml-1.5 hidden sm:inline">{hidden ? 'Restore' : 'Hide'}</span>
     </button>
   </div>
 </div>
