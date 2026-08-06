@@ -784,7 +784,7 @@
 
     <button
       type="button"
-      class="action-btn h-9 px-3 rounded-full !hidden lg:!inline-flex {saved
+      class="action-btn desktop-action h-9 px-3 rounded-full {saved
         ? '!text-success-400 !bg-success-500/10 !border-success-500/30'
         : ''}"
       disabled={Boolean(pendingAction)}
@@ -835,7 +835,7 @@
 
     <button
       type="button"
-      class="action-btn h-9 px-3 rounded-full !hidden lg:!inline-flex hover:!text-error-400 {hidden
+      class="action-btn desktop-action h-9 px-3 rounded-full hover:!text-error-400 {hidden
         || dismissing
         ? 'opacity-50 pointer-events-none'
         : ''}"

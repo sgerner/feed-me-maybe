@@ -804,7 +804,7 @@
               <div class="flex items-center gap-1.5 {isBoostReview ? 'flex-wrap' : ''}">
                 <button
                   type="button"
-                  class="action-btn {isBoostReview ? '' : '!hidden lg:!inline-flex'} !bg-surface-900/50 backdrop-blur-sm {article.saved
+                  class="action-btn {isBoostReview ? '' : 'desktop-action'} !bg-surface-900/50 backdrop-blur-sm {article.saved
                     ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
                     : ''}"
                   disabled={Boolean(pendingArticleIds[article.id]) || Boolean(article.saved)}
