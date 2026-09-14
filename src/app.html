@@ -5,14 +5,27 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
     <link rel="manifest" href="/manifest.json" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
+    />
     <meta name="theme-color" content="#0f172a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
     <meta name="apple-mobile-web-app-title" content="FeedMeMaybe" />
+    <script src="%sveltekit.assets%/registerSW.js" defer></script>
     <script>
       (function () {
-        const theme = localStorage.getItem('theme') || 'cerberus';
+        let theme = 'cerberus';
+        try {
+          theme = localStorage.getItem('theme') || theme;
+        } catch {
+          // Storage can be unavailable in private or restricted webviews.
+        }
         document.documentElement.setAttribute('data-theme', theme);
       })();
     </script>

@@ -761,8 +761,13 @@ export async function getWeeklyDigestArticles(
     .prepare(
       `
       ${buildFeedArticleSelect()}
-      WHERE a.hidden = 0
-        AND COALESCE(a.published_at, a.fetched_at) >= ?
+      -- A digest represents the ingestion window, not the current visible feed.
+      -- Read articles may be hidden by the hide-on-open preference, but still
+      -- belong in the weekly readout alongside visible unread articles. Explicit
+      -- thumbs-down feedback and hidden unread articles are excluded.
+      WHERE COALESCE(a.published_at, a.fetched_at) >= ?
+        AND a.thumbs_down = 0
+        AND (a.hidden = 0 OR a.read = 1)
       ORDER BY COALESCE(a.combined_score, a.heuristic_score, 0) DESC,
                COALESCE(a.published_at, a.fetched_at) DESC
     `,

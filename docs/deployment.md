@@ -7,8 +7,8 @@
 The project uses a multi-stage Dockerfile to minimize the final image size:
 
 ```dockerfile
-Stage 1 (builder): node:20-slim + build tools → npm ci + npm run build
-Stage 2 (runner):  node:20-slim + runtime deps → npm ci --omit=dev + copy build
+Stage 1 (builder): node:26-slim + build tools → npm ci + npm run build
+Stage 2 (runner):  node:26-slim + runtime deps → npm ci --omit=dev + copy build
 ```
 
 Build the image:

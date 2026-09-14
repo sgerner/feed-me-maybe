@@ -133,6 +133,114 @@ describe('weekly digest', () => {
     );
   });
 
+  it('includes read articles hidden on open, but excludes thumbs-down and unread-hidden articles', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getWeeklyDigestArticles } = await import('./digest');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-1', 'https://example.com/rss', 'Example Feed', now, now);
+
+    const seedArticle = (
+      id: string,
+      title: string,
+      read: number,
+      hidden: number,
+      score: number,
+      thumbsDown = 0,
+    ) => {
+      const publishedAt = now - 2 * 24 * 60 * 60 * 1000;
+      db.prepare(
+        'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, hidden, read, thumbs_down, published_at, fetched_at, heuristic_score, combined_score, categories, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        id,
+        'feed-1',
+        `https://example.com/${id}`,
+        title,
+        `${title} summary`,
+        hidden,
+        read,
+        thumbsDown,
+        publishedAt,
+        publishedAt,
+        score,
+        score,
+        '["news"]',
+        now,
+        now,
+      );
+    };
+
+    seedArticle('hidden-read', 'Read article hidden on open', 1, 1, 95);
+    seedArticle('visible-unread', 'Unread article still visible', 0, 0, 90);
+    seedArticle(
+      'thumbs-down-visible',
+      'Visible article with thumbs down',
+      0,
+      0,
+      85,
+      1,
+    );
+    seedArticle(
+      'thumbs-down-hidden-read',
+      'Hidden read article with thumbs down',
+      1,
+      1,
+      80,
+      1,
+    );
+    seedArticle(
+      'hidden-unread',
+      'Unread article hidden without being read',
+      0,
+      1,
+      75,
+    );
+
+    const result = await getWeeklyDigestArticles(now);
+
+    expect(result.totalArticles).toBe(2);
+    expect(result.unreadArticles).toBe(1);
+    expect(result.allArticles.map((article) => article.id)).toEqual([
+      'hidden-read',
+      'visible-unread',
+    ]);
+    expect(result.allArticles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'hidden-read', read: 1, hidden: 1 }),
+        expect.objectContaining({ id: 'visible-unread', read: 0, hidden: 0 }),
+      ]),
+    );
+    expect(result.allArticles.map((article) => article.id)).not.toEqual(
+      expect.arrayContaining([
+        'thumbs-down-visible',
+        'thumbs-down-hidden-read',
+        'hidden-unread',
+      ]),
+    );
+    expect(result.topStories.map((story) => story.article.id)).toEqual([
+      'hidden-read',
+      'visible-unread',
+    ]);
+    expect(result.missedStories.map((story) => story.article.id)).toEqual([
+      'visible-unread',
+      'hidden-read',
+    ]);
+    expect(
+      [...result.topStories, ...result.missedStories].map(
+        (story) => story.article.id,
+      ),
+    ).not.toEqual(
+      expect.arrayContaining([
+        'thumbs-down-visible',
+        'thumbs-down-hidden-read',
+        'hidden-unread',
+      ]),
+    );
+  });
+
   it('normalizes malformed cached ai text fields', async () => {
     const { getDb } = await import('$lib/server/db');
     const { getWeeklyDigestArticles } = await import('./digest');

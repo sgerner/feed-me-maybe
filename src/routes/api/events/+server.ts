@@ -7,6 +7,7 @@ export const GET: RequestHandler = ({ locals }) => {
   }
 
   const clientId = crypto.randomUUID();
+  let cleanup = () => {};
 
   const stream = new ReadableStream({
     start(controller) {
@@ -20,28 +21,27 @@ export const GET: RequestHandler = ({ locals }) => {
         try {
           controller.enqueue(new TextEncoder().encode(': heartbeat\n\n'));
         } catch (err) {
-          clearInterval(heartbeatInterval);
-          unregister();
+          cleanup();
         }
       }, 30000);
 
-      // When the client closes the connection, clean up
-      return () => {
+      // When the client closes the connection, clean up the registry and timer.
+      cleanup = () => {
         clearInterval(heartbeatInterval);
         unregister();
       };
     },
     cancel() {
-      // Handled by return in start() in some environments, 
-      // but explicitly here for robustness
-    }
+      cleanup();
+    },
   });
 
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    }
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
   });
 };

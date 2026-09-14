@@ -439,7 +439,7 @@
           </svg>
         </div>
         <p class="mb-2 text-lg font-medium text-surface-100">No digest articles yet</p>
-        <p class="section-subtitle">There were no visible articles in the last 7 days.</p>
+        <p class="section-subtitle">There were no articles in the last 7 days.</p>
       </div>
     {:else}
       <div class="grid gap-8 lg:grid-cols-[1.45fr_1fr]">
@@ -501,7 +501,7 @@
             <h2 class="text-sm font-semibold uppercase tracking-wider text-surface-100">
               Missed Stories
             </h2>
-            <span class="text-xs text-surface-300">Two unread stories to check out</span>
+            <span class="text-xs text-surface-300">Two stories worth a look</span>
           </div>
 
           <div class="mt-3 space-y-3">

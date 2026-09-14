@@ -30,8 +30,14 @@
   $effect(() => {
     if (!data.sessionId) return;
 
-    // Initial sync
-    syncFeeds({ silent: true });
+    // Let the shell paint before starting the background refresh. This keeps
+    // startup responsive and avoids waking the radio when the app is hidden.
+    const initialSyncTimeout =
+      document.visibilityState === 'visible'
+        ? window.setTimeout(() => {
+            void syncFeeds({ silent: true });
+          }, 450)
+        : null;
 
     // Sync on visibility change (re-opening the tab/app)
     const handleVisibilityChange = () => {
@@ -42,6 +48,9 @@
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
+      if (initialSyncTimeout !== null) {
+        window.clearTimeout(initialSyncTimeout);
+      }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   });
@@ -125,16 +134,67 @@
   $effect(() => {
     if (!data.sessionId) return;
 
-    let eventSource: EventSource;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
+    type NetworkInformation = { saveData?: boolean };
+    type NavigatorWithConnection = Navigator & {
+      connection?: NetworkInformation;
+    };
+
+    let eventSource: EventSource | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+    let disposed = false;
+    const reconnectBaseMs = 5000;
+    const reconnectMaxMs = 60_000;
+
+    function canUseLiveUpdates() {
+      const connection = (navigator as NavigatorWithConnection).connection;
+      return (
+        document.visibilityState === 'visible' &&
+        navigator.onLine !== false &&
+        connection?.saveData !== true
+      );
+    }
+
+    function clearReconnect() {
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+    }
+
+    function closeConnection() {
+      clearReconnect();
+      eventSource?.close();
+      eventSource = null;
+    }
+
+    function scheduleReconnect() {
+      if (disposed || !canUseLiveUpdates() || reconnectTimeout) return;
+
+      const exponentialDelay = Math.min(
+        reconnectBaseMs * 2 ** reconnectAttempt,
+        reconnectMaxMs,
+      );
+      const jitter = Math.round(exponentialDelay * (0.1 + Math.random() * 0.2));
+      reconnectAttempt = Math.min(reconnectAttempt + 1, 4);
+      reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = null;
+        connect();
+      }, exponentialDelay + jitter);
+    }
 
     function connect() {
+      if (disposed || eventSource || !canUseLiveUpdates()) return;
+
       eventSource = new EventSource('/api/events');
+
+      eventSource.onopen = () => {
+        reconnectAttempt = 0;
+      };
 
       eventSource.addEventListener('new_articles', async (event) => {
         try {
           const payload = JSON.parse(event.data);
-          console.log('[sse] New articles received:', payload);
 
           // Refresh the page data
           await invalidateAll();
@@ -148,16 +208,33 @@
 
       eventSource.onerror = (err) => {
         console.error('[sse] EventSource error, reconnecting...', err);
-        eventSource.close();
-        reconnectTimeout = setTimeout(connect, 5000);
+        closeConnection();
+        scheduleReconnect();
       };
     }
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        reconnectAttempt = 0;
+        connect();
+      } else {
+        closeConnection();
+      }
+    };
+    const handleOnline = () => connect();
+    const handleOffline = closeConnection;
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
     connect();
 
     return () => {
-      if (eventSource) eventSource.close();
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      disposed = true;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      closeConnection();
     };
   });
 </script>

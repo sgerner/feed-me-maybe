@@ -7,12 +7,7 @@
   import { page as pageStore } from '$app/stores';
 
   type InteractionType =
-    | 'open'
-    | 'hide'
-    | 'save'
-    | 'thumbs_up'
-    | 'thumbs_down'
-    | 'boost';
+    'open' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down' | 'boost';
   type ReactionType = 'thumbs_up' | 'thumbs_down' | 'boost';
 
   type Article = {
@@ -56,6 +51,32 @@
   }>();
 
   const RETURNING_FROM_ARTICLE_KEY = 'feed-me-maybe:returning-from-article';
+  const INTERACTION_LABELS: Partial<Record<InteractionType, string>> = {
+    hide: 'Hidden',
+    save: 'Saved',
+    thumbs_up: 'Liked',
+    thumbs_down: 'Disliked and hidden',
+    boost: 'Boosted and restored',
+  };
+
+  const summaryCache = new WeakMap<
+    Article,
+    { source: string; formatted: string }
+  >();
+  const timeAgoCache = new Map<number, { bucket: string; label: string }>();
+
+  function getFormattedSummary(article: Article): string {
+    const source = article.summary;
+    if (!source) return '';
+
+    const cached = summaryCache.get(article);
+    if (cached?.source === source) return cached.formatted;
+
+    const formatted = formatContent(source);
+    summaryCache.set(article, { source, formatted });
+    return formatted;
+  }
+
   let returnRefreshPromise: Promise<void> | null = null;
 
   function markNeedsRefreshOnReturn(): void {
@@ -169,6 +190,7 @@
   let openingArticle = $state<{ id: string; label: string } | null>(null);
   let openingTimeout: ReturnType<typeof setTimeout> | null = null;
   let isRestoringScroll = $state(false);
+  let scrollWriteTimeout: ReturnType<typeof setTimeout> | null = null;
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
@@ -216,6 +238,23 @@
     }
   }
 
+  function scheduleScrollRestoreWrite(): void {
+    if (scrollWriteTimeout) return;
+
+    scrollWriteTimeout = setTimeout(() => {
+      scrollWriteTimeout = null;
+      writeScrollRestoreState();
+    }, 150);
+  }
+
+  function flushScrollRestoreWrite(): void {
+    if (scrollWriteTimeout) {
+      clearTimeout(scrollWriteTimeout);
+      scrollWriteTimeout = null;
+    }
+    writeScrollRestoreState();
+  }
+
   function clearScrollRestoreState(): void {
     try {
       sessionStorage.removeItem(getScrollRestoreKey());
@@ -236,12 +275,31 @@
 
   function timeAgo(date: number | null): string {
     if (!date) return '';
-    const seconds = Math.floor((Date.now() - date) / 1000);
-    if (seconds < 60) return 'just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    if (seconds < 2592000) return `${Math.floor(seconds / 86400)}d ago`;
-    return new Date(date).toLocaleDateString();
+    const now = Date.now();
+    const cached = timeAgoCache.get(date);
+    const seconds = Math.floor((now - date) / 1000);
+    const bucket =
+      seconds < 60
+        ? 'now'
+        : seconds < 3600
+          ? `m${Math.floor(seconds / 60)}`
+          : seconds < 86400
+            ? `h${Math.floor(seconds / 3600)}`
+            : seconds < 2592000
+              ? `d${Math.floor(seconds / 86400)}`
+              : 'date';
+    if (cached?.bucket === bucket) return cached.label;
+
+    let label: string;
+    if (seconds < 60) label = 'just now';
+    else if (seconds < 3600) label = `${Math.floor(seconds / 60)}m ago`;
+    else if (seconds < 86400) label = `${Math.floor(seconds / 3600)}h ago`;
+    else if (seconds < 2592000) label = `${Math.floor(seconds / 86400)}d ago`;
+    else label = new Date(date).toLocaleDateString();
+
+    timeAgoCache.set(date, { bucket, label });
+    if (timeAgoCache.size > 512) timeAgoCache.clear();
+    return label;
   }
 
   async function interact(articleId: string, type: InteractionType) {
@@ -249,7 +307,8 @@
 
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
-    const shouldRemove = type === 'hide' || type === 'thumbs_down' || type === 'boost';
+    const shouldRemove =
+      type === 'hide' || type === 'thumbs_down' || type === 'boost';
     const isReaction =
       type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
     const previousReaction = previousArticle
@@ -286,14 +345,7 @@
         body: JSON.stringify({ articleId, type }),
       });
       if (res.ok) {
-        const labels: Record<string, string> = {
-          hide: 'Hidden',
-          save: 'Saved',
-          thumbs_up: 'Liked',
-          thumbs_down: 'Disliked and hidden',
-          boost: 'Boosted and restored',
-        };
-        addToast(labels[type] || type, 'success');
+        addToast(INTERACTION_LABELS[type] || type, 'success');
       } else {
         throw new Error('Request failed');
       }
@@ -430,13 +482,19 @@
 
     window.addEventListener('pageshow', onPageShow);
 
+    const onPageHide = () => {
+      flushScrollRestoreWrite();
+    };
+
+    window.addEventListener('pagehide', onPageHide);
+
     let scrollRaf = 0;
     const onScroll = () => {
       if (isRestoringScroll) return;
       if (scrollRaf) return;
       scrollRaf = window.requestAnimationFrame(() => {
         scrollRaf = 0;
-        writeScrollRestoreState();
+        scheduleScrollRestoreWrite();
         maybeLoadMore();
       });
     };
@@ -493,6 +551,15 @@
       }
       if (scrollRaf) window.cancelAnimationFrame(scrollRaf);
       window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('pagehide', onPageHide);
+      if (scrollWriteTimeout) {
+        clearTimeout(scrollWriteTimeout);
+        scrollWriteTimeout = null;
+      }
+      if (openingTimeout) {
+        clearTimeout(openingTimeout);
+        openingTimeout = null;
+      }
       observer.disconnect();
     };
   });
@@ -501,7 +568,7 @@
   let touchStartY = 0;
   let lastSwipeTime = 0;
   let activeSwipeId = $state<string | null>(null);
-  let swipeOffsets = $state<Record<string, number>>({});
+  let activeSwipeOffset = $state(0);
   let swipeDirection = $state<'none' | 'undecided' | 'horizontal' | 'vertical'>(
     'none',
   );
@@ -518,7 +585,7 @@
     touchStartY = e.clientY;
     activeSwipeId = articleId;
     swipeDirection = 'undecided';
-    swipeOffsets[articleId] = 0;
+    activeSwipeOffset = 0;
   }
 
   function handlePointerMove(e: PointerEvent, articleId: string) {
@@ -538,6 +605,8 @@
         swipeDirection = 'horizontal';
       } else {
         swipeDirection = 'vertical';
+        activeSwipeId = null;
+        activeSwipeOffset = 0;
         if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
           (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
         }
@@ -550,9 +619,9 @@
     if (isBoostReview && dx < 0) return;
 
     const nextOffset = Math.max(-180, Math.min(180, dx * 0.8));
-    if (Math.abs((swipeOffsets[articleId] || 0) - nextOffset) > 0.5) {
+    if (Math.abs(activeSwipeOffset - nextOffset) > 0.5) {
       e.preventDefault();
-      swipeOffsets[articleId] = nextOffset;
+      activeSwipeOffset = nextOffset;
     }
   }
 
@@ -588,14 +657,14 @@
 
     swipeDirection = 'none';
     // Snap back
-    swipeOffsets[articleId] = 0;
+    activeSwipeOffset = 0;
   }
 
   function handlePointerCancel(_e: PointerEvent, articleId: string) {
     if (activeSwipeId === articleId) {
       activeSwipeId = null;
       swipeDirection = 'none';
-      swipeOffsets[articleId] = 0;
+      activeSwipeOffset = 0;
     }
   }
 </script>
@@ -650,69 +719,77 @@
 {:else}
   <div class="grid grid-cols-1 md:gap-4 xl:grid-cols-2">
     {#each articles as article, i (article.id)}
-      {@const swipeOffset = swipeOffsets[article.id] || 0}
+      {@const isPending = Boolean(pendingArticleIds[article.id])}
+      {@const swipeOffset =
+        activeSwipeId === article.id ? activeSwipeOffset : 0}
+      {@const articleDate = article.published_at || article.fetched_at}
+      {@const formattedSummary = article.summary
+        ? getFormattedSummary(article)
+        : ''}
       <div class="relative overflow-hidden rounded-sm">
         <!-- Swipe Action Indicators -->
-        <div
-          class="absolute inset-0 z-0 pointer-events-none transition-colors duration-200"
-          style="background: {swipeOffset > 0
-            ? 'var(--color-success-500)'
-            : !isBoostReview && swipeOffset < 0
-              ? 'var(--color-error-500)'
-              : 'transparent'}; opacity: {Math.min(
-            Math.abs(swipeOffset) / 60,
-            0.8,
-          )};"
-        >
-          {#if swipeOffset > 0}
-            <div class="flex h-full items-center justify-start px-6">
-              <div class="flex items-center gap-2 text-white font-bold">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  ><path
-                    d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
-                  /></svg
-                >
-                Save
+        {#if swipeOffset !== 0}
+          <div
+            class="pointer-events-none absolute inset-0 z-0 transition-opacity duration-200"
+            style="background: {swipeOffset > 0
+              ? 'var(--color-success-500)'
+              : !isBoostReview && swipeOffset < 0
+                ? 'var(--color-error-500)'
+                : 'transparent'}; opacity: {Math.min(
+              Math.abs(swipeOffset) / 60,
+              0.8,
+            )};"
+          >
+            {#if swipeOffset > 0}
+              <div class="flex h-full items-center justify-start px-6">
+                <div class="flex items-center gap-2 text-white font-bold">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    ><path
+                      d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
+                    /></svg
+                  >
+                  Save
+                </div>
               </div>
-            </div>
-          {/if}
-          {#if !isBoostReview && swipeOffset < 0}
-            <div class="flex h-full items-center justify-end px-6">
-              <div class="flex items-center gap-2 text-white font-bold">
-                {#if swipeOffset < -SWIPE_LONG_LEFT_THRESHOLD}
-                  Dislike + Hide
-                {:else}
-                  Hide
-                {/if}
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  ><path d="M3 6h18" /><path
-                    d="M19 6v14c1 1-1 2-2 2H7c-1 0-2-1-2-2V6"
-                  /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+            {/if}
+            {#if !isBoostReview && swipeOffset < 0}
+              <div class="flex h-full items-center justify-end px-6">
+                <div class="flex items-center gap-2 text-white font-bold">
+                  {#if swipeOffset < -SWIPE_LONG_LEFT_THRESHOLD}
+                    Dislike + Hide
+                  {:else}
+                    Hide
+                  {/if}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    ><path d="M3 6h18" /><path
+                      d="M19 6v14c1 1-1 2-2 2H7c-1 0-2-1-2-2V6"
+                    /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg
+                  >
+                </div>
               </div>
-            </div>
-          {/if}
-        </div>
+            {/if}
+          </div>
+        {/if}
 
         <div
           id="article-{article.id}"
           class="glass-card glass-card-hover article-card group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px] md:min-h-[280px]"
-          style="touch-action: pan-y; transform: translateX({swipeOffset}px); transition: {activeSwipeId === article.id
-            ? 'none'
-            : 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)'};"
+          style="touch-action: pan-y; --swipe-offset: {swipeOffset}px;"
+          class:article-swiping={activeSwipeId === article.id}
           class:article-focus-ring={focusedIndex === i}
           role="link"
           tabindex="0"
@@ -726,7 +803,11 @@
               return;
             }
             const target = e.target as Element;
-            if (target && typeof target.closest === 'function' && target.closest('button, .action-btn')) {
+            if (
+              target &&
+              typeof target.closest === 'function' &&
+              target.closest('button, .action-btn')
+            ) {
               return;
             }
             openArticle(article);
@@ -734,7 +815,12 @@
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               const target = e.target as Element;
-              if (target && typeof target.closest === 'function' && target.closest('button, .action-btn')) return;
+              if (
+                target &&
+                typeof target.closest === 'function' &&
+                target.closest('button, .action-btn')
+              )
+                return;
               e.preventDefault();
               openArticle(article);
             }
@@ -745,8 +831,8 @@
               <img
                 src={article.image_url}
                 alt=""
-                class="article-card-image h-full w-full object-cover opacity-80 transition-all duration-700"
-                loading="lazy"
+                class="article-card-image h-full w-full object-cover opacity-80"
+                loading={i < 2 ? 'eager' : 'lazy'}
                 decoding="async"
                 fetchpriority={i < 2 ? 'high' : 'low'}
               />
@@ -780,7 +866,7 @@
                     points="12 6 12 12 16 14"
                   /></svg
                 >
-                {timeAgo(article.published_at || article.fetched_at)}
+                {timeAgo(articleDate)}
               </span>
             </div>
 
@@ -796,18 +882,24 @@
                 class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
                 style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
               >
-                {@html formatContent(article.summary)}
+                {@html formattedSummary}
               </div>
             {/if}
 
             <div class="mt-auto pt-2 md:pt-6">
-              <div class="flex items-center gap-1.5 {isBoostReview ? 'flex-wrap' : ''}">
+              <div
+                class="flex items-center gap-1.5 {isBoostReview
+                  ? 'flex-wrap'
+                  : ''}"
+              >
                 <button
                   type="button"
-                  class="action-btn {isBoostReview ? '' : '!hidden lg:!inline-flex'} !bg-surface-900/50 backdrop-blur-sm {article.saved
+                  class="action-btn {isBoostReview
+                    ? ''
+                    : '!hidden lg:!inline-flex'} !bg-surface-900/50 lg:backdrop-blur-sm {article.saved
                     ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
                     : ''}"
-                  disabled={Boolean(pendingArticleIds[article.id]) || Boolean(article.saved)}
+                  disabled={isPending || Boolean(article.saved)}
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
@@ -836,7 +928,7 @@
                     class="ml-auto inline-flex items-center gap-2 rounded-sm border px-4 py-2 text-sm font-semibold text-white transition hover:border-primary-400/60 hover:bg-primary-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/60 {article.thumbs_up
                       ? 'border-primary-500/40 bg-primary-500/20 shadow-[0_0_0_1px_rgba(59,130,246,0.2)]'
                       : 'border-primary-500/20 bg-primary-500/10'}"
-                    disabled={Boolean(pendingArticleIds[article.id])}
+                    disabled={isPending}
                     onpointerdown={(e) => e.stopPropagation()}
                     onpointerup={(e) => e.stopPropagation()}
                     onclick={(e) => {
@@ -855,15 +947,17 @@
                       stroke="currentColor"
                       stroke-width="2"
                     >
-                      <path d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z" />
+                      <path
+                        d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z"
+                      />
                     </svg>
                     Keep &amp; boost
                   </button>
                 {:else}
                   <button
                     type="button"
-                    class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 backdrop-blur-sm hover:!text-error-400"
-                    disabled={Boolean(pendingArticleIds[article.id])}
+                    class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 lg:backdrop-blur-sm hover:!text-error-400"
+                    disabled={isPending}
                     onpointerdown={(e) => e.stopPropagation()}
                     onpointerup={(e) => e.stopPropagation()}
                     onclick={(e) => {
@@ -892,7 +986,7 @@
                   <div class="ml-auto flex items-center gap-1">
                     <button
                       type="button"
-                      class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_up
+                      class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_up
                         ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
                         : ''}"
                       onpointerdown={(e) => e.stopPropagation()}
@@ -902,6 +996,7 @@
                         interact(article.id, 'thumbs_up');
                       }}
                       aria-pressed={Boolean(article.thumbs_up)}
+                      aria-label="Like article"
                       title="Like"
                     >
                       <svg
@@ -921,7 +1016,7 @@
                     </button>
                     <button
                       type="button"
-                      class="action-btn !bg-surface-900/50 backdrop-blur-sm {article.thumbs_down
+                      class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_down
                         ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
                         : ''}"
                       onpointerdown={(e) => e.stopPropagation()}
@@ -931,6 +1026,7 @@
                         interact(article.id, 'thumbs_down');
                       }}
                       aria-pressed={Boolean(article.thumbs_down)}
+                      aria-label="Dislike and hide article"
                       title="Dislike and hide"
                     >
                       <svg
@@ -954,21 +1050,27 @@
             </div>
           </div>
         </div>
-        </div>
+      </div>
     {/each}
   </div>
 
   {#if openingArticle}
-    <div class="pointer-events-none fixed inset-x-0 top-20 z-[70] flex justify-center px-4">
+    <div
+      class="pointer-events-none fixed inset-x-0 top-20 z-[70] flex justify-center px-4"
+    >
       <div
         class="flex items-center gap-3 rounded-sm border px-4 py-3 shadow-2xl backdrop-blur-xl"
         style="background: color-mix(in oklch, var(--color-surface-900) 86%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
         in:fade={{ duration: 160 }}
         out:fade={{ duration: 160 }}
       >
-        <div class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
+        <div
+          class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+        ></div>
         <div class="flex flex-col">
-          <span class="text-sm font-semibold text-surface-50">{openingArticle.label}</span>
+          <span class="text-sm font-semibold text-surface-50"
+            >{openingArticle.label}</span
+          >
           <span class="text-xs text-surface-300">Please wait a moment.</span>
         </div>
       </div>
@@ -976,14 +1078,23 @@
   {/if}
 
   <!-- Infinite Scroll Sentinel -->
-      {#if showInfiniteScroll}
+  {#if showInfiniteScroll}
     <div bind:this={sentinelEl} class="flex h-32 items-center justify-center">
       {#if loadingMore}
-        <div class="flex flex-col items-center gap-3 text-sm" style="color: var(--color-surface-300);">
+        <div
+          class="flex flex-col items-center gap-3 text-sm"
+          style="color: var(--color-surface-300);"
+        >
           <div class="flex items-center gap-2">
-            <div class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.2s]"></div>
-            <div class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.1s]"></div>
-            <div class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400"></div>
+            <div
+              class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.2s]"
+            ></div>
+            <div
+              class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.1s]"
+            ></div>
+            <div
+              class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400"
+            ></div>
           </div>
           <div class="flex items-center gap-3">
             <div
@@ -1000,3 +1111,38 @@
     </div>
   {/if}
 {/if}
+
+<style>
+  .article-card {
+    transform: translate3d(var(--swipe-offset), 0, 0);
+    transition:
+      transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+      border-color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .article-card.article-swiping {
+    transition: none;
+    will-change: transform;
+    user-select: none;
+  }
+
+  .article-card button {
+    touch-action: manipulation;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .article-card:hover:not(.article-swiping) {
+      transform: translate3d(var(--swipe-offset), -2px, 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .article-card,
+    .article-card-image,
+    .article-card-title,
+    .article-card button {
+      transition: none !important;
+    }
+  }
+</style>

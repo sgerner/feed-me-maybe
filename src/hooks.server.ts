@@ -24,9 +24,8 @@ function isSetupComplete(): boolean {
       .get() as { value: string } | undefined;
     if (row?.value === 'true') return true;
 
-    const feedRow = db
-      .prepare('SELECT COUNT(*) as count FROM feeds')
-      .get() as { count: number } | undefined;
+    const feedRow = db.prepare('SELECT COUNT(*) as count FROM feeds').get() as
+      { count: number } | undefined;
     return (feedRow?.count ?? 0) > 0;
   } catch {
     return false;
@@ -47,6 +46,16 @@ function isOnboardingBypassPath(pathname: string): boolean {
     pathname.startsWith('/api/opml/') ||
     pathname === '/api/ai' ||
     pathname.startsWith('/api/ai/')
+  );
+}
+
+function isPwaAssetPath(pathname: string): boolean {
+  return (
+    pathname === '/manifest.json' ||
+    pathname === '/manifest.webmanifest' ||
+    pathname === '/registerSW.js' ||
+    pathname === '/sw.js' ||
+    /^\/workbox-[\w.-]+\.js$/.test(pathname)
   );
 }
 
@@ -90,7 +99,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   // Auth guard for protected routes
   const publicPaths = new Set(['/login', '/api/login', '/api/logout']);
-  const isPublicPath = publicPaths.has(event.url.pathname);
+  const isPublicPath =
+    publicPaths.has(event.url.pathname) || isPwaAssetPath(event.url.pathname);
   const isApiRoute = event.url.pathname.startsWith('/api/');
 
   if (!event.locals.sessionId && !isPublicPath) {
@@ -118,7 +128,12 @@ export const handle: Handle = async ({ event, resolve }) => {
   return resolve(event);
 };
 
-export const handleError: HandleServerError = ({ error, event, status, message }) => {
+export const handleError: HandleServerError = ({
+  error,
+  event,
+  status,
+  message,
+}) => {
   recordAppError({
     source: 'handleError',
     error,

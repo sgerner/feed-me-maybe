@@ -15,6 +15,11 @@ export function getDb(): Database.Database {
   }
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Keep feed refreshes responsive without forcing a full fsync for every
+  // small interaction. WAL still protects readers while a refresh is writing.
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('temp_store = MEMORY');
   db.pragma('foreign_keys = ON');
   return db;
 }

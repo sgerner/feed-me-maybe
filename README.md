@@ -17,7 +17,7 @@ A self-hosted, AI-powered RSS reader built with SvelteKit, SQLite, and modern we
 
 ## Prerequisites
 
-- **Node.js** 20 or later
+- **Node.js** 22.12.0 or later (the Docker image uses Node 26)
 - **npm** (or any compatible package manager)
 - **Git**
 

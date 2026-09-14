@@ -4,9 +4,25 @@ let syncRequest: Promise<boolean> | null = null;
 let lastSilentSyncAt = 0;
 const SILENT_SYNC_COOLDOWN_MS = 30_000;
 
+function isOffline() {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+function prefersReducedNetworkActivity() {
+  if (typeof navigator === 'undefined') return false;
+  const connection = (
+    navigator as Navigator & {
+      connection?: { saveData?: boolean };
+    }
+  ).connection;
+  return connection?.saveData === true;
+}
+
 export async function syncFeeds(options: { silent?: boolean } = {}) {
   const { silent = false } = options;
   if (syncRequest) return syncRequest;
+  if (isOffline()) return false;
+  if (silent && prefersReducedNetworkActivity()) return true;
   if (silent && Date.now() - lastSilentSyncAt < SILENT_SYNC_COOLDOWN_MS) {
     return true;
   }
@@ -30,8 +46,12 @@ export async function syncFeeds(options: { silent?: boolean } = {}) {
   return syncRequest;
 }
 
-export async function syncFeed(feedId: string, options: { silent?: boolean } = {}) {
+export async function syncFeed(
+  feedId: string,
+  options: { silent?: boolean } = {},
+) {
   const { silent = false } = options;
+  if (isOffline()) return false;
   try {
     const res = await fetch(`/api/feeds/${feedId}/refresh`, {
       method: 'POST',

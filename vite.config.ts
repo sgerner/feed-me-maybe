@@ -12,15 +12,25 @@ export default defineConfig({
     tailwindcss(),
     sveltekit(),
     SvelteKitPWA({
+      // SvelteKit SSR does not inject the generated registration script into
+      // app.html; the deferred script tag is declared there explicitly.
+      injectRegister: 'auto',
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.png', 'apple-touch-icon.png', 'favicon.ico'],
+      includeAssets: [
+        'favicon.png',
+        'apple-touch-icon.png',
+        'favicon.ico',
+        'manifest.json',
+      ],
       manifest: {
         name: 'Feed Me Maybe',
         short_name: 'FeedMeMaybe',
         description: 'AI-powered RSS reader',
+        id: '/',
         theme_color: '#0f172a',
         background_color: '#0f172a',
         display: 'standalone',
+        lang: 'en',
         start_url: '/',
         scope: '/',
         icons: [
@@ -49,6 +59,27 @@ export default defineConfig({
         // screenshots from breaking service-worker generation.
         globIgnores: ['**/projects/**'],
         cleanupOutdatedCaches: true,
+        // This is an SSR app: caching a generic navigation fallback can serve
+        // stale or unauthenticated HTML. Let navigations reach the server and
+        // keep offline caching limited to immutable assets and article media.
+        navigateFallback: undefined,
+        runtimeCaching: [
+          {
+            urlPattern: ({ request, url }) =>
+              request.destination === 'image' &&
+              url.origin !== self.location.origin,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'feed-me-maybe-article-images-v1',
+              cacheableResponse: { statuses: [0, 200] },
+              expiration: {
+                maxEntries: 80,
+                maxAgeSeconds: 30 * 24 * 60 * 60,
+                purgeOnQuotaError: true,
+              },
+            },
+          },
+        ],
       },
     }),
   ],
