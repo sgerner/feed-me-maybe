@@ -1236,13 +1236,13 @@
                         Hide
                       </button>
                       <div
-                        class="my-1 h-px bg-surface-100/10"
+                        class="article-menu-reaction-divider my-1 h-px bg-surface-100/10"
                         aria-hidden="true"
                       ></div>
                       <button
                         type="button"
                         role="menuitemcheckbox"
-                        class="article-menu-item {article.thumbs_up
+                        class="article-menu-item article-menu-reaction {article.thumbs_up
                           ? 'text-primary-300'
                           : ''}"
                         aria-label="Like article"
@@ -1275,7 +1275,7 @@
                       <button
                         type="button"
                         role="menuitemcheckbox"
-                        class="article-menu-item {article.thumbs_down
+                        class="article-menu-item article-menu-reaction {article.thumbs_down
                           ? 'text-error-300'
                           : ''}"
                         aria-label="Dislike and hide article"
@@ -1307,36 +1307,13 @@
                       </button>
                     </div>
                   </details>
-                  <!-- The menu keeps the same reaction actions, but removes them from the card's primary path. -->
-                  <button
-                    type="button"
-                    class="hidden"
-                    tabindex="-1"
-                    aria-hidden="true"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path d="M3 6h18" />
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-                      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    </svg>
-                    Hide
-                  </button>
-                  <div class="hidden">
+                  <div class="article-mobile-reactions ml-2 items-center gap-1">
                     <button
                       type="button"
                       class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_up
                         ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
                         : ''}"
+                      disabled={isPending}
                       onpointerdown={(e) => e.stopPropagation()}
                       onpointerup={(e) => e.stopPropagation()}
                       onclick={(e) => {
@@ -1345,7 +1322,7 @@
                       }}
                       aria-pressed={Boolean(article.thumbs_up)}
                       aria-label="Like article"
-                      title="Like"
+                      title="Like article"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -1355,6 +1332,7 @@
                         fill={article.thumbs_up ? 'currentColor' : 'none'}
                         stroke="currentColor"
                         stroke-width="2"
+                        aria-hidden="true"
                       >
                         <path d="M7 10v12" />
                         <path
@@ -1367,6 +1345,7 @@
                       class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_down
                         ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
                         : ''}"
+                      disabled={isPending}
                       onpointerdown={(e) => e.stopPropagation()}
                       onpointerup={(e) => e.stopPropagation()}
                       onclick={(e) => {
@@ -1375,7 +1354,7 @@
                       }}
                       aria-pressed={Boolean(article.thumbs_down)}
                       aria-label="Dislike and hide article"
-                      title="Dislike and hide"
+                      title="Dislike and hide article"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -1385,6 +1364,7 @@
                         fill={article.thumbs_down ? 'currentColor' : 'none'}
                         stroke="currentColor"
                         stroke-width="2"
+                        aria-hidden="true"
                       >
                         <path d="M17 14V2" />
                         <path
@@ -1479,6 +1459,10 @@
     touch-action: manipulation;
   }
 
+  .article-mobile-reactions {
+    display: none;
+  }
+
   .article-menu-item {
     display: flex;
     min-height: 2.75rem;
@@ -1501,6 +1485,20 @@
   .article-menu-item:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+
+  @media (max-width: 767px) {
+    .article-mobile-reactions {
+      display: flex;
+    }
+
+    .article-menu-reaction {
+      display: none;
+    }
+
+    .article-menu-reaction-divider {
+      display: none;
+    }
   }
 
   [data-article-overflow] > summary::-webkit-details-marker {

@@ -485,13 +485,6 @@ body {
   overscroll-behavior: contain;
 }
 
-.mobile-shell-status {
-  min-width: 4.5rem;
-  color: color-mix(in oklch, var(--color-surface-200) 58%, transparent);
-  font-size: 0.6875rem;
-  text-align: right;
-}
-
 .mobile-core-nav {
   position: fixed;
   right: 0;

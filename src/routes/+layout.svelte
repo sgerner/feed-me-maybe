@@ -427,52 +427,6 @@
 <div class="vignette" aria-hidden="true"></div>
 
 <div class="relative z-10 flex h-dvh flex-col">
-  <!-- Top Navigation Bar (Mobile only) -->
-  <header
-    class="glass-header flex h-14 shrink-0 items-center justify-between px-4 md:hidden"
-  >
-    <div class="flex items-center gap-3">
-      <button
-        class="btn-icon"
-        onclick={toggleSidebar}
-        aria-label="Toggle navigation"
-        aria-expanded={sidebarOpen}
-        aria-controls="app-sidebar"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <path d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
-      <a
-        href="/"
-        data-sveltekit-preload-data
-        class="gradient-text text-lg font-bold no-underline"
-      >
-        Feed Me Maybe
-      </a>
-    </div>
-
-    <span class="mobile-shell-status" aria-live="polite">
-      {#if offlineState === 'offline'}
-        Offline
-      {:else if offlineState === 'blocked'}
-        Review sync
-      {:else if offlineState === 'queued'}
-        {queuedActions} queued
-      {:else if offlineState === 'syncing'}
-        Syncing
-      {/if}
-    </span>
-  </header>
-
   <div class="flex flex-1 overflow-hidden">
     <!-- Sidebar overlay (mobile) -->
     {#if sidebarOpen}
@@ -494,7 +448,7 @@
     <!-- Sidebar -->
     <aside
       id="app-sidebar"
-      class="glass-sidebar fixed left-0 top-14 z-50 h-[calc(100dvh-3.5rem)] w-56 transform transition-transform duration-300 ease-out md:static md:top-0 md:h-dvh md:translate-x-0"
+      class="glass-sidebar fixed left-0 top-0 z-50 h-dvh w-56 transform transition-transform duration-300 ease-out max-md:pt-[env(safe-area-inset-top)] md:static md:top-0 md:h-dvh md:translate-x-0"
       class:translate-x-0={sidebarOpen}
       class:-translate-x-full={!sidebarOpen}
     >
