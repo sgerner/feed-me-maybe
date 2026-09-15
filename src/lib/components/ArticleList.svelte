@@ -1307,7 +1307,7 @@
                       </button>
                     </div>
                   </details>
-                  <div class="article-mobile-reactions ml-2 items-center gap-1">
+                  <div class="article-reactions ml-2 items-center gap-1">
                     <button
                       type="button"
                       class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_up
@@ -1459,8 +1459,8 @@
     touch-action: manipulation;
   }
 
-  .article-mobile-reactions {
-    display: none;
+  .article-reactions {
+    display: flex;
   }
 
   .article-menu-item {
@@ -1488,10 +1488,6 @@
   }
 
   @media (max-width: 767px) {
-    .article-mobile-reactions {
-      display: flex;
-    }
-
     .article-menu-reaction {
       display: none;
     }

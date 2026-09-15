@@ -684,9 +684,9 @@
           {/if}
 
           <div
-            class="prose prose-sm max-w-none prose-glass [&_img]:cursor-zoom-in"
+            class="prose max-w-none prose-glass [&_img]:cursor-zoom-in"
             bind:this={articleContentEl}
-            style="font-size: {fontScale}em;"
+            style="font-size: {fontScale * 1.125}rem;"
           >
             {#if article.content}
               {@html renderedArticleContent}

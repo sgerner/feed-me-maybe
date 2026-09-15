@@ -12,19 +12,17 @@
   };
 
   let { data: pageData } = $props<{
-    data: { articles: Article[]; totalPages: number; totalArticles: number };
+    data: { articles: Article[]; totalPages: number };
   }>();
 
   let articles = $state<Article[]>([]);
   let pullDistance = $state(0);
   let isPulling = $state(false);
   let syncing = $state(false);
-  let lastSyncLabel = $state('Loaded just now');
   let touchStartY = 0;
 
   $effect(() => {
     articles = pageData.articles;
-    lastSyncLabel = 'Loaded just now';
   });
 
   function getScrollContainer(): HTMLElement | null {
@@ -39,10 +37,8 @@
   async function handleSync() {
     if (syncing) return;
     syncing = true;
-    lastSyncLabel = 'Syncing…';
     try {
       await syncFeeds();
-      lastSyncLabel = 'Synced just now';
     } finally {
       syncing = false;
     }
@@ -92,20 +88,6 @@
   ontouchmove={handleTouchMove}
   ontouchend={handleTouchEnd}
 >
-  <div
-    class="mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
-  >
-    <div>
-      <p class="eyebrow text-primary-300">All stories</p>
-      <h1 class="section-title">Your reading list</h1>
-      <p class="section-subtitle">
-        {pageData.totalArticles}
-        {pageData.totalArticles === 1 ? 'story' : 'stories'} · {lastSyncLabel}
-      </p>
-    </div>
-    <a href="/inbox" class="btn preset-tonal no-underline">View unread</a>
-  </div>
-
   <div
     class="flex justify-center overflow-hidden transition-all duration-200 md:hidden"
     aria-hidden="true"
