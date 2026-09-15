@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
+  import { fetchWithCsrf } from '$lib/client/csrf';
   let { data: pageData } = $props();
   let msg = $state('');
   let preferences = $state<
@@ -25,7 +26,7 @@
   });
 
   async function deletePref(id: string) {
-    await fetch(`/api/settings`, {
+    await fetchWithCsrf(`/api/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: `delete_pref_${id}`, value: 'true' }),
@@ -40,7 +41,7 @@
       )
     )
       return;
-    await fetch('/api/settings', {
+    await fetchWithCsrf('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: 'reset_training', value: 'true' }),

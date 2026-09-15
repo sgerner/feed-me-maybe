@@ -16,43 +16,73 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   const { providerId, modelId, config, customBaseUrl } = body as {
-    providerId: string;
-    modelId: string;
-    config: Record<string, string>;
-    customBaseUrl?: string;
+    providerId: unknown;
+    modelId: unknown;
+    config?: unknown;
+    customBaseUrl?: unknown;
   };
   if (!providerId || !modelId)
     return json({ error: 'providerId and modelId required' }, { status: 400 });
 
+  if (
+    (config !== undefined &&
+      (typeof config !== 'object' ||
+        config === null ||
+        Array.isArray(config))) ||
+    (customBaseUrl !== undefined && typeof customBaseUrl !== 'string')
+  ) {
+    return json({ error: 'Invalid AI configuration' }, { status: 400 });
+  }
+
+  const safeConfig = Object.fromEntries(
+    Object.entries((config || {}) as Record<string, unknown>)
+      .filter(
+        ([, value]) => typeof value === 'string' && value.trim().length > 0,
+      )
+      .map(([key, value]) => [key, String(value)]),
+  );
+
+  const providerIdValue = String(providerId);
   const db = getDb();
   const existing = db
     .prepare('SELECT id FROM provider_configs WHERE provider_id = ?')
-    .get(providerId) as { id: string } | undefined;
+    .get(providerIdValue) as { id: string } | undefined;
 
-  const configJson = JSON.stringify(config || {});
-  const { encrypted, nonce } = encrypt(configJson);
+  let encrypted: string | undefined;
+  let nonce: string | undefined;
+  if (Object.keys(safeConfig).length > 0 || !existing) {
+    const result = encrypt(JSON.stringify(safeConfig));
+    encrypted = result.encrypted;
+    nonce = result.nonce;
+  }
 
   if (existing) {
-    db.prepare(
-      'UPDATE provider_configs SET model_id = ?, api_key_encrypted = ?, api_key_nonce = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
-    ).run(
-      modelId,
-      encrypted,
-      nonce,
-      customBaseUrl || null,
-      Date.now(),
-      existing.id,
-    );
+    if (encrypted && nonce) {
+      db.prepare(
+        'UPDATE provider_configs SET model_id = ?, api_key_encrypted = ?, api_key_nonce = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
+      ).run(
+        String(modelId),
+        encrypted,
+        nonce,
+        customBaseUrl || null,
+        Date.now(),
+        existing.id,
+      );
+    } else {
+      db.prepare(
+        'UPDATE provider_configs SET model_id = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
+      ).run(String(modelId), customBaseUrl || null, Date.now(), existing.id);
+    }
   } else {
     const id = crypto.randomUUID();
     db.prepare(
       'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, custom_base_url, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
     ).run(
       id,
-      providerId,
-      modelId,
-      encrypted,
-      nonce,
+      providerIdValue,
+      String(modelId),
+      encrypted || '',
+      nonce || '',
       customBaseUrl || null,
       Date.now(),
       Date.now(),

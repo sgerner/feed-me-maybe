@@ -16,6 +16,9 @@ export default defineConfig({
       // app.html; the deferred script tag is declared there explicitly.
       injectRegister: 'auto',
       registerType: 'autoUpdate',
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'service-worker.ts',
       includeAssets: [
         'favicon.png',
         'apple-touch-icon.png',
@@ -33,6 +36,61 @@ export default defineConfig({
         lang: 'en',
         start_url: '/',
         scope: '/',
+        categories: ['news', 'productivity'],
+        shortcuts: [
+          {
+            name: 'Inbox',
+            short_name: 'Inbox',
+            description: 'Open the latest feed articles',
+            url: '/',
+            icons: [
+              {
+                src: '/android-chrome-192x192.png',
+                sizes: '192x192',
+                type: 'image/png',
+              },
+            ],
+          },
+          {
+            name: 'Search',
+            short_name: 'Search',
+            description: 'Search your reading library',
+            url: '/search',
+            icons: [
+              {
+                src: '/android-chrome-192x192.png',
+                sizes: '192x192',
+                type: 'image/png',
+              },
+            ],
+          },
+          {
+            name: 'Digest',
+            short_name: 'Digest',
+            description: 'Open your calm daily briefing',
+            url: '/digest',
+            icons: [
+              {
+                src: '/android-chrome-192x192.png',
+                sizes: '192x192',
+                type: 'image/png',
+              },
+            ],
+          },
+          {
+            name: 'Saved',
+            short_name: 'Saved',
+            description: 'Open saved articles',
+            url: '/saved',
+            icons: [
+              {
+                src: '/android-chrome-192x192.png',
+                sizes: '192x192',
+                type: 'image/png',
+              },
+            ],
+          },
+        ],
         icons: [
           {
             src: '/android-chrome-192x192.png',
@@ -52,34 +110,16 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
+      injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp}'],
         // Project screenshots are documentation, not runtime assets. Excluding
         // them keeps install/update downloads small and prevents oversized
         // screenshots from breaking service-worker generation.
         globIgnores: ['**/projects/**'],
-        cleanupOutdatedCaches: true,
-        // This is an SSR app: caching a generic navigation fallback can serve
-        // stale or unauthenticated HTML. Let navigations reach the server and
-        // keep offline caching limited to immutable assets and article media.
-        navigateFallback: undefined,
-        runtimeCaching: [
-          {
-            urlPattern: ({ request, url }) =>
-              request.destination === 'image' &&
-              url.origin !== self.location.origin,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'feed-me-maybe-article-images-v1',
-              cacheableResponse: { statuses: [0, 200] },
-              expiration: {
-                maxEntries: 80,
-                maxAgeSeconds: 30 * 24 * 60 * 60,
-                purgeOnQuotaError: true,
-              },
-            },
-          },
-        ],
+      },
+      workbox: {
+        // SSR/auth navigations are intentionally not given a generic fallback.
+        // The custom worker owns only precaching and offline coordination.
       },
     }),
   ],

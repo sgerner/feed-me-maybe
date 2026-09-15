@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { syncFeeds } from '$lib/feeds';
+  import { cacheDigest, getCachedDigests } from '$lib/offline';
+  import type { OfflineJsonValue } from '$lib/offline';
 
   type DigestArticle = {
     id: string;
@@ -10,8 +12,9 @@
     image_url?: string | null;
     published_at?: number | null;
     fetched_at?: number | null;
-    read?: boolean;
-    saved?: boolean;
+    read?: boolean | number;
+    saved?: boolean | number;
+    hidden?: boolean | number;
     feed_title?: string | null;
     feed_url?: string | null;
   };
@@ -19,12 +22,50 @@
   type DigestStory = {
     article: DigestArticle;
     reason: string;
+    status: 'new' | 'ongoing';
+    uncertainty?: string;
+    sourceCount: number;
+    relatedArticleIds: string[];
   };
 
   type DigestTheme = {
     name: string;
     summary: string;
     articles: DigestArticle[];
+  };
+
+  type InclusionCounts = {
+    windowArticles: number;
+    eligibleArticles: number;
+    excludedArticles: number;
+    excludedThumbsDown: number;
+    excludedRejected: number;
+    excludedHiddenUnread: number;
+    visibleUnread: number;
+    hiddenRead: number;
+    read: number;
+    unread: number;
+    saved: number;
+    duplicateArticles: number;
+    deduplicatedArticles: number;
+  };
+
+  type CalmBriefing = {
+    headline: string;
+    summary: string;
+    topSignal: DigestStory[];
+    worthYourTime: DigestStory[];
+    whatChanged: DigestStory[];
+    uncertainty: string[];
+  };
+
+  type DigestHistoryEntry = {
+    generatedAt: number;
+    windowDays: number;
+    headline: string;
+    totalArticles: number;
+    deduplicatedArticles: number;
+    signature: string;
   };
 
   type WeeklyDigest = {
@@ -43,10 +84,17 @@
     windowEnd: number;
     generatedAt: number;
     cacheHit: boolean;
+    aiEnabled: boolean;
+    windowDays: number;
+    briefing: CalmBriefing;
+    inclusionCounts: InclusionCounts;
+    deduplicatedArticles: number;
+    history: DigestHistoryEntry[];
+    allArticles: DigestArticle[];
   };
 
   const EMPTY_DIGEST: WeeklyDigest = {
-    headline: 'Weekly Digest',
+    headline: 'Calm Daily Briefing',
     summary: '',
     takeaways: [],
     themes: [],
@@ -61,6 +109,39 @@
     windowEnd: Date.now(),
     generatedAt: Date.now(),
     cacheHit: false,
+    aiEnabled: false,
+    windowDays: 7,
+    briefing: {
+      headline: 'Calm Daily Briefing',
+      summary: '',
+      topSignal: [],
+      worthYourTime: [],
+      whatChanged: [],
+      uncertainty: [],
+    },
+    inclusionCounts: {
+      windowArticles: 0,
+      eligibleArticles: 0,
+      excludedArticles: 0,
+      excludedThumbsDown: 0,
+      excludedRejected: 0,
+      excludedHiddenUnread: 0,
+      visibleUnread: 0,
+      hiddenRead: 0,
+      read: 0,
+      unread: 0,
+      saved: 0,
+      duplicateArticles: 0,
+      deduplicatedArticles: 0,
+    },
+    deduplicatedArticles: 0,
+    history: [],
+    allArticles: [],
+  };
+
+  type RankedStory = DigestStory & {
+    section: string;
+    accent: string;
   };
 
   let digest = $state<WeeklyDigest>(EMPTY_DIGEST);
@@ -68,74 +149,147 @@
   let hasLoaded = $state(false);
   let refreshing = $state(false);
   let errorMessage = $state('');
-  let pullDistance = $state(0);
-  let isPulling = $state(false);
-  let touchStartY = 0;
+  let selectedDays = $state(7);
+  let showAll = $state(false);
+  let allQuery = $state('');
   let requestId = 0;
+  let abortController: AbortController | null = null;
 
-  function getScrollContainer(): HTMLElement | null {
-    return document.querySelector('main');
+  const rankedStories = $derived.by<RankedStory[]>(() => {
+    const groups = [
+      {
+        section: 'Top signal',
+        accent: 'var(--color-primary-300)',
+        stories: digest.briefing?.topSignal || digest.topStories || [],
+      },
+      {
+        section: 'Worth your time',
+        accent: 'var(--color-secondary-300)',
+        stories: digest.briefing?.worthYourTime || digest.missedStories || [],
+      },
+      {
+        section: 'What changed',
+        accent: 'var(--color-warning-300)',
+        stories: digest.briefing?.whatChanged || [],
+      },
+    ];
+    const seen = new Set<string>();
+    const result: RankedStory[] = [];
+    for (const group of groups) {
+      for (const story of group.stories) {
+        if (seen.has(story.article.id)) continue;
+        seen.add(story.article.id);
+        result.push({ ...story, section: group.section, accent: group.accent });
+      }
+    }
+    return result;
+  });
+
+  const filteredAllArticles = $derived(
+    digest.allArticles.filter(
+      (article) =>
+        !allQuery.trim() ||
+        `${article.title} ${article.feed_title || ''}`
+          .toLowerCase()
+          .includes(allQuery.trim().toLowerCase()),
+    ),
+  );
+
+  function isTrue(value: boolean | number | undefined): boolean {
+    return value === true || value === 1;
   }
-
-  function isAtTop(): boolean {
-    const container = getScrollContainer();
-    return !container || container.scrollTop <= 0;
+  function articleDate(article: DigestArticle): number {
+    return article.published_at || article.fetched_at || Date.now();
   }
-
   function timeAgo(date: number): string {
-    const seconds = Math.floor((Date.now() - date) / 1000);
+    const seconds = Math.max(0, Math.floor((Date.now() - date) / 1000));
     if (seconds < 60) return 'just now';
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
     if (seconds < 2592000) return `${Math.floor(seconds / 86400)}d ago`;
     return new Date(date).toLocaleDateString();
   }
-
   function windowLabel(value: number): string {
     return new Date(value).toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',
     });
   }
-
   function formatError(value: unknown): string {
-    if (value instanceof Error) return value.message;
-    if (typeof value === 'string') return value;
-    return 'Unable to load the weekly digest.';
+    return value instanceof Error
+      ? value.message
+      : typeof value === 'string'
+        ? value
+        : 'Unable to load the calm daily briefing.';
   }
 
-  async function loadDigest(options: { sync?: boolean } = {}) {
+  function briefingFromLegacy(data: WeeklyDigest): WeeklyDigest {
+    if (data.briefing) return data;
+    return {
+      ...data,
+      briefing: {
+        headline: data.headline,
+        summary: data.summary,
+        topSignal: data.topStories || [],
+        worthYourTime: data.missedStories || [],
+        whatChanged: [],
+        uncertainty: [],
+      },
+      inclusionCounts: data.inclusionCounts || EMPTY_DIGEST.inclusionCounts,
+      allArticles: data.allArticles || [],
+      history: data.history || [],
+      deduplicatedArticles: data.deduplicatedArticles || data.totalArticles,
+    };
+  }
+
+  async function loadDigest(options: { sync?: boolean; force?: boolean } = {}) {
     const currentRequest = ++requestId;
-    if (!hasLoaded) {
-      loading = true;
-    } else {
-      refreshing = true;
-    }
+    abortController?.abort();
+    abortController = new AbortController();
+    if (!hasLoaded) loading = true;
+    else refreshing = true;
     errorMessage = '';
-
     try {
-      if (options.sync) {
-        await syncFeeds({ silent: true });
-      }
-
-      const res = await fetch(`/api/digest?ts=${Date.now()}`, {
-        headers: {
-          Accept: 'application/json',
-        },
+      if (options.sync) await syncFeeds({ silent: true });
+      const params = new URLSearchParams({ days: String(selectedDays) });
+      if (options.force) params.set('refresh', '1');
+      const res = await fetch(`/api/digest?${params.toString()}`, {
+        headers: { Accept: 'application/json' },
+        signal: abortController.signal,
       });
-
-      if (!res.ok) {
+      if (!res.ok)
         throw new Error(
-          res.status === 401 ? 'Unauthorized' : 'Failed to load weekly digest.',
+          res.status === 401 ? 'Unauthorized' : 'Failed to load the briefing.',
         );
-      }
-
-      const data = (await res.json()) as WeeklyDigest;
+      const data = briefingFromLegacy((await res.json()) as WeeklyDigest);
       if (currentRequest !== requestId) return;
       digest = data;
+      selectedDays = data.windowDays || selectedDays;
       hasLoaded = true;
+      void cacheDigest('admin', {
+        id: `briefing-${data.windowDays || selectedDays}-${data.generatedAt}`,
+        generatedAt: data.generatedAt,
+        payload: JSON.parse(JSON.stringify(data)) as OfflineJsonValue,
+      }).catch(() => undefined);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       if (currentRequest !== requestId) return;
+      if (navigator.onLine === false) {
+        const cached = await getCachedDigests('admin', 8);
+        const cachedBriefing = cached.find((item) => {
+          const payload = item.payload as Partial<WeeklyDigest>;
+          return payload.windowDays === selectedDays;
+        });
+        if (cachedBriefing) {
+          digest = briefingFromLegacy(
+            cachedBriefing.payload as unknown as WeeklyDigest,
+          );
+          selectedDays = digest.windowDays || selectedDays;
+          hasLoaded = true;
+          errorMessage = '';
+          return;
+        }
+      }
       errorMessage = formatError(err);
     } finally {
       if (currentRequest !== requestId) return;
@@ -147,457 +301,482 @@
 
   onMount(() => {
     void loadDigest();
+    return () => abortController?.abort();
   });
-
   function handleRefresh() {
-    void loadDigest();
+    void loadDigest({ force: true });
   }
-
-  function handleTouchStart(e: TouchEvent) {
-    touchStartY = e.changedTouches[0].screenY;
-    isPulling = false;
-    pullDistance = 0;
-  }
-
-  function handleTouchMove(e: TouchEvent) {
-    if (!isAtTop()) return;
-
-    const currentY = e.changedTouches[0].screenY;
-    const diff = currentY - touchStartY;
-    if (diff <= 0) {
-      pullDistance = 0;
-      isPulling = false;
-      return;
-    }
-
-    if (diff < 12 && !isPulling) return;
-
-    if (!isPulling) {
-      isPulling = true;
-    }
-
-    e.preventDefault();
-    pullDistance = Math.min(diff * 0.4, 80);
-  }
-
-  function handleTouchEnd() {
-    if (isPulling && pullDistance >= 60) {
-      void loadDigest({ sync: true });
-    }
-    pullDistance = 0;
-    isPulling = false;
+  function handleWindowChange(event: Event) {
+    selectedDays =
+      Number((event.currentTarget as HTMLSelectElement).value) || 7;
+    void loadDigest({ force: true });
   }
 </script>
 
-<div
-  class="mx-auto max-w-6xl"
-  role="presentation"
-  aria-busy={loading || refreshing}
-  style="overscroll-behavior-y: contain; touch-action: pan-y;"
-  ontouchstart={handleTouchStart}
-  ontouchmove={handleTouchMove}
-  ontouchend={handleTouchEnd}
->
-  <div
-    class="flex justify-center overflow-hidden transition-all duration-200"
-    style="height: {pullDistance}px; opacity: {pullDistance / 60};"
-  >
-    <div class="mt-4 flex items-center gap-2 text-primary-400">
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        class={pullDistance >= 60 ? 'rotate-180' : ''}
-        style="transition: transform 0.2s;"
-      >
-        <path d="M12 5v14M19 12l-7 7-7-7" />
-      </svg>
-      <span class="text-xs font-bold uppercase tracking-wider">
-        {loading && !digest
-          ? 'Loading digest...'
-          : refreshing
-            ? 'Refreshing...'
-            : pullDistance >= 60
-              ? 'Release to refresh'
-              : 'Pull to refresh'}
-      </span>
-    </div>
-  </div>
+<svelte:head>
+  <title>Calm Daily Briefing · Feed Me Maybe</title>
+  <meta
+    name="description"
+    content="A calm, source-grounded briefing from your complete eligible reading set."
+  />
+</svelte:head>
 
+<div class="mx-auto max-w-6xl pb-12">
   {#if loading && !hasLoaded}
-    <div class="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-      <div class="min-w-0 flex-1 animate-pulse">
-        <div class="h-8 w-56 rounded-sm bg-surface-200/15"></div>
-        <div class="mt-3 h-4 w-80 rounded-sm bg-surface-200/10"></div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <div class="h-5 w-20 rounded-sm bg-surface-200/10"></div>
-          <div class="h-5 w-16 rounded-sm bg-surface-200/10"></div>
-          <div class="h-5 w-16 rounded-sm bg-surface-200/10"></div>
-          <div class="h-5 w-24 rounded-sm bg-surface-200/10"></div>
-        </div>
+    <div class="space-y-6" aria-busy="true" aria-label="Loading briefing">
+      <div class="animate-pulse space-y-3 pt-2">
+        <div class="h-3 w-32 rounded-full bg-surface-200/15"></div>
+        <div class="h-10 w-3/4 rounded-sm bg-surface-200/15"></div>
+        <div class="h-5 w-full max-w-2xl rounded-sm bg-surface-200/10"></div>
       </div>
-      <div class="h-10 w-10 rounded-sm bg-surface-200/10 md:w-28"></div>
-    </div>
-
-    <section class="mb-8 rounded-sm border p-5 md:p-6 animate-pulse"
-      style="background: color-mix(in oklch, var(--color-primary-500) 7%, transparent); border-color: color-mix(in oklch, var(--color-primary-500) 16%, transparent);">
-      <div class="mb-3 h-4 w-24 rounded-sm bg-surface-200/10"></div>
-      <div class="h-5 w-full rounded-sm bg-surface-200/10"></div>
-      <div class="mt-2 h-5 w-5/6 rounded-sm bg-surface-200/10"></div>
-      <div class="mt-4 grid gap-2 md:grid-cols-2">
-        {#each [1, 2, 3, 4] as item (item)}
-          <div class="h-4 rounded-sm bg-surface-200/10"></div>
-        {/each}
+      <div class="grid gap-4 lg:grid-cols-3">
+        {#each [1, 2, 3] as item (item)}<div
+            class="animate-pulse rounded-2xl border border-surface-200/10 bg-surface-900/25 p-5"
+          >
+            <div class="h-3 w-24 rounded bg-surface-200/10"></div>
+            <div class="mt-5 h-6 w-full rounded bg-surface-200/10"></div>
+            <div class="mt-3 h-4 w-5/6 rounded bg-surface-200/10"></div>
+            <div class="mt-2 h-4 w-2/3 rounded bg-surface-200/10"></div>
+          </div>{/each}
       </div>
-    </section>
-
-    <div class="grid gap-8 lg:grid-cols-[1.45fr_1fr]">
-      <section class="space-y-3">
-        {#each [1, 2, 3, 4, 5] as item (item)}
-          <div class="rounded-sm border p-4 animate-pulse"
-            style="border-color: color-mix(in oklch, var(--color-surface-200) 12%, transparent); background: color-mix(in oklch, var(--color-surface-900) 24%, transparent);">
-            <div class="flex items-start gap-3">
-              <div class="h-4 w-8 rounded-sm bg-surface-200/10"></div>
-              <div class="min-w-0 flex-1 space-y-2">
-                <div class="h-3 w-28 rounded-sm bg-surface-200/10"></div>
-                <div class="h-5 w-5/6 rounded-sm bg-surface-200/10"></div>
-                <div class="h-4 w-full rounded-sm bg-surface-200/10"></div>
-                <div class="h-4 w-2/3 rounded-sm bg-surface-200/10"></div>
-              </div>
-            </div>
-          </div>
-        {/each}
-      </section>
-
-      <aside class="space-y-8">
-        <section class="animate-pulse">
-          <div class="mb-3 h-4 w-32 rounded-sm bg-surface-200/10"></div>
-          <div class="space-y-4">
-            {#each [1, 2, 3] as item (item)}
-              <div class="rounded-sm border p-4"
-                style="border-color: color-mix(in oklch, var(--color-surface-200) 12%, transparent); background: color-mix(in oklch, var(--color-surface-900) 24%, transparent);">
-                <div class="h-4 w-28 rounded-sm bg-surface-200/10"></div>
-                <div class="mt-2 h-4 w-full rounded-sm bg-surface-200/10"></div>
-                <div class="mt-2 h-4 w-5/6 rounded-sm bg-surface-200/10"></div>
-              </div>
-            {/each}
-          </div>
-        </section>
-
-        <section class="animate-pulse">
-          <div class="mb-3 h-4 w-44 rounded-sm bg-surface-200/10"></div>
-          <div class="space-y-2">
-            {#each [1, 2, 3] as item (item)}
-              <div class="h-10 rounded-sm border"
-                style="border-color: color-mix(in oklch, var(--color-surface-200) 10%, transparent); background: color-mix(in oklch, var(--color-surface-900) 18%, transparent);"></div>
-            {/each}
-          </div>
-        </section>
-      </aside>
     </div>
   {:else if errorMessage}
     <div class="glass-card mt-12 p-8 text-center">
-      <div
-        class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full"
-        style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent);"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24"
-          fill="none" stroke="currentColor" stroke-width="2" style="color: var(--color-error-400);">
-          <path d="M12 9v4" />
-          <path d="M12 17h.01" />
-          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
-        </svg>
-      </div>
-      <p class="mb-2 text-lg font-medium text-surface-100">Digest unavailable</p>
+      <p class="mb-2 text-lg font-medium text-surface-100">
+        Briefing unavailable
+      </p>
       <p class="section-subtitle">{errorMessage}</p>
       <button
         type="button"
         class="btn preset-filled-surface-200-800 mt-6"
-        onclick={handleRefresh}
+        onclick={handleRefresh}>Retry</button
       >
-        Retry
-      </button>
     </div>
-  {:else if digest}
-    <div class="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-      <div class="min-w-0 flex-1">
-        <h1 class="section-title">Weekly Digest</h1>
-        <p class="section-subtitle">
-          {windowLabel(digest.windowStart)} to {windowLabel(digest.windowEnd)} across
-          {digest.totalFeeds} feeds.
-          {#if digest.cacheHit}
-            Cached digest.
-          {/if}
-        </p>
-
-        <div class="mt-3 flex flex-wrap items-center gap-2">
+  {:else}
+    <header
+      class="mb-8 flex flex-col gap-6 border-b border-surface-200/10 pb-7 md:flex-row md:items-end md:justify-between"
+    >
+      <div class="min-w-0">
+        <div
+          class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-primary-300"
+        >
           <span
-            class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-            style="background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); color: var(--color-primary-300); border-radius: 2px;"
-          >
-            {digest.totalArticles} articles
-          </span>
-          <span
-            class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-            style="background: color-mix(in oklch, var(--color-secondary-500) 12%, transparent); color: var(--color-secondary-300); border-radius: 2px;"
-          >
-            {digest.unreadArticles} unread
-          </span>
-          <span
-            class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-            style="background: color-mix(in oklch, var(--color-warning-500) 12%, transparent); color: var(--color-warning-300); border-radius: 2px;"
-          >
-            {digest.savedArticles} saved
-          </span>
-          <span
-            class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-            style="background: color-mix(in oklch, var(--color-surface-200) 10%, transparent); color: var(--color-surface-100); border-radius: 2px;"
-          >
-            Updated {timeAgo(digest.generatedAt)}
-          </span>
+            class="inline-block h-2 w-2 rounded-full bg-primary-300 shadow-[0_0_18px_var(--color-primary-300)]"
+          ></span>Calm Daily Briefing
         </div>
+        <h1
+          class="max-w-3xl text-3xl font-semibold tracking-tight text-surface-50 md:text-5xl"
+        >
+          {digest.briefing?.headline || digest.headline}
+        </h1>
+        <p
+          class="mt-3 max-w-2xl text-sm leading-relaxed text-surface-300 md:text-base"
+        >
+          {windowLabel(digest.windowStart)} – {windowLabel(digest.windowEnd)} · {digest.totalFeeds}
+          feeds · {digest.totalArticles} eligible stories
+        </p>
       </div>
-
-      <button
-        type="button"
-        class="btn preset-filled-surface-200-800 flex h-10 w-10 items-center justify-center p-0 md:h-auto md:w-auto md:px-4 md:py-2 md:gap-2"
-        onclick={handleRefresh}
-        aria-label="Refresh digest"
-        title="Refresh digest"
-        disabled={refreshing}
-      >
-        {#if refreshing}
-          <div class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"></div>
-        {:else}
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-          >
-            <path d="M23 4v6h-6" />
-            <path d="M1 20v-6h6" />
-            <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
-            <path d="M20.49 15A9 9 0 0 1 6.36 18.36L1 14" />
-          </svg>
-        {/if}
-        <span class="hidden md:inline">{refreshing ? 'Refreshing' : 'Refresh'}</span>
-      </button>
-    </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="sr-only" for="briefing-window">Briefing window</label
+        ><select
+          id="briefing-window"
+          class="input min-w-32"
+          value={selectedDays}
+          onchange={handleWindowChange}
+          ><option value="1">Past day</option><option value="3"
+            >Past 3 days</option
+          ><option value="7">Past 7 days</option><option value="14"
+            >Past 14 days</option
+          ><option value="30">Past 30 days</option></select
+        ><button
+          type="button"
+          class="btn preset-filled-surface-200-800"
+          onclick={handleRefresh}
+          disabled={refreshing}
+          aria-label="Refresh briefing"
+          >{#if refreshing}<span
+              class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+            ></span>{:else}Refresh{/if}</button
+        >
+      </div>
+    </header>
 
     <section
-      class="mb-8 rounded-sm border p-5 md:p-6"
-      style="background: color-mix(in oklch, var(--color-primary-500) 7%, transparent); border-color: color-mix(in oklch, var(--color-primary-500) 16%, transparent);"
+      class="mb-8 overflow-hidden rounded-3xl border border-primary-400/20 p-6 shadow-[0_20px_80px_color-mix(in_oklch,var(--color-primary-500)_8%,transparent)] md:p-8"
+      style="background: radial-gradient(circle at 0% 0%, color-mix(in oklch, var(--color-primary-500) 16%, transparent), transparent 52%), color-mix(in oklch, var(--color-surface-900) 65%, transparent);"
     >
       <div
-        class="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider"
-        style="color: var(--color-primary-300);"
+        class="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
-          fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M4 4h16v12H4z" />
-          <path d="M8 20h8" />
-          <path d="M12 16v4" />
-        </svg>
-        AI Briefing
-      </div>
-      <p class="text-base leading-relaxed text-surface-100 md:text-lg">
-        {digest.summary || 'A weekly readout of the stories that moved across your feeds.'}
-      </p>
-
-      {#if digest.takeaways.length > 0}
-        <div class="mt-4 grid gap-2 md:grid-cols-2">
-          {#each digest.takeaways as item}
-            <div class="flex gap-2 text-sm leading-relaxed text-surface-200">
-              <span class="mt-2 h-1.5 w-1.5 flex-none rounded-full bg-primary-400"></span>
-              <span>{item}</span>
-            </div>
-          {/each}
+        <div class="max-w-3xl">
+          <div
+            class="mb-3 text-xs font-bold uppercase tracking-[0.18em] text-primary-300"
+          >
+            The short version
+          </div>
+          <p
+            class="text-lg leading-relaxed text-surface-50 md:text-2xl md:leading-snug"
+          >
+            {digest.briefing?.summary ||
+              digest.summary ||
+              'A quiet readout of what mattered across your feeds.'}
+          </p>
         </div>
-      {/if}
+        <div
+          class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:min-w-[24rem]"
+        >
+          <div
+            class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
+          >
+            <div class="text-surface-400">Eligible</div>
+            <div class="mt-1 text-xl font-semibold text-surface-50">
+              {digest.inclusionCounts.eligibleArticles}
+            </div>
+          </div>
+          <div
+            class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
+          >
+            <div class="text-surface-400">Read</div>
+            <div class="mt-1 text-xl font-semibold text-surface-50">
+              {digest.inclusionCounts.read}
+            </div>
+          </div>
+          <div
+            class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
+          >
+            <div class="text-surface-400">Unread</div>
+            <div class="mt-1 text-xl font-semibold text-secondary-300">
+              {digest.inclusionCounts.unread}
+            </div>
+          </div>
+          <div
+            class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
+          >
+            <div class="text-surface-400">Grouped</div>
+            <div class="mt-1 text-xl font-semibold text-warning-300">
+              {digest.inclusionCounts.deduplicatedArticles}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div
+        class="mt-6 flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-wider text-surface-300"
+      >
+        <span
+          class="rounded-full bg-success-500/10 px-3 py-1.5 text-success-300"
+          >Read + unread processed</span
+        ><span
+          class="rounded-full bg-primary-500/10 px-3 py-1.5 text-primary-300"
+          >{digest.inclusionCounts.hiddenRead} hidden read included</span
+        >{#if digest.inclusionCounts.duplicateArticles > 0}<span
+            class="rounded-full bg-warning-500/10 px-3 py-1.5 text-warning-300"
+            >{digest.inclusionCounts.duplicateArticles} related duplicates grouped</span
+          >{/if}{#if digest.cacheHit}<span
+            class="rounded-full bg-surface-200/10 px-3 py-1.5"
+            >Cached · {timeAgo(digest.generatedAt)}</span
+          >{:else}<span class="rounded-full bg-surface-200/10 px-3 py-1.5"
+            >Updated {timeAgo(digest.generatedAt)}</span
+          >{/if}
+      </div>
+      {#if digest.takeaways.length > 0}<div
+          class="mt-6 grid gap-3 border-t border-surface-200/10 pt-5 md:grid-cols-3"
+        >
+          {#each digest.takeaways.slice(0, 3) as item}<div
+              class="flex gap-2 text-sm leading-relaxed text-surface-200"
+            >
+              <span
+                class="mt-2 h-1.5 w-1.5 flex-none rounded-full bg-primary-300"
+              ></span><span>{item}</span>
+            </div>{/each}
+        </div>{/if}
     </section>
 
-    {#if digest.totalArticles === 0}
-      <div class="glass-card mt-12 p-8 text-center">
-        <div
-          class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full"
-          style="background: color-mix(in oklch, var(--color-secondary-500) 10%, transparent);"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24"
-            fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--color-secondary-400);">
-            <path d="M8 2v4" />
-            <path d="M16 2v4" />
-            <rect x="3" y="4" width="18" height="18" rx="2" />
-            <path d="M3 10h18" />
-          </svg>
+    {#if digest.briefing?.uncertainty?.length > 0}<details
+        class="mb-8 rounded-2xl border border-warning-400/20 bg-warning-500/5 p-4"
+      >
+        <summary class="cursor-pointer text-sm font-semibold text-warning-300">
+          Notes about uncertainty ({digest.briefing.uncertainty.length})
+        </summary>
+        <div class="mt-3 space-y-1 text-sm leading-relaxed text-surface-200">
+          {#each digest.briefing.uncertainty as note}<p>{note}</p>{/each}
         </div>
-        <p class="mb-2 text-lg font-medium text-surface-100">No digest articles yet</p>
-        <p class="section-subtitle">There were no articles in the last 7 days.</p>
+      </details>{/if}
+
+    {#if digest.totalArticles === 0}
+      <div class="glass-card p-10 text-center">
+        <p class="mb-2 text-lg font-medium text-surface-100">
+          Nothing needs your attention yet
+        </p>
+        <p class="section-subtitle">
+          No eligible articles arrived in the selected window. Rejected,
+          thumbs-down, and hidden-unread items stay out of the briefing.
+        </p>
       </div>
     {:else}
-      <div class="grid gap-8 lg:grid-cols-[1.45fr_1fr]">
-        <section>
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <h2 class="text-sm font-semibold uppercase tracking-wider text-surface-100">
-              Top Stories
-            </h2>
-            <span class="text-xs text-surface-300">Five representative reads</span>
-          </div>
-
-          <div class="space-y-3">
-            {#each digest.topStories as story, i (story.article.id)}
-              <a
-                href="/articles/{story.article.id}?mode=app"
-                class="block rounded-sm border p-4 transition-colors hover:border-primary-400/60"
-                style="border-color: color-mix(in oklch, var(--color-surface-200) 12%, transparent); background: color-mix(in oklch, var(--color-surface-900) 28%, transparent);"
+      <div
+        class="grid gap-8 lg:grid-cols-[minmax(0,1.55fr)_minmax(18rem,0.75fr)]"
+      >
+        <section aria-labelledby="start-here">
+          <div class="mb-4 flex items-end justify-between gap-4">
+            <div>
+              <div
+                class="mb-1 text-[11px] font-bold uppercase tracking-[0.18em] text-primary-300"
               >
-                <div class="flex items-start gap-3">
-                  <div class="flex-none pt-0.5 text-xs font-semibold text-primary-300">
-                    {String(i + 1).padStart(2, '0')}
-                  </div>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2 text-xs text-surface-300">
-                      <span class="font-medium text-primary-300">
-                        {story.article.feed_title || 'Unknown Feed'}
-                      </span>
-                      {#if !story.article.read}
-                        <span
-                          class="inline-flex items-center gap-1 rounded-sm bg-warning-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning-300"
-                        >
-                          Unread
-                        </span>
-                      {/if}
-                      {#if story.article.saved}
-                        <span
-                          class="inline-flex items-center gap-1 rounded-sm bg-success-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success-300"
-                        >
-                          Saved
-                        </span>
-                      {/if}
-                    </div>
-                    <div class="mt-1 text-sm font-semibold leading-snug text-surface-50">
-                      {story.article.title}
-                    </div>
-                    {#if story.reason}
-                      <div class="mt-1 text-sm leading-relaxed text-surface-300">
-                        {story.reason}
-                      </div>
-                    {/if}
-                  </div>
-                  <div class="flex-none pt-0.5 text-xs text-surface-300">Open</div>
-                </div>
-              </a>
-            {/each}
-          </div>
-
-          <div class="mt-8 flex items-center justify-between gap-3">
-            <h2 class="text-sm font-semibold uppercase tracking-wider text-surface-100">
-              Missed Stories
-            </h2>
-            <span class="text-xs text-surface-300">Two stories worth a look</span>
-          </div>
-
-          <div class="mt-3 space-y-3">
-            {#each digest.missedStories as story, i (story.article.id)}
-              <a
-                href="/articles/{story.article.id}?mode=app"
-                class="block rounded-sm border p-4 transition-colors hover:border-primary-400/60"
-                style="border-color: color-mix(in oklch, var(--color-surface-200) 12%, transparent); background: color-mix(in oklch, var(--color-surface-900) 22%, transparent);"
+                Start here
+              </div>
+              <h2
+                id="start-here"
+                class="text-2xl font-semibold tracking-tight text-surface-50"
               >
-                <div class="flex items-start gap-3">
-                  <div class="flex-none pt-0.5 text-xs font-semibold text-secondary-300">
-                    {String(i + 1).padStart(2, '0')}
-                  </div>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2 text-xs text-surface-300">
-                      <span class="font-medium text-secondary-300">
-                        {story.article.feed_title || 'Unknown Feed'}
-                      </span>
-                      <span
-                        class="inline-flex items-center gap-1 rounded-sm bg-secondary-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-secondary-300"
+                Recommended reading
+              </h2>
+            </div>
+            <span class="text-xs text-surface-400"
+              >{rankedStories.length} stories</span
+            >
+          </div>
+          {#if rankedStories.length > 0}<div class="space-y-3">
+              {#each rankedStories as story, index (story.article.id)}<article
+                  class="group rounded-2xl border border-surface-200/10 bg-surface-900/25 p-4 transition duration-300 hover:-translate-y-0.5 hover:border-primary-300/35 hover:bg-surface-900/45 md:p-5"
+                >
+                  <div class="flex gap-4">
+                    <div
+                      class="flex h-8 w-8 flex-none items-center justify-center rounded-xl bg-surface-200/10 text-xs font-bold"
+                      style="color: {story.accent};"
+                    >
+                      {String(index + 1).padStart(2, '0')}
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <div
+                        class="mb-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-surface-400"
                       >
-                        Unread pick
-                      </span>
-                    </div>
-                    <div class="mt-1 text-sm font-semibold leading-snug text-surface-50">
-                      {story.article.title}
-                    </div>
-                    {#if story.reason}
-                      <div class="mt-1 text-sm leading-relaxed text-surface-300">
-                        {story.reason}
+                        <span style="color: {story.accent};"
+                          >{story.section}</span
+                        ><span>·</span><span
+                          >{story.article.feed_title || 'Unknown feed'}</span
+                        ><span>·</span><span
+                          >{timeAgo(articleDate(story.article))}</span
+                        ><span
+                          class="rounded-full bg-surface-200/10 px-2 py-0.5"
+                          >{story.status}</span
+                        >{#if story.sourceCount > 1}<span
+                            class="rounded-full bg-primary-500/10 px-2 py-0.5 text-primary-300"
+                            >{story.sourceCount} sources</span
+                          >{/if}
                       </div>
-                    {/if}
+                      <a
+                        href="/articles/{story.article.id}?mode=app"
+                        class="block text-base font-semibold leading-snug text-surface-50 underline decoration-transparent underline-offset-4 transition group-hover:decoration-primary-300/50 md:text-lg"
+                        >{story.article.title}</a
+                      >{#if story.reason}<p
+                          class="mt-2 text-sm leading-relaxed text-surface-300"
+                        >
+                          {story.reason}
+                        </p>{/if}{#if story.uncertainty}<p
+                          class="mt-2 text-xs leading-relaxed text-warning-300"
+                        >
+                          Uncertainty: {story.uncertainty}
+                        </p>{/if}
+                      <div
+                        class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
+                      >
+                        <a
+                          href={story.article.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          class="text-primary-300 underline decoration-primary-400/30 underline-offset-2 hover:text-primary-200"
+                          >Open source ↗</a
+                        >{#if isTrue(story.article.saved)}<span
+                            class="text-success-300">Saved</span
+                          >{/if}{#if isTrue(story.article.read)}<span
+                            class="text-surface-400">Read</span
+                          >{:else}<span class="text-secondary-300">Unread</span
+                          >{/if}{#if story.relatedArticleIds.length > 1}<span
+                            class="text-surface-500"
+                            >+{story.relatedArticleIds.length - 1} related</span
+                          >{/if}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </a>
-            {/each}
-          </div>
+                </article>{/each}
+            </div>{:else}<div
+              class="rounded-2xl border border-dashed border-surface-200/15 p-5 text-sm text-surface-400"
+            >
+              No recommended stories for the selected window.
+            </div>{/if}
         </section>
 
         <aside class="space-y-8">
-          <section>
-            <div class="mb-3 flex items-center justify-between gap-3">
-              <h2 class="text-sm font-semibold uppercase tracking-wider text-surface-100">
-                Dominant Themes
-              </h2>
-              <span class="text-xs text-surface-300">Representative links</span>
-            </div>
-
-            <div class="space-y-4">
-              {#each digest.themes as theme (theme.name)}
-                <div
-                  class="rounded-sm border p-4"
-                  style="border-color: color-mix(in oklch, var(--color-surface-200) 12%, transparent); background: color-mix(in oklch, var(--color-surface-900) 24%, transparent);"
-                >
-                  <div class="text-sm font-semibold text-surface-50">{theme.name}</div>
-                  <div class="mt-1 text-sm leading-relaxed text-surface-300">{theme.summary}</div>
-                  <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                    {#each theme.articles as article, index (article.id)}
-                      <a
-                        href="/articles/{article.id}?mode=app"
-                        class="text-primary-300 underline decoration-primary-500/30 underline-offset-2 hover:text-primary-200"
-                      >
-                        {article.title}
-                      </a>
-                      {#if index < theme.articles.length - 1}
-                        <span class="text-surface-500">•</span>
-                      {/if}
-                    {/each}
+          <details
+            class="rounded-2xl border border-surface-200/10 bg-surface-900/20 p-5"
+          >
+            <summary
+              class="cursor-pointer text-lg font-semibold text-surface-50"
+            >
+              Related themes <span
+                class="ml-1 text-xs font-normal text-surface-400"
+                >({digest.themes.length})</span
+              >
+            </summary>
+            <div class="mt-4 space-y-4">
+              {#each digest.themes as theme (theme.name)}<div>
+                  <div class="text-sm font-semibold text-surface-100">
+                    {theme.name}
                   </div>
-                </div>
-              {/each}
-            </div>
-          </section>
-
-          <section>
-            <div class="mb-3 flex items-center justify-between gap-3">
-              <h2 class="text-sm font-semibold uppercase tracking-wider text-surface-100">
-                Sources That Drove the Week
-              </h2>
-              <span class="text-xs text-surface-300">Most active feeds</span>
-            </div>
-
-            <div class="space-y-2">
-              {#each digest.activeFeeds as feed}
-                <div
-                  class="flex items-center justify-between gap-3 rounded-sm border px-3 py-2 text-sm"
-                  style="border-color: color-mix(in oklch, var(--color-surface-200) 10%, transparent); background: color-mix(in oklch, var(--color-surface-900) 18%, transparent);"
+                  <p class="mt-1 text-xs leading-relaxed text-surface-400">
+                    {theme.summary}
+                  </p>
+                  <div class="mt-2 space-y-1">
+                    {#each theme.articles.slice(0, 3) as article (article.id)}<a
+                        href="/articles/{article.id}?mode=app"
+                        class="block truncate text-xs text-primary-300 hover:text-primary-200"
+                        >{article.title}</a
+                      >{/each}
+                  </div>
+                </div>{/each}{#if digest.themes.length === 0}<p
+                  class="text-sm text-surface-400"
                 >
-                  <span class="min-w-0 truncate text-surface-100">{feed.title}</span>
-                  <span class="flex-none text-xs text-surface-300">{feed.count}</span>
-                </div>
-              {/each}
+                  Themes will appear as coverage accumulates.
+                </p>{/if}
             </div>
-          </section>
+          </details>
+          <details
+            class="rounded-2xl border border-surface-200/10 bg-surface-900/20 p-5"
+          >
+            <summary
+              class="cursor-pointer text-lg font-semibold text-surface-50"
+            >
+              Sources <span class="ml-1 text-xs font-normal text-surface-400"
+                >({digest.activeFeeds.length})</span
+              >
+            </summary>
+            <div class="mt-4 space-y-2">
+              {#each digest.activeFeeds as feed}<div
+                  class="flex items-center justify-between gap-3 text-sm"
+                >
+                  <span class="truncate text-surface-200">{feed.title}</span
+                  ><span
+                    class="flex-none rounded-full bg-surface-200/10 px-2 py-1 text-xs text-surface-400"
+                    >{feed.count}</span
+                  >
+                </div>{/each}
+            </div>
+          </details>
+          {#if digest.history.length > 1}<details
+              class="rounded-2xl border border-surface-200/10 bg-surface-900/20 p-5"
+            >
+              <summary
+                class="cursor-pointer text-lg font-semibold text-surface-50"
+              >
+                Briefing history <span
+                  class="ml-1 text-xs font-normal text-surface-400"
+                  >({digest.history.length})</span
+                >
+              </summary>
+              <div class="mt-4 space-y-3">
+                {#each digest.history.slice(0, 5) as item (item.signature)}<div
+                    class="flex items-start justify-between gap-3 text-xs"
+                  >
+                    <div>
+                      <div class="text-surface-200">{item.headline}</div>
+                      <div class="mt-1 text-surface-500">
+                        {item.windowDays}d · {item.totalArticles} stories
+                      </div>
+                    </div>
+                    <time class="flex-none text-surface-500"
+                      >{new Date(item.generatedAt).toLocaleDateString(
+                        undefined,
+                        { month: 'short', day: 'numeric' },
+                      )}</time
+                    >
+                  </div>{/each}
+              </div>
+            </details>{/if}
         </aside>
       </div>
+
+      <section
+        class="mt-12 border-t border-surface-200/10 pt-8"
+        aria-labelledby="all-included"
+      >
+        <div
+          class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"
+        >
+          <div>
+            <div
+              class="mb-1 text-[11px] font-bold uppercase tracking-[0.18em] text-primary-300"
+            >
+              Full included list
+            </div>
+            <h2
+              id="all-included"
+              class="text-2xl font-semibold tracking-tight text-surface-50"
+            >
+              All included
+            </h2>
+            <p class="mt-1 text-sm text-surface-400">
+              Browse every eligible article used to build this briefing,
+              including read items and grouped coverage.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="sr-only" for="all-included-search"
+              >Filter included articles</label
+            ><input
+              id="all-included-search"
+              class="input w-48"
+              type="search"
+              placeholder="Filter stories"
+              bind:value={allQuery}
+            /><button
+              type="button"
+              class="btn preset-outlined-surface-300-700"
+              onclick={() => (showAll = !showAll)}
+              >{showAll
+                ? 'Hide list'
+                : `Browse ${digest.totalArticles}`}</button
+            >
+          </div>
+        </div>
+        {#if showAll}<div class="mt-5 grid gap-2 md:grid-cols-2">
+            {#each filteredAllArticles as article (article.id)}<article
+                class="flex items-start gap-3 rounded-xl border border-surface-200/10 bg-surface-900/20 p-3"
+              >
+                <div class="min-w-0 flex-1">
+                  <a
+                    href="/articles/{article.id}?mode=app"
+                    class="line-clamp-2 text-sm font-medium text-surface-100 hover:text-primary-200"
+                    >{article.title}</a
+                  >
+                  <div
+                    class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-surface-500"
+                  >
+                    <span>{article.feed_title || 'Unknown feed'}</span><span
+                      >·</span
+                    ><span>{timeAgo(articleDate(article))}</span
+                    >{#if isTrue(article.read)}<span class="text-surface-400"
+                        >read</span
+                      >{:else}<span class="text-secondary-300">unread</span
+                      >{/if}{#if isTrue(article.hidden)}<span
+                        class="text-warning-300">hidden read</span
+                      >{/if}
+                  </div>
+                </div>
+                <a
+                  href={article.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Open source for {article.title}"
+                  class="flex-none text-xs text-primary-300">↗</a
+                >
+              </article>{/each}
+          </div>
+          {#if filteredAllArticles.length === 0}<p
+              class="mt-5 rounded-xl border border-dashed border-surface-200/15 p-5 text-sm text-surface-400"
+            >
+              No included stories match that filter.
+            </p>{/if}{/if}
+      </section>
     {/if}
   {/if}
 </div>

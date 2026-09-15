@@ -1,4 +1,5 @@
 import { addToast } from '$lib/stores/toast.svelte';
+import { fetchWithCsrf } from '$lib/client/csrf';
 
 let syncRequest: Promise<boolean> | null = null;
 let lastSilentSyncAt = 0;
@@ -30,7 +31,7 @@ export async function syncFeeds(options: { silent?: boolean } = {}) {
   if (silent) lastSilentSyncAt = Date.now();
   syncRequest = (async () => {
     try {
-      const res = await fetch('/api/feeds/refresh', { method: 'POST' });
+      const res = await fetchWithCsrf('/api/feeds/refresh', { method: 'POST' });
       if (res.ok && !silent) {
         addToast('Syncing feeds in background', 'success');
       }
@@ -53,7 +54,7 @@ export async function syncFeed(
   const { silent = false } = options;
   if (isOffline()) return false;
   try {
-    const res = await fetch(`/api/feeds/${feedId}/refresh`, {
+    const res = await fetchWithCsrf(`/api/feeds/${feedId}/refresh`, {
       method: 'POST',
     });
     if (res.ok && !silent) {

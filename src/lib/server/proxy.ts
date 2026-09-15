@@ -23,7 +23,9 @@ export function buildProxiedUrl(
   targetUrl: string,
   proxyBaseUrl?: string,
 ): string {
-  return proxyBaseUrl ? buildProxyRequestUrl(proxyBaseUrl, targetUrl) : targetUrl;
+  return proxyBaseUrl
+    ? buildProxyRequestUrl(proxyBaseUrl, targetUrl)
+    : targetUrl;
 }
 
 export function hasConfiguredProxy(): boolean {

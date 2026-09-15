@@ -240,18 +240,18 @@ On first launch, the `app_settings` table has no `setup_complete` entry. After l
 
 ### Core Tables
 
-| Table                    | Purpose                                                         |
-| ------------------------ | --------------------------------------------------------------- |
-| `sessions`               | Auth sessions (id, user_id, created_at, expires_at)             |
-| `app_settings`           | Key-value store for app configuration                           |
+| Table                    | Purpose                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| `sessions`               | Auth sessions (id, user_id, created_at, expires_at)                |
+| `app_settings`           | Key-value store for app configuration                              |
 | `feeds`                  | RSS/Atom feed definitions, fetch status, and per-feed proxy toggle |
-| `articles`               | Stored articles with interaction flags and scores               |
-| `article_ai_metadata`    | AI-generated analysis per article                               |
-| `feed_fetch_logs`        | Historical fetch results per feed                               |
-| `app_error_logs`         | Persisted application/server errors for troubleshooting          |
-| `jobs`                   | Background job queue (feed_fetch, ai_process, memory_summarize) |
-| `user_interactions`      | Interaction event log for scoring                               |
-| `user_preference_memory` | Learned user preferences for AI ranking                         |
+| `articles`               | Stored articles with interaction flags and scores                  |
+| `article_ai_metadata`    | AI-generated analysis per article                                  |
+| `feed_fetch_logs`        | Historical fetch results per feed                                  |
+| `app_error_logs`         | Persisted application/server errors for troubleshooting            |
+| `jobs`                   | Background job queue (feed_fetch, ai_process, memory_summarize)    |
+| `user_interactions`      | Interaction event log for scoring                                  |
+| `user_preference_memory` | Learned user preferences for AI ranking                            |
 
 ### Key Indexes
 

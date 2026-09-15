@@ -4,7 +4,13 @@ export interface Toast {
   id: number;
   message: string;
   type: ToastType;
+  action?: ToastAction;
 }
+
+export type ToastAction = {
+  label: string;
+  run: () => void | Promise<void>;
+};
 
 let nextId = 0;
 const toasts: Toast[] = [];
@@ -34,9 +40,10 @@ export function addToast(
   message: string,
   type: ToastType = 'info',
   duration = 3000,
+  action?: ToastAction,
 ) {
   const id = nextId++;
-  toasts.push({ id, message, type });
+  toasts.push({ id, message, type, ...(action ? { action } : {}) });
   notify();
   setTimeout(() => {
     const index = toasts.findIndex((toast) => toast.id === id);

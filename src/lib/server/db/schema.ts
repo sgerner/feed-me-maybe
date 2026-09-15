@@ -16,6 +16,12 @@ export const sessions = sqliteTable('sessions', {
   expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
 });
 
+export const schemaMigrations = sqliteTable('schema_migrations', {
+  version: integer('version').primaryKey(),
+  name: text('name').notNull(),
+  appliedAt: integer('applied_at', { mode: 'timestamp' }).notNull(),
+});
+
 export const appSettings = sqliteTable('app_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
@@ -35,9 +41,7 @@ export const feeds = sqliteTable('feeds', {
   category: text('category').default(''),
   iconUrl: text('icon_url').default(''),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
-  useProxy: integer('use_proxy', { mode: 'boolean' })
-    .notNull()
-    .default(false),
+  useProxy: integer('use_proxy', { mode: 'boolean' }).notNull().default(false),
   errorCount: integer('error_count').notNull().default(0),
   lastFetchStatus: text('last_fetch_status').default('never'),
   lastFetchAt: integer('last_fetch_at', { mode: 'timestamp' }),
@@ -74,17 +78,24 @@ export const articles = sqliteTable(
     publishedAt: integer('published_at', { mode: 'timestamp' }),
     fetchedAt: integer('fetched_at', { mode: 'timestamp' }).notNull(),
     read: integer('read', { mode: 'boolean' }).notNull().default(false),
+    readAt: integer('read_at', { mode: 'timestamp' }),
     saved: integer('saved', { mode: 'boolean' }).notNull().default(false),
+    savedAt: integer('saved_at', { mode: 'timestamp' }),
     hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+    hiddenAt: integer('hidden_at', { mode: 'timestamp' }),
     thumbsUp: integer('thumbs_up', { mode: 'boolean' })
       .notNull()
       .default(false),
     thumbsDown: integer('thumbs_down', { mode: 'boolean' })
       .notNull()
       .default(false),
+    rejected: integer('rejected', { mode: 'boolean' }).notNull().default(false),
+    rejectedAt: integer('rejected_at', { mode: 'timestamp' }),
+    stateVersion: integer('state_version').notNull().default(0),
     heuristicScore: real('heuristic_score').default(0),
     combinedScore: real('combined_score').default(0),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
   (table) => ({
     feedIdIdx: index('idx_articles_feed_id').on(table.feedId),
@@ -132,6 +143,52 @@ export const articleAiMetadata = sqliteTable('article_ai_metadata', {
   processedAt: integer('processed_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });
+
+export const articleStateHistory = sqliteTable(
+  'article_state_history',
+  {
+    id: text('id').primaryKey(),
+    operationId: text('operation_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    articleId: text('article_id')
+      .notNull()
+      .references(() => articles.id, { onDelete: 'cascade' }),
+    action: text('action').notNull(),
+    beforeState: text('before_state').notNull().default('{}'),
+    afterState: text('after_state').notNull().default('{}'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    undoneAt: integer('undone_at', { mode: 'timestamp' }),
+  },
+  (table) => ({
+    operationIdx: index('idx_article_state_history_operation').on(
+      table.operationId,
+    ),
+    articleIdx: index('idx_article_state_history_article').on(
+      table.articleId,
+      table.createdAt,
+    ),
+    idempotencyIdx: uniqueIndex('idx_article_state_history_idempotency').on(
+      table.idempotencyKey,
+      table.articleId,
+    ),
+  }),
+);
+
+export const savedSearches = sqliteTable(
+  'saved_searches',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    query: text('query').notNull().default(''),
+    description: text('description').default(''),
+    pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => ({
+    updatedIdx: index('idx_saved_searches_updated').on(table.updatedAt),
+  }),
+);
 
 // ── Feed Fetch Logs ──
 export const feedFetchLogs = sqliteTable('feed_fetch_logs', {

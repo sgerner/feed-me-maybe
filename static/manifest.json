@@ -9,6 +9,61 @@
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
   "lang": "en",
+  "categories": ["news", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Inbox",
+      "short_name": "Inbox",
+      "description": "Open the latest feed articles",
+      "url": "/",
+      "icons": [
+        {
+          "src": "/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Search",
+      "short_name": "Search",
+      "description": "Search your reading library",
+      "url": "/search",
+      "icons": [
+        {
+          "src": "/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Digest",
+      "short_name": "Digest",
+      "description": "Open your calm daily briefing",
+      "url": "/digest",
+      "icons": [
+        {
+          "src": "/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Saved",
+      "short_name": "Saved",
+      "description": "Open saved articles",
+      "url": "/saved",
+      "icons": [
+        {
+          "src": "/android-chrome-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
   "icons": [
     {
       "src": "/android-chrome-192x192.png",

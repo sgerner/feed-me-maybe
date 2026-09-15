@@ -3,7 +3,7 @@ import tsPlugin from 'typescript-eslint';
 import globals from 'globals';
 
 export default [
-  { ignores: ['build/', '.svelte-kit/', 'dist/', '**/*.svelte'] },
+  { ignores: ['build/', '.svelte-kit/', 'dist/', '.opencode/', '**/*.svelte'] },
   js.configs.recommended,
   ...tsPlugin.configs.recommended,
   {

@@ -1,4 +1,3 @@
-
 type Client = {
   id: string;
   controller: ReadableStreamDefaultController;
@@ -10,15 +9,20 @@ const clients = new Set<Client>();
  * Registers a new SSE client connection.
  * Returns a cleanup function to unregister the client.
  */
-export function registerClient(id: string, controller: ReadableStreamDefaultController) {
+export function registerClient(
+  id: string,
+  controller: ReadableStreamDefaultController,
+) {
   const client = { id, controller };
   clients.add(client);
-  
+
   console.log(`[realtime] Client connected: ${id} (Total: ${clients.size})`);
-  
+
   return () => {
     clients.delete(client);
-    console.log(`[realtime] Client disconnected: ${id} (Total: ${clients.size})`);
+    console.log(
+      `[realtime] Client disconnected: ${id} (Total: ${clients.size})`,
+    );
   };
 }
 
@@ -32,7 +36,9 @@ export function broadcast(event: string, data: any) {
   const encoder = new TextEncoder();
   const encoded = encoder.encode(message);
 
-  console.log(`[realtime] Broadcasting event "${event}" to ${clients.size} clients`);
+  console.log(
+    `[realtime] Broadcasting event "${event}" to ${clients.size} clients`,
+  );
 
   for (const client of clients) {
     try {

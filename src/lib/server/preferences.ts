@@ -177,10 +177,14 @@ function detectContentType(
   if (/\bvideo\b|\bwatch\b|\bstream\b/.test(blob)) {
     return 'video';
   }
-  if (/\btutorial\b|\bguide\b|\bhow to\b|\bwalkthrough\b|\bexplainer\b/.test(blob)) {
+  if (
+    /\btutorial\b|\bguide\b|\bhow to\b|\bwalkthrough\b|\bexplainer\b/.test(blob)
+  ) {
     return 'tutorial';
   }
-  if (/\brelease notes?\b|\bchangelog\b|\bwhat'?s new\b|\bversion \d+/.test(blob)) {
+  if (
+    /\brelease notes?\b|\bchangelog\b|\bwhat'?s new\b|\bversion \d+/.test(blob)
+  ) {
     return 'release_note';
   }
   if (/\breview\b|\bhands[- ]on\b|\bfirst look\b|\bpreview\b/.test(blob)) {
@@ -189,7 +193,11 @@ function detectContentType(
   if (/\binterview\b|\bq&a\b|\bquestions and answers\b/.test(blob)) {
     return 'interview';
   }
-  if (/\bannouncement\b|\bannounces?\b|\blaunches?\b|\bintroduces?\b|\bdebuts?\b/.test(blob)) {
+  if (
+    /\bannouncement\b|\bannounces?\b|\blaunches?\b|\bintroduces?\b|\bdebuts?\b/.test(
+      blob,
+    )
+  ) {
     return 'announcement';
   }
   if (/\banalysis\b|\bdeep dive\b|\bexplainer\b/.test(blob)) {
@@ -216,7 +224,11 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
     });
   }
 
-  for (const category of parseJsonStringArray(ctx.categories || '[]', normalizeToken, 5)) {
+  for (const category of parseJsonStringArray(
+    ctx.categories || '[]',
+    normalizeToken,
+    5,
+  )) {
     features.push({
       type: 'topic',
       label: `topic:${category}`,
@@ -224,7 +236,11 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
     });
   }
 
-  for (const topic of parseJsonStringArray(ctx.ai_topics || '[]', normalizeToken, 8)) {
+  for (const topic of parseJsonStringArray(
+    ctx.ai_topics || '[]',
+    normalizeToken,
+    8,
+  )) {
     features.push({
       type: 'topic',
       label: `topic:${topic}`,
@@ -232,7 +248,11 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
     });
   }
 
-  for (const entity of parseJsonStringArray(ctx.ai_entities || '[]', normalizeToken, 8)) {
+  for (const entity of parseJsonStringArray(
+    ctx.ai_entities || '[]',
+    normalizeToken,
+    8,
+  )) {
     features.push({
       type: 'entity',
       label: `entity:${entity}`,
@@ -240,7 +260,11 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
     });
   }
 
-  for (const signal of parseJsonStringArray(ctx.ai_signals || '[]', normalizeLabel, 8)) {
+  for (const signal of parseJsonStringArray(
+    ctx.ai_signals || '[]',
+    normalizeLabel,
+    8,
+  )) {
     features.push({
       type: 'signal',
       label: `signal:${signal}`,
@@ -375,12 +399,12 @@ export function updatePreferenceMemoryFromInteraction(
     type === 'boost'
       ? 0.45
       : type === 'thumbs_up'
-      ? 0.2
-      : type === 'open'
-        ? 0.03
-        : type === 'read'
-          ? 0.02
-          : 0;
+        ? 0.2
+        : type === 'open'
+          ? 0.03
+          : type === 'read'
+            ? 0.02
+            : 0;
   const negativeDelta =
     type === 'thumbs_down' ? 0.2 : type === 'hide' ? 0.08 : 0;
   if (!positiveDelta && !negativeDelta) return;

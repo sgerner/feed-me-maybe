@@ -9,6 +9,13 @@ import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
+import {
+  CSRF_COOKIE_NAME,
+  CSRF_MAX_AGE_SECONDS,
+  createCsrfToken,
+  isJsonMutation,
+  isValidJsonMutationCsrf,
+} from '$lib/server/auth/csrf';
 
 if (!building) {
   initializeDatabase();
@@ -31,8 +38,6 @@ function isSetupComplete(): boolean {
     return false;
   }
 }
-
-const loginAttempts = new Map<string, number>();
 
 function isOnboardingBypassPath(pathname: string): boolean {
   return (
@@ -60,40 +65,45 @@ function isPwaAssetPath(pathname: string): boolean {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+  const csrfToken = event.cookies.get(CSRF_COOKIE_NAME) || createCsrfToken();
+  if (!event.cookies.get(CSRF_COOKIE_NAME)) {
+    event.cookies.set(CSRF_COOKIE_NAME, csrfToken, {
+      path: '/',
+      httpOnly: false,
+      sameSite: 'strict',
+      secure:
+        event.url.protocol === 'https:' ||
+        process.env.NODE_ENV === 'production',
+      maxAge: CSRF_MAX_AGE_SECONDS,
+    });
+  }
+
   // Session validation
   const sessionId = event.cookies.get(getSessionCookieName());
   if (sessionId) {
     const session = validateSession(sessionId);
     if (session) {
       event.locals.sessionId = session.id;
+    } else {
+      event.cookies.delete(getSessionCookieName(), { path: '/' });
     }
   }
 
-  // Rate limiting for login
-  if (event.url.pathname === '/api/login' && event.request.method === 'POST') {
-    const ip = event.request.headers.get('x-forwarded-for') || 'local';
-    const attempts = loginAttempts.get(ip) || 0;
-    if (attempts > 5) {
-      return new Response(
-        JSON.stringify({ error: 'Too many attempts. Try again later.' }),
-        {
-          status: 429,
-          headers: { 'Content-Type': 'application/json' },
+  // JSON mutations must originate from this app or carry the double-submit
+  // token. Login is intentionally exempt because it creates the session.
+  if (
+    event.locals.sessionId &&
+    isJsonMutation(event.request) &&
+    event.url.pathname !== '/api/login'
+  ) {
+    if (!isValidJsonMutationCsrf(event.request, event.url.origin, csrfToken)) {
+      return new Response(JSON.stringify({ error: 'CSRF validation failed' }), {
+        status: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
         },
-      );
-    }
-    loginAttempts.set(ip, attempts + 1);
-    setTimeout(() => {
-      const current = loginAttempts.get(ip) || 0;
-      if (current > 0) loginAttempts.set(ip, current - 1);
-    }, 60000);
-  }
-
-  // CSRF check for mutation methods (POST, PUT, DELETE)
-  if (['POST', 'PUT', 'DELETE'].includes(event.request.method)) {
-    const csrfToken = event.request.headers.get('x-csrf-token');
-    if (!csrfToken && !event.url.pathname.startsWith('/api/')) {
-      // Skip CSRF check for API routes, they handle auth separately
+      });
     }
   }
 

@@ -1,5 +1,13 @@
-import { fetchFeed, type FetchResult, type FetchedItem } from '$lib/server/feed/fetcher';
-import { buildProxiedUrl } from '$lib/server/proxy';
+import {
+  fetchFeed,
+  type FetchResult,
+  type FetchedItem,
+} from '$lib/server/feed/fetcher';
+import {
+  MAX_JSON_RESPONSE_BYTES,
+  fetchSafe,
+  readResponseText,
+} from '$lib/server/network';
 
 export type RedditKind =
   | 'subreddit'
@@ -60,7 +68,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   const parts = path.split('/').filter(Boolean);
 
   let redditKind: RedditKind = 'unknown';
-  let fetchUrl = '';
+  let fetchUrl: string;
   let subreddit: string | undefined;
   let username: string | undefined;
   let query: string | undefined;
@@ -178,7 +186,6 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   return { originalUrl: input, normalizedUrl: url.href, redditKind, fetchUrl };
 }
 
-
 export function extractBestRedditImage(post: any): string | undefined {
   if (!post || typeof post !== 'object') return undefined;
 
@@ -233,7 +240,7 @@ function decodeHtmlEntities(str: string): string {
 function stripHtmlOrDecode(html: string | null | undefined): string | null {
   if (!html) return null;
   // Reddit HTML entities are often escaped inside the JSON string
-  let text = html
+  const text = html
     .replace(/<!--.*?-->/g, '')
     .replace(/<[^>]+>/g, '')
     .replace(/&amp;/g, '&')
@@ -360,17 +367,32 @@ export async function fetchRedditSource(
   const jsonUrl = source.fetchUrl.replace(/\.rss(\?|$)/, '.json$1');
   const userAgent =
     process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
-  const fetchUrl = buildProxiedUrl(jsonUrl, options.proxyBaseUrl);
   const headers: Record<string, string> = {
     'User-Agent': userAgent,
     Accept: 'application/json',
   };
 
   try {
-    const response = await fetch(fetchUrl, {
-      headers,
-      signal: AbortSignal.timeout(15000),
-    });
+    const { response } = await fetchSafe(
+      jsonUrl,
+      {
+        headers,
+        signal: AbortSignal.timeout(15000),
+      },
+      {
+        proxyBaseUrl: options.proxyBaseUrl,
+        maxBytes: MAX_JSON_RESPONSE_BYTES,
+        // Reddit and its edge providers sometimes return an HTML block
+        // page. Allow that known error shape so the parser below can keep
+        // its actionable user-facing message; all other types remain
+        // rejected by fetchSafe.
+        allowedContentTypes: [
+          'application/json',
+          'application/ld+json',
+          'text/html',
+        ],
+      },
+    );
 
     if (response.status === 429) {
       return {
@@ -410,7 +432,7 @@ export async function fetchRedditSource(
     }
 
     const contentType = response.headers.get('content-type') || '';
-    const text = await response.text();
+    const text = await readResponseText(response, MAX_JSON_RESPONSE_BYTES);
 
     if (
       !contentType.includes('application/json') &&

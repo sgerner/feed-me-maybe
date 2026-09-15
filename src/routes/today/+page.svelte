@@ -108,7 +108,11 @@
         <path d="M12 5v14M19 12l-7 7-7-7" />
       </svg>
       <span class="text-xs font-bold uppercase tracking-wider">
-        {syncing ? 'Syncing...' : pullDistance >= 60 ? 'Release to sync' : 'Pull to sync'}
+        {syncing
+          ? 'Syncing...'
+          : pullDistance >= 60
+            ? 'Release to sync'
+            : 'Pull to sync'}
       </span>
     </div>
   </div>

@@ -8,6 +8,8 @@ import {
 } from '$lib/server/sources/reddit';
 import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
 import { recordAppError } from '$lib/server/logging';
+import { validatePublicUrl } from '$lib/server/network';
+import { getFeedHealth, normalizeFeedUrl } from '$lib/server/feed-management';
 import crypto from 'node:crypto';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -22,7 +24,12 @@ export const GET: RequestHandler = async ({ locals }) => {
     )
     .all();
 
-  return json({ feeds: rows });
+  return json({
+    feeds: (rows as Array<{ id: string }>).map((feed) => ({
+      ...feed,
+      health: getFeedHealth(feed.id),
+    })),
+  });
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -37,17 +44,23 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  let { url, title, category } = body;
+  const { url: requestedUrl, category } = body;
+  let title = body.title;
 
-  if (!url || typeof url !== 'string') {
+  if (!requestedUrl || typeof requestedUrl !== 'string') {
     return json({ error: 'Feed URL is required' }, { status: 400 });
   }
 
-  // Basic URL validation
+  // Reject unsupported protocols, embedded credentials, and obvious private
+  // network targets before storing a user-controlled feed URL.
+  let url: string;
   try {
-    new URL(url);
+    url = normalizeFeedUrl(validatePublicUrl(requestedUrl).href);
   } catch {
-    return json({ error: 'Invalid URL format' }, { status: 400 });
+    return json(
+      { error: 'Only public http/https feed URLs are supported' },
+      { status: 400 },
+    );
   }
 
   const db = getDb();

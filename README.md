@@ -55,6 +55,7 @@ Feed-Me-Maybe supports outbound webhooks to integrate with your favorite tools.
 ### Configuration
 
 Webhooks can be managed in the **Settings > Webhooks** tab. Each webhook requires:
+
 - **Name**: A label for your reference.
 - **URL**: The destination URL (must accept `POST` requests).
 - **Secret (Optional)**: If provided, Feed-Me-Maybe will sign the request using HMAC-SHA256.
@@ -170,19 +171,19 @@ CSRF protection to work correctly.
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-| -------- | -------- | ------- | ----------- |
-| `APP_PASSWORD` | Yes | - | Password for application access |
-| `APP_SECRET` | Recommended | - | Secret used for encrypted AI provider API keys; generate with `openssl rand -hex 32` |
-| `ORIGIN` | Recommended | - | Public URL (e.g. `https://feed.example.com`). Required for CSRF protection when behind a reverse proxy |
-| `DATABASE_URL` | No | `./data/feed-me-maybe.db` locally, `/app/data/feed-me-maybe.db` in Docker | Path to the SQLite database file. Already set in the Docker image; do not override unless you need a different location |
-| `HOST` | No | `0.0.0.0` | Server bind address |
-| `PORT` | No | `3000` | Server port |
-| `REDDIT_USER_AGENT` | No | `web:feed-me-maybe:v1.0 (by /u/sgerner)` | Custom User-Agent for Reddit requests; use this to bypass 403 Forbidden blocks |
-| `PROXY_BASE_URL` | No | `https://feed-me-maybe-proxy.your-name.workers.dev` | Generic proxy worker used for per-feed proxying, Reddit comments, and other blocked fetches. `REDDIT_BASE_URL` is still accepted as a legacy alias. |
-| `PROVIDER` | No | - | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq` |
-| `MODEL` | No | - | AI model name, for example `gpt-4o` or `claude-3-5-sonnet-20241022` |
-| `API_KEY` | No | - | AI provider API key |
+| Variable            | Required                        | Default                                                                   | Description                                                                                                                                         |
+| ------------------- | ------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_PASSWORD`      | Yes                             | -                                                                         | Password for application access                                                                                                                     |
+| `APP_SECRET`        | Required for AI/webhook secrets | -                                                                         | Random secret used to encrypt provider and webhook credentials; generate with `openssl rand -hex 32`. There is no fallback key.                     |
+| `ORIGIN`            | Recommended                     | -                                                                         | Public URL (e.g. `https://feed.example.com`). Required for CSRF protection when behind a reverse proxy                                              |
+| `DATABASE_URL`      | No                              | `./data/feed-me-maybe.db` locally, `/app/data/feed-me-maybe.db` in Docker | Path to the SQLite database file. Already set in the Docker image; do not override unless you need a different location                             |
+| `HOST`              | No                              | `0.0.0.0`                                                                 | Server bind address                                                                                                                                 |
+| `PORT`              | No                              | `3000`                                                                    | Server port                                                                                                                                         |
+| `REDDIT_USER_AGENT` | No                              | `web:feed-me-maybe:v1.0 (by /u/sgerner)`                                  | Custom User-Agent for Reddit requests; use this to bypass 403 Forbidden blocks                                                                      |
+| `PROXY_BASE_URL`    | No                              | `https://feed-me-maybe-proxy.your-name.workers.dev`                       | Generic proxy worker used for per-feed proxying, Reddit comments, and other blocked fetches. `REDDIT_BASE_URL` is still accepted as a legacy alias. |
+| `PROVIDER`          | No                              | -                                                                         | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq`                                                                          |
+| `MODEL`             | No                              | -                                                                         | AI model name, for example `gpt-4o` or `claude-3-5-sonnet-20241022`                                                                                 |
+| `API_KEY`           | No                              | -                                                                         | AI provider API key                                                                                                                                 |
 
 ### Docker Notes
 

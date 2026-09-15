@@ -2,7 +2,11 @@ import { getDb } from '$lib/server/db';
 import crypto from 'node:crypto';
 
 const SESSION_COOKIE_NAME = 'feed-me-maybe-session';
-export const SESSION_MAX_AGE_MS = 10 * 365 * 24 * 60 * 60 * 1000; // 10 years
+export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function isSecureCookie(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
 
 export interface Session {
   id: string;
@@ -39,13 +43,18 @@ export function validateSession(sessionId: string): Session | null {
     expiresAt: new Date(row.expires_at as number),
   };
 
-  if (session.expiresAt < new Date()) {
-    const refreshedExpiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS);
-    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(
-      refreshedExpiresAt.getTime(),
-      session.id,
-    );
-    session.expiresAt = refreshedExpiresAt;
+  // Respect both the persisted expiry and the maximum lifetime from creation.
+  // An expired cookie must never be silently extended.
+  const maxLifetimeExpiresAt = new Date(
+    session.createdAt.getTime() + SESSION_MAX_AGE_MS,
+  );
+  if (maxLifetimeExpiresAt < session.expiresAt) {
+    session.expiresAt = maxLifetimeExpiresAt;
+  }
+
+  if (session.expiresAt.getTime() <= Date.now()) {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(session.id);
+    return null;
   }
 
   return session;
@@ -61,9 +70,9 @@ export function getSessionCookieName(): string {
 }
 
 export function setSessionCookie(sessionId: string): string {
-  return `${SESSION_COOKIE_NAME}=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_MS / 1000}`;
+  return `${SESSION_COOKIE_NAME}=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_MS / 1000}${isSecureCookie() ? '; Secure' : ''}`;
 }
 
 export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+  return `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${isSecureCookie() ? '; Secure' : ''}`;
 }

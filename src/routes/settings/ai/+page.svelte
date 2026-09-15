@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
   import type { AiProvider, AiModel } from '$lib/server/ai/types';
+  import { fetchWithCsrf } from '$lib/client/csrf';
 
   let { data: pageData } = $props();
 
@@ -51,8 +52,12 @@
           const cfg = pageData.configs[0];
           selectedProviderId = cfg.provider_id;
           selectedModelId = cfg.model_id;
-          envConfig = cfg.config || {};
+          envConfig = {};
           customBaseUrl = cfg.custom_base_url || '';
+          if (cfg.has_api_key) {
+            message =
+              'Credentials are stored securely. Leave blank to keep them unchanged.';
+          }
         }
       }
     } catch {
@@ -77,13 +82,17 @@
     message = '';
     saving = true;
     try {
-      const res = await fetch('/api/ai/config', {
+      const res = await fetchWithCsrf('/api/ai/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           providerId: selectedProviderId,
           modelId: selectedModelId,
-          config: envConfig,
+          config: Object.fromEntries(
+            Object.entries(envConfig).filter(
+              ([, value]) => value.trim().length > 0,
+            ),
+          ),
           customBaseUrl,
         }),
       });
@@ -268,7 +277,9 @@
                     class="input glass-input w-full"
                     type="password"
                     bind:value={envConfig[ev]}
-                    placeholder="Enter value..."
+                    placeholder={pageData.configs?.[0]?.has_api_key
+                      ? 'Stored securely — leave blank to keep'
+                      : 'Enter value...'}
                   />
                 </label>
               {/each}

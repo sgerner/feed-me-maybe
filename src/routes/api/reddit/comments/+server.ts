@@ -1,6 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { buildProxiedUrl, getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import {
+  MAX_JSON_RESPONSE_BYTES,
+  fetchSafe,
+  readResponseText,
+} from '$lib/server/network';
 import {
   normalizeRedditCommentsUrl,
   parseRedditCommentsResponse,
@@ -28,7 +33,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ error: 'Not a Reddit URL' }, { status: 400 });
   }
 
-  let jsonUrl = url;
+  let jsonUrl: string;
   try {
     jsonUrl = normalizeRedditCommentsUrl(url);
   } catch {
@@ -36,32 +41,51 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   const proxyBaseUrl = getConfiguredProxyBaseUrl();
-  const userAgent = process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
+  const userAgent =
+    process.env.REDDIT_USER_AGENT || 'web:feed-me-maybe:v1.0 (by /u/sgerner)';
 
   // Always use proxy for Reddit if available, regardless of what the client said,
   // because we know Reddit blocks most server IPs.
-  const fetchUrl = proxyBaseUrl ? buildProxiedUrl(jsonUrl, proxyBaseUrl) : jsonUrl;
-
   let response;
   try {
-    response = await fetch(fetchUrl, {
-      headers: {
-        'User-Agent': userAgent,
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
+    response = (
+      await fetchSafe(
+        jsonUrl,
+        {
+          headers: {
+            'User-Agent': userAgent,
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(15000),
+        },
+        {
+          proxyBaseUrl,
+          maxBytes: MAX_JSON_RESPONSE_BYTES,
+          allowedContentTypes: ['application/json', 'application/ld+json'],
+        },
+      )
+    ).response;
 
     // If we get a 403, try old.reddit.com as it sometimes has different blocking rules
-    if (response.status === 403 && fetchUrl.includes('www.reddit.com')) {
-      const oldRedditUrl = fetchUrl.replace('www.reddit.com', 'old.reddit.com');
-      const secondAttempt = await fetch(oldRedditUrl, {
-        headers: {
-          'User-Agent': userAgent,
-          Accept: 'application/json',
-        },
-        signal: AbortSignal.timeout(15000),
-      });
+    if (response.status === 403) {
+      const oldRedditUrl = jsonUrl.replace('www.reddit.com', 'old.reddit.com');
+      const secondAttempt = (
+        await fetchSafe(
+          oldRedditUrl,
+          {
+            headers: {
+              'User-Agent': userAgent,
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(15000),
+          },
+          {
+            proxyBaseUrl,
+            maxBytes: MAX_JSON_RESPONSE_BYTES,
+            allowedContentTypes: ['application/json', 'application/ld+json'],
+          },
+        )
+      ).response;
       if (secondAttempt.ok) {
         response = secondAttempt;
       }
@@ -71,13 +95,23 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     if (response.status === 403) {
       const browserUA =
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-      const thirdAttempt = await fetch(fetchUrl, {
-        headers: {
-          'User-Agent': browserUA,
-          Accept: 'application/json',
-        },
-        signal: AbortSignal.timeout(15000),
-      });
+      const thirdAttempt = (
+        await fetchSafe(
+          jsonUrl,
+          {
+            headers: {
+              'User-Agent': browserUA,
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(15000),
+          },
+          {
+            proxyBaseUrl,
+            maxBytes: MAX_JSON_RESPONSE_BYTES,
+            allowedContentTypes: ['application/json', 'application/ld+json'],
+          },
+        )
+      ).response;
       if (thirdAttempt.ok) {
         response = thirdAttempt;
       }
@@ -90,7 +124,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         details: {
           url,
           jsonUrl,
-          fetchUrl,
+          targetUrl: jsonUrl,
           useProxy: Boolean(body.useProxy),
           proxyConfigured: Boolean(proxyBaseUrl),
         },
@@ -103,7 +137,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       );
     }
 
-    const data = await response.json();
+    const data = JSON.parse(
+      await readResponseText(response, MAX_JSON_RESPONSE_BYTES),
+    );
     if (!Array.isArray(data) || data.length < 2) {
       recordAppError({
         source: 'api.reddit.comments',
@@ -111,7 +147,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         details: {
           url,
           jsonUrl,
-          fetchUrl,
+          targetUrl: jsonUrl,
           useProxy: Boolean(body.useProxy),
           proxyConfigured: Boolean(proxyBaseUrl),
         },
@@ -133,7 +169,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       details: {
         url,
         jsonUrl,
-        fetchUrl,
+        targetUrl: jsonUrl,
         useProxy: Boolean(body.useProxy),
         proxyConfigured: Boolean(proxyBaseUrl),
       },

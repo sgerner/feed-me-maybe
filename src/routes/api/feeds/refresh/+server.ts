@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
-import { ingestFeed } from '$lib/server/feed/ingester';
+import { enqueueFeedFetch, runDueJobs } from '$lib/server/feed/job-queue';
 import { recordAppError } from '$lib/server/logging';
 
 export const POST: RequestHandler = async ({ locals }) => {
@@ -10,32 +10,28 @@ export const POST: RequestHandler = async ({ locals }) => {
   }
 
   const db = getDb();
-  const feeds = db
-    .prepare('SELECT id FROM feeds WHERE enabled = 1')
-    .all() as { id: string }[];
+  const feeds = db.prepare('SELECT id FROM feeds WHERE enabled = 1').all() as {
+    id: string;
+  }[];
 
-  // Run in background and return immediate response to avoid timeout
-  const poll = async () => {
-    for (const feed of feeds) {
-      try {
-        await ingestFeed({ feedId: feed.id });
-      } catch (err) {
-        console.error(`[api] Error refreshing feed ${feed.id}:`, err);
-        recordAppError({
-          source: 'api.feeds.refresh',
-          error: err,
-          details: { feedId: feed.id },
-          path: '/api/feeds/refresh',
-          method: 'POST',
-        });
-      }
-    }
-  };
-
-  poll();
+  const jobs = feeds.map((feed) => enqueueFeedFetch(feed.id, { force: true }));
+  // Queue insertion is the durable operation. The in-process worker provides
+  // fast feedback when possible, while the poller remains the restart-safe
+  // fallback for queued work.
+  void runDueJobs({ maxJobs: Math.max(1, feeds.length) }).catch((error) => {
+    recordAppError({
+      source: 'api.feeds.refresh.worker',
+      error,
+      details: { feedCount: feeds.length },
+      path: '/api/feeds/refresh',
+      method: 'POST',
+    });
+  });
 
   return json({
     success: true,
-    message: `Refreshing ${feeds.length} feeds in background`,
+    queued: jobs.filter((job) => job.status === 'queued').length,
+    alreadyActive: jobs.filter((job) => job.status !== 'queued').length,
+    jobs,
   });
 };

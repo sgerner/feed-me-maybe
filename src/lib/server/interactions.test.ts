@@ -45,7 +45,9 @@ describe('interaction side effects', () => {
     recordInteraction('article-interactions', 'thumbs_down');
 
     const article = db
-      .prepare('SELECT hidden, thumbs_up, thumbs_down FROM articles WHERE id = ?')
+      .prepare(
+        'SELECT hidden, thumbs_up, thumbs_down FROM articles WHERE id = ?',
+      )
       .get('article-interactions') as {
       hidden: number;
       thumbs_up: number;
@@ -90,7 +92,9 @@ describe('interaction side effects', () => {
     recordInteraction('article-boost', 'boost');
 
     const article = db
-      .prepare('SELECT hidden, thumbs_up, thumbs_down FROM articles WHERE id = ?')
+      .prepare(
+        'SELECT hidden, thumbs_up, thumbs_down FROM articles WHERE id = ?',
+      )
       .get('article-boost') as {
       hidden: number;
       thumbs_up: number;

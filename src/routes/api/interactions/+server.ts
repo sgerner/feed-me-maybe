@@ -4,6 +4,15 @@ import {
   recordInteraction,
   type InteractionType,
 } from '$lib/server/interactions';
+import {
+  applyArticleState,
+  ArticleStateError,
+  type ArticleStateAction,
+} from '$lib/server/article-state';
+import {
+  OFFLINE_PROTOCOL_HEADER,
+  OFFLINE_PROTOCOL_VERSION,
+} from '$lib/server/auth/csrf';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
@@ -20,6 +29,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const { articleId, type } = body as { articleId?: string; type?: string };
   const validTypes: InteractionType[] = [
     'read',
+    'unread',
     'hide',
     'save',
     'thumbs_up',
@@ -35,6 +45,47 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       { error: 'articleId and valid type are required' },
       { status: 400 },
     );
+  }
+
+  // The service worker replays mutations through this compatibility endpoint
+  // so older clients and the installed PWA share one queue contract. Route
+  // those requests through the versioned state API for exactly-once behavior.
+  const offlineKey = request.headers.get('x-offline-idempotency-key');
+  if (
+    offlineKey &&
+    request.headers.get(OFFLINE_PROTOCOL_HEADER) === OFFLINE_PROTOCOL_VERSION
+  ) {
+    const actions: Partial<Record<InteractionType, ArticleStateAction>> = {
+      read: 'read',
+      unread: 'unread',
+      save: 'save',
+      unsave: 'unsave',
+      hide: 'hide',
+      unhide: 'unhide',
+      thumbs_down: 'reject',
+    };
+    const action = actions[type as InteractionType];
+    if (!action) {
+      return json(
+        { error: 'Unsupported offline interaction' },
+        { status: 400 },
+      );
+    }
+    try {
+      const result = applyArticleState({
+        articleIds: [articleId],
+        action,
+        idempotencyKey: `offline:${offlineKey}`,
+      });
+      return json({ success: true, ...result });
+    } catch (caught) {
+      const message =
+        caught instanceof Error ? caught.message : 'State update failed';
+      return json(
+        { error: message },
+        { status: caught instanceof ArticleStateError ? caught.status : 400 },
+      );
+    }
   }
 
   recordInteraction(articleId, type as InteractionType);

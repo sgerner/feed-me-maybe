@@ -1,5 +1,10 @@
 import Parser from 'rss-parser';
-import { buildProxiedUrl } from '$lib/server/proxy';
+import { sanitizeHtml } from '$lib/utils/format';
+import {
+  MAX_FEED_RESPONSE_BYTES,
+  fetchSafe,
+  readResponseText,
+} from '$lib/server/network';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 
@@ -32,7 +37,6 @@ export interface FetchedItem {
 
 const parser: FeedParser = new Parser({
   timeout: 15000,
-  maxRedirects: 5,
   customFields: {
     item: [
       ['media:content', 'mediaContent', { keepArray: false }],
@@ -41,6 +45,18 @@ const parser: FeedParser = new Parser({
     ],
   },
 });
+
+function safeHttpUrl(value: unknown, baseUrl: string): string {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  try {
+    const parsed = new URL(value.trim(), baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    if (parsed.username || parsed.password) return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
 
 export async function fetchFeed(
   url: string,
@@ -56,8 +72,6 @@ export async function fetchFeed(
       };
     }
 
-    const fetchUrl = buildProxiedUrl(parsedUrl.href, options.proxyBaseUrl);
-
     const headers: Record<string, string> = {
       'User-Agent': 'FeedMeMaybe/1.0 RSS Reader',
       Accept:
@@ -71,10 +85,25 @@ export async function fetchFeed(
       headers['If-Modified-Since'] = options.lastModified;
     }
 
-    const response = await fetch(fetchUrl, {
-      headers,
-      signal: AbortSignal.timeout(15000),
-    });
+    const { response, finalUrl } = await fetchSafe(
+      parsedUrl.href,
+      {
+        headers,
+        signal: AbortSignal.timeout(15000),
+      },
+      {
+        proxyBaseUrl: options.proxyBaseUrl,
+        maxBytes: MAX_FEED_RESPONSE_BYTES,
+        allowedContentTypes: [
+          'application/atom+xml',
+          'application/rss+xml',
+          'application/xml',
+          'text/xml',
+          'text/rss',
+          'text/atom',
+        ],
+      },
+    );
 
     if (response.status === 304) {
       return { success: true, items: [], notModified: true, httpStatus: 304 };
@@ -89,14 +118,14 @@ export async function fetchFeed(
       };
     }
 
-    const xml = await response.text();
+    const xml = await readResponseText(response, MAX_FEED_RESPONSE_BYTES);
     const result = await parser.parseString(xml);
 
     const newEtag = response.headers.get('etag') || undefined;
     const newLastModified = response.headers.get('last-modified') || undefined;
 
-    const items: FetchedItem[] = (result.items || []).map(
-      (item: Record<string, unknown>) => {
+    const items: FetchedItem[] = (result.items || [])
+      .map((item: Record<string, unknown>) => {
         // Extract image from various possible sources
         let imageUrl = '';
 
@@ -136,23 +165,29 @@ export async function fetchFeed(
           }
         }
 
+        const safeUrl = safeHttpUrl(item.link, finalUrl);
+        if (!safeUrl) return null;
+        const safeImageUrl = safeHttpUrl(imageUrl, finalUrl);
+
         return {
           guid: String(item.guid || item.link || ''),
-          url: String(item.link || ''),
+          url: safeUrl,
           title: String((item.title as string)?.trim() || 'Untitled'),
           author:
             (item.creator as string) ||
             (item['dc:creator'] as string) ||
             undefined,
           summary:
-            (item.contentSnippet as string)?.trim()?.substring(0, 500) ||
-            undefined,
+            sanitizeHtml(
+              (item.contentSnippet as string)?.trim()?.substring(0, 500),
+            ) || undefined,
           content:
-            (item['content:encoded'] as string)?.trim() ||
-            (item.content as string)?.trim() ||
-            (item.contentSnippet as string)?.trim() ||
-            undefined,
-          imageUrl: imageUrl || undefined,
+            sanitizeHtml(
+              (item['content:encoded'] as string)?.trim() ||
+                (item.content as string)?.trim() ||
+                (item.contentSnippet as string)?.trim(),
+            ) || undefined,
+          imageUrl: safeImageUrl || undefined,
           categories: (item.categories as string[]) || [],
           publishedAt: item.pubDate
             ? new Date(item.pubDate as string)
@@ -160,15 +195,15 @@ export async function fetchFeed(
               ? new Date(item.isoDate as string)
               : undefined,
         } as FetchedItem;
-      },
-    );
+      })
+      .filter((item): item is FetchedItem => Boolean(item));
 
     return {
       success: true,
       title: result.title || undefined,
       description: result.description || undefined,
-      link: result.link || undefined,
-      imageUrl: result.image?.url || undefined,
+      link: safeHttpUrl(result.link, finalUrl) || undefined,
+      imageUrl: safeHttpUrl(result.image?.url, finalUrl) || undefined,
       items,
       etag: newEtag,
       lastModified: newLastModified,

@@ -52,24 +52,33 @@ The `docker-compose.yml` defines:
 
 ## Environment Variables Reference
 
-| Variable       | Required | Default                                                               | Description                                                      |
-| -------------- | -------- | --------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `APP_PASSWORD` | **Yes**  | —                                                                     | Password for application access. Must be set or login will fail. |
-| `ORIGIN`       | Recommended | —                                                                  | Public URL of the app (e.g. `https://feed.example.com`). Required for CSRF protection when behind a reverse proxy. |
-| `DATABASE_URL` | No       | `./data/feed-me-maybe.db` (local) / `/app/data/feed-me-maybe.db` (Docker) | Path to the SQLite database file. Already set in the Docker image; only override if you need a different location. |
-| `HOST`         | No       | `0.0.0.0`                                                             | Network interface to bind the server to.                         |
-| `PORT`         | No       | `3000`                                                                | HTTP port to listen on.                                          |
-| `APP_SECRET`   | No       | —                                                                     | Encryption key for AI provider API keys. Generate with `openssl rand -hex 32`. Keep stable across deploys. |
-| `PROXY_BASE_URL` | No     | `https://feed-me-maybe-proxy.your-name.workers.dev`                   | Generic proxy worker URL used for feed fetching, Reddit comments, and other blocked requests. `REDDIT_BASE_URL` is still accepted as a legacy alias. |
-| `PROVIDER`     | No       | —                                                                     | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`.  |
-| `MODEL`        | No       | —                                                                     | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`).       |
-| `API_KEY`      | No       | —                                                                     | API key for the configured AI provider.                          |
+| Variable         | Required                        | Default                                                                   | Description                                                                                                                                               |
+| ---------------- | ------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_PASSWORD`   | **Yes**                         | —                                                                         | Password for application access. Must be set or login will fail.                                                                                          |
+| `ORIGIN`         | Recommended                     | —                                                                         | Public URL of the app (e.g. `https://feed.example.com`). Required for CSRF protection when behind a reverse proxy.                                        |
+| `DATABASE_URL`   | No                              | `./data/feed-me-maybe.db` (local) / `/app/data/feed-me-maybe.db` (Docker) | Path to the SQLite database file. Already set in the Docker image; only override if you need a different location.                                        |
+| `HOST`           | No                              | `0.0.0.0`                                                                 | Network interface to bind the server to.                                                                                                                  |
+| `PORT`           | No                              | `3000`                                                                    | HTTP port to listen on.                                                                                                                                   |
+| `APP_SECRET`     | Required for AI/webhook secrets | —                                                                         | Random encryption key for AI provider and webhook secrets. Generate with `openssl rand -hex 32` and keep stable across deploys; there is no fallback key. |
+| `PROXY_BASE_URL` | No                              | `https://feed-me-maybe-proxy.your-name.workers.dev`                       | Generic proxy worker URL used for feed fetching, Reddit comments, and other blocked requests. `REDDIT_BASE_URL` is still accepted as a legacy alias.      |
+| `PROVIDER`       | No                              | —                                                                         | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`.                                                                                           |
+| `MODEL`          | No                              | —                                                                         | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`).                                                                                                |
+| `API_KEY`        | No                              | —                                                                         | API key for the configured AI provider.                                                                                                                   |
 
 ### Generating a Secure APP_SECRET
 
 ```bash
 openssl rand -hex 32
 ```
+
+### Offline replay and CSRF
+
+Authenticated JSON mutations normally require a same-origin `Origin`/`Referer`
+or the double-submit `x-csrf-token` header. The service worker cannot read the
+HttpOnly session cookie or the CSRF cookie, so its outbox replay uses the
+versioned `x-offline-protocol: v1` header. The server accepts only that exact
+header value for this narrow path; ordinary browser JSON requests remain CSRF
+protected.
 
 ## Generic Proxy Worker
 

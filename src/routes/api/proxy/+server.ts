@@ -1,7 +1,30 @@
 import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { buildProxiedUrl, getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
 import { recordAppError } from '$lib/server/logging';
+import { sanitizeHtml } from '$lib/utils/format';
+import {
+  MAX_HTML_RESPONSE_BYTES,
+  SafeFetchError,
+  fetchSafe,
+  readResponseText,
+} from '$lib/server/network';
+
+function safeOrigin(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return 'invalid';
+  }
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 export const GET: RequestHandler = async ({ url, locals }) => {
   if (!locals.sessionId) {
@@ -13,95 +36,89 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     throw error(400, 'Missing url parameter');
   }
 
+  const proxyBaseUrl = getConfiguredProxyBaseUrl();
   try {
-    const fetchUrl = buildProxiedUrl(
+    const { response, finalUrl } = await fetchSafe(
       targetUrl,
-      getConfiguredProxyBaseUrl(),
-    );
-    const response = await fetch(fetchUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        Pragma: 'no-cache',
-        'Sec-Ch-Ua':
-          '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+        },
+        signal: AbortSignal.timeout(20000),
       },
-    });
+      {
+        proxyBaseUrl,
+        maxBytes: MAX_HTML_RESPONSE_BYTES,
+        allowedContentTypes: ['text/html', 'application/xhtml+xml'],
+      },
+    );
 
     if (!response.ok) {
       recordAppError({
         source: 'api.proxy',
         error: new Error(`Proxy access denied (${response.status})`),
         details: {
-          targetUrl,
-          fetchUrl,
+          targetOrigin: safeOrigin(targetUrl),
+          proxyOrigin: proxyBaseUrl ? safeOrigin(proxyBaseUrl) : null,
         },
         path: '/api/proxy',
         method: 'GET',
       });
       return new Response(
-        `<html><body style="background:#0f172a;color:#94a3b8;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:20px;">
-          <h2 style="color:#f8fafc;">Proxy Access Denied (${response.status})</h2>
-          <p>This website is actively blocking automated access.</p>
-          <p style="font-size:0.8rem;margin-top:20px;">Try switching to <b>READER</b> mode or open the <b>SOURCE</b> directly.</p>
-        </body></html>`,
+        `<html><body><h2>Proxy Access Denied (${response.status})</h2><p>This website is actively blocking automated access.</p><p>Try Reader mode or open the source directly.</p></body></html>`,
         {
           status: 200,
-          headers: { 'Content-Type': 'text/html' },
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'private, no-store',
+            'Content-Security-Policy':
+              "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; form-action 'none'",
+            'X-Content-Type-Options': 'nosniff',
+          },
         },
       );
     }
 
-    const contentType = response.headers.get('Content-Type') || 'text/html';
+    const html = sanitizeHtml(
+      await readResponseText(response, MAX_HTML_RESPONSE_BYTES),
+    );
+    const baseTag = `<base href="${escapeHtmlAttribute(finalUrl)}">`;
+    const safeDocument = `<!doctype html><html><head>${baseTag}</head><body>${html}</body></html>`;
 
-    // Only process text/html
-    if (contentType.includes('text/html')) {
-      let html = await response.text();
-
-      // Inject <base> tag to fix relative links
-      const baseTag = `<base href="${targetUrl}">`;
-      if (html.includes('<head>')) {
-        html = html.replace('<head>', `<head>${baseTag}`);
-      } else if (html.includes('<html>')) {
-        html = html.replace('<html>', `<html><head>${baseTag}</head>`);
-      } else {
-        html = baseTag + html;
-      }
-
-      return new Response(html, {
-        headers: {
-          'Content-Type': 'text/html',
-          'Cache-Control': 'public, max-age=3600',
-        },
-      });
-    }
-
-    // For other types, just pipe it through
-    return new Response(response.body, {
+    return new Response(safeDocument, {
       headers: {
-        'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=3600',
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'private, no-store',
+        'Content-Security-Policy':
+          "default-src 'none'; img-src http: https:; style-src 'unsafe-inline'; font-src https:; script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri http: https:",
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        Vary: 'Cookie',
       },
     });
   } catch (err) {
-    console.error('Proxy error:', err);
+    if (err instanceof SafeFetchError) {
+      const status =
+        err.code === 'invalid_url' || err.code === 'private_network'
+          ? 400
+          : err.code === 'unsupported_content_type' ||
+              err.code === 'response_too_large'
+            ? 415
+            : 502;
+      throw error(status, err.message);
+    }
+
     recordAppError({
       source: 'api.proxy',
       error: err,
       details: {
-        targetUrl,
-        fetchUrl: buildProxiedUrl(targetUrl, getConfiguredProxyBaseUrl()),
+        targetOrigin: safeOrigin(targetUrl),
+        proxyOrigin: proxyBaseUrl ? safeOrigin(proxyBaseUrl) : null,
       },
       path: '/api/proxy',
       method: 'GET',

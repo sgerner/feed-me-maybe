@@ -10,6 +10,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
   const db = getDb();
   const page = parseInt(url.searchParams.get('page') || '1', 10);
   const feedId = url.searchParams.get('feedId');
+  const unreadOnly = url.searchParams.get('unread') === '1';
   const limit = 25;
   const offset = (page - 1) * limit;
 
@@ -21,12 +22,17 @@ export const GET: RequestHandler = async ({ locals, url }) => {
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
     WHERE a.hidden = 0
+      AND a.thumbs_down = 0
   `;
   const params: any[] = [];
 
   if (feedId) {
     query += ' AND a.feed_id = ?';
     params.push(feedId);
+  }
+
+  if (unreadOnly) {
+    query += ' AND a.read = 0';
   }
 
   query += `

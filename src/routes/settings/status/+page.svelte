@@ -180,15 +180,19 @@
             >
           {/if}
         </div>
-        <div style="color: color-mix(in oklch, var(--color-surface-100) 82%, transparent);">
+        <div
+          style="color: color-mix(in oklch, var(--color-surface-100) 82%, transparent);"
+        >
           {errorRow.message}
         </div>
         {#if errorRow.details && Object.keys(errorRow.details).length > 0}
           <pre
             class="overflow-x-auto rounded-sm p-2 text-[11px]"
-            style="background: color-mix(in oklch, var(--color-surface-800) 30%, transparent); color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);"
-          >{JSON.stringify(errorRow.details, null, 2)}</pre
-          >
+            style="background: color-mix(in oklch, var(--color-surface-800) 30%, transparent); color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);">{JSON.stringify(
+              errorRow.details,
+              null,
+              2,
+            )}</pre>
         {/if}
       </div>
     {/each}

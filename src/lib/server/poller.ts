@@ -1,18 +1,42 @@
 import { getDb } from '$lib/server/db';
 import { building } from '$app/environment';
-import { ingestFeed } from '$lib/server/feed/ingester';
+import {
+  enqueueFeedFetch,
+  getNextQueuedJobAt,
+  recoverAbandonedJobs,
+  runDueJobs,
+  type JobRecord,
+  type RunJobsResult,
+} from '$lib/server/feed/job-queue';
+import {
+  getEffectivePollIntervalMins,
+  getGlobalPollIntervalMins,
+} from '$lib/server/feed-management';
 import { recordAppError } from '$lib/server/logging';
 
+const INITIAL_POLL_DELAY_MS = 1_000;
+const DEFAULT_JOB_BATCH_SIZE = 24;
+
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
-let isPolling = false;
+let pollStarted = false;
+let pollCycle: Promise<PollCycleResult> | null = null;
+
+export type PollCycleResult = {
+  checked: number;
+  due: number;
+  enqueued: JobRecord[];
+  worker: RunJobsResult;
+};
 
 export function startPolling(): void {
-  if (building || pollTimer) return;
+  if (building || pollStarted) return;
+  pollStarted = true;
   console.log('[poller] Starting background feed polling loop');
-  scheduleNextPoll(1000); // Start first poll in 1 second
+  scheduleNextPoll(INITIAL_POLL_DELAY_MS);
 }
 
 export function stopPolling(): void {
+  pollStarted = false;
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
@@ -20,91 +44,100 @@ export function stopPolling(): void {
 }
 
 function scheduleNextPoll(delayMs?: number): void {
+  if (!pollStarted) return;
   if (pollTimer) clearTimeout(pollTimer);
 
-  const intervalMins = getGlobalPollInterval();
-  const nextDelay = delayMs ?? intervalMins * 60 * 1000;
+  const intervalMins = getGlobalPollIntervalMins();
+  const queuedJobAt = getNextQueuedJobAt();
+  const nextJobDelay =
+    queuedJobAt == null ? null : Math.max(1_000, queuedJobAt - Date.now());
+  const nextDelay =
+    delayMs ??
+    Math.min(
+      intervalMins * 60 * 1000,
+      nextJobDelay ?? Number.POSITIVE_INFINITY,
+    );
 
   pollTimer = setTimeout(async () => {
-    await pollFeeds();
-    scheduleNextPoll();
+    pollTimer = null;
+    try {
+      await pollFeeds();
+    } catch (error) {
+      recordAppError({ source: 'poller.cycle', error });
+    } finally {
+      if (pollStarted) scheduleNextPoll();
+    }
   }, nextDelay);
 }
 
-function getGlobalPollInterval(): number {
-  try {
-    const db = getDb();
-    const row = db
-      .prepare(
-        "SELECT value FROM app_settings WHERE key = 'poll_interval_mins'",
-      )
-      .get() as { value: string } | undefined;
-    return parseInt(row?.value || '15', 10);
-  } catch {
-    return 15;
-  }
+function getPollableFeeds() {
+  return getDb()
+    .prepare(
+      `
+        SELECT id, last_fetch_at, poll_interval_mins, fetch_count_since_change
+        FROM feeds
+        WHERE enabled = 1
+      `,
+    )
+    .all() as Array<{
+    id: string;
+    last_fetch_at: number | null;
+    poll_interval_mins: number | null;
+    fetch_count_since_change: number | null;
+  }>;
 }
 
-async function pollFeeds(): Promise<void> {
-  if (isPolling) return;
-  isPolling = true;
-  try {
-    const db = getDb();
-    const globalIntervalMins = getGlobalPollInterval();
+async function runPollCycle(now: number): Promise<PollCycleResult> {
+  const globalIntervalMins = getGlobalPollIntervalMins();
+  const feeds = getPollableFeeds();
+  const dueJobs: JobRecord[] = [];
 
-    // Select enabled feeds
-    const feeds = db
-      .prepare(
-        'SELECT id, last_fetch_at, poll_interval_mins, fetch_count_since_change FROM feeds WHERE enabled = 1',
-      )
-      .all() as {
-      id: string;
-      last_fetch_at: number | null;
-      poll_interval_mins: number;
-      fetch_count_since_change: number;
-    }[];
-
-    console.log(
-      `[poller] Checking ${feeds.length} feeds for updates (Global interval: ${globalIntervalMins}m)`,
+  for (const feed of feeds) {
+    const intervalMins = getEffectivePollIntervalMins(
+      feed.poll_interval_mins,
+      feed.fetch_count_since_change,
+      globalIntervalMins,
     );
+    const lastFetch = feed.last_fetch_at || 0;
+    if (now - lastFetch < intervalMins * 60 * 1000) continue;
 
-    for (const feed of feeds) {
-      // Simple adaptive logic:
-      // If we've fetched many times without change, back off.
-      // fetch_count_since_change is incremented in ingester.ts when no new articles are found.
-      let effectiveIntervalMins = feed.poll_interval_mins || globalIntervalMins;
-
-      if (feed.fetch_count_since_change > 10) {
-        effectiveIntervalMins *= 2; // Slow down
-      }
-      if (feed.fetch_count_since_change > 50) {
-        effectiveIntervalMins *= 2; // Slow down further
-      }
-
-      // Cap at 24 hours
-      effectiveIntervalMins = Math.min(effectiveIntervalMins, 24 * 60);
-
-      const now = Date.now();
-      const lastFetch = feed.last_fetch_at || 0;
-      const msSinceLastFetch = now - lastFetch;
-
-      if (msSinceLastFetch >= effectiveIntervalMins * 60 * 1000) {
-        try {
-          console.log(
-            `[poller] Polling feed: ${feed.id} (Effective interval: ${effectiveIntervalMins}m)`,
-          );
-          await ingestFeed({ feedId: feed.id });
-        } catch (err) {
-          console.error(`[poller] Error refreshing feed ${feed.id}:`, err);
-          recordAppError({
-            source: 'poller',
-            error: err,
-            details: { feedId: feed.id },
-          });
-        }
-      }
+    try {
+      dueJobs.push(enqueueFeedFetch(feed.id, { now }));
+    } catch (error) {
+      recordAppError({
+        source: 'poller.enqueue',
+        error,
+        details: { feedId: feed.id },
+      });
     }
-  } finally {
-    isPolling = false;
   }
+
+  const worker = await runDueJobs({
+    now,
+    maxJobs: Math.max(DEFAULT_JOB_BATCH_SIZE, dueJobs.length),
+  });
+
+  return {
+    checked: feeds.length,
+    due: dueJobs.length,
+    enqueued: dueJobs,
+    worker,
+  };
+}
+
+/**
+ * Runs one poll cycle. Calls made while a cycle is in progress share the same
+ * promise, so manual refreshes and the timer cannot create duplicate workers.
+ */
+export function pollFeeds(now = Date.now()): Promise<PollCycleResult> {
+  if (pollCycle) return pollCycle;
+
+  // Recovery is intentionally performed before selecting due feeds. This
+  // makes a newly restarted process safe even if the first poll interval has
+  // not elapsed yet.
+  recoverAbandonedJobs(now);
+  pollCycle = runPollCycle(now).finally(() => {
+    pollCycle = null;
+  });
+  return pollCycle;
 }

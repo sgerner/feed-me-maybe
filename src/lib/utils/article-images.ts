@@ -63,7 +63,10 @@ export function extractArticleImages(options: {
   const images: ArticleImage[] = [];
   const seen = new Set<string>();
 
-  const push = (candidate: string | null | undefined, source: ArticleImageSource) => {
+  const push = (
+    candidate: string | null | undefined,
+    source: ArticleImageSource,
+  ) => {
     if (!candidate) return;
     const normalized = normalizeImageUrl(candidate, options.articleUrl);
     if (!normalized || seen.has(normalized)) return;

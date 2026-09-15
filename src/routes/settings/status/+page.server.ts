@@ -1,7 +1,9 @@
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
 
-function parseDetails(value: string | null | undefined): Record<string, unknown> {
+function parseDetails(
+  value: string | null | undefined,
+): Record<string, unknown> {
   if (!value) return {};
   try {
     return JSON.parse(value) as Record<string, unknown>;

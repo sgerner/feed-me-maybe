@@ -8,6 +8,7 @@ import { dispatchWebhookEvent } from '$lib/server/webhooks';
 
 export type InteractionType =
   | 'read'
+  | 'unread'
   | 'hide'
   | 'save'
   | 'thumbs_up'
@@ -32,7 +33,9 @@ export function recordInteraction(
   // Apply side effects to article
   switch (type) {
     case 'save': {
-      db.prepare('UPDATE articles SET saved = 1 WHERE id = ?').run(articleId);
+      db.prepare(
+        'UPDATE articles SET saved = 1, saved_at = COALESCE(saved_at, ?), updated_at = ? WHERE id = ?',
+      ).run(now, now, articleId);
       // Trigger webhook
       const article = db
         .prepare('SELECT * FROM articles WHERE id = ?')
@@ -47,18 +50,24 @@ export function recordInteraction(
       break;
     }
     case 'unsave':
-      db.prepare('UPDATE articles SET saved = 0 WHERE id = ?').run(articleId);
+      db.prepare(
+        'UPDATE articles SET saved = 0, saved_at = NULL, updated_at = ? WHERE id = ?',
+      ).run(now, articleId);
       break;
     case 'hide':
-      db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(articleId);
+      db.prepare(
+        'UPDATE articles SET hidden = 1, hidden_at = COALESCE(hidden_at, ?), updated_at = ? WHERE id = ?',
+      ).run(now, now, articleId);
       break;
     case 'unhide':
-      db.prepare('UPDATE articles SET hidden = 0 WHERE id = ?').run(articleId);
+      db.prepare(
+        'UPDATE articles SET hidden = 0, hidden_at = NULL, updated_at = ? WHERE id = ?',
+      ).run(now, articleId);
       break;
     case 'boost': {
       db.prepare(
-        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0, hidden = 0 WHERE id = ?',
-      ).run(articleId);
+        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0, rejected = 0, rejected_at = NULL, hidden = 0, hidden_at = NULL, updated_at = ? WHERE id = ?',
+      ).run(now, articleId);
       db.prepare(
         'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
       ).run(crypto.randomUUID(), articleId, 'unhide', now, '{"boost":true}');
@@ -76,8 +85,8 @@ export function recordInteraction(
     }
     case 'thumbs_up': {
       db.prepare(
-        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0 WHERE id = ?',
-      ).run(articleId);
+        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0, rejected = 0, rejected_at = NULL, updated_at = ? WHERE id = ?',
+      ).run(now, articleId);
       // Trigger webhook
       const article = db
         .prepare('SELECT * FROM articles WHERE id = ?')
@@ -93,12 +102,14 @@ export function recordInteraction(
     }
     case 'thumbs_down':
       db.prepare(
-        'UPDATE articles SET thumbs_up = 0, thumbs_down = 1, hidden = 1 WHERE id = ?',
-      ).run(articleId);
+        'UPDATE articles SET thumbs_up = 0, thumbs_down = 1, rejected = 1, rejected_at = COALESCE(rejected_at, ?), hidden = 1, hidden_at = COALESCE(hidden_at, ?), updated_at = ? WHERE id = ?',
+      ).run(now, now, now, articleId);
       break;
     case 'open':
       // Open implies read
-      db.prepare('UPDATE articles SET read = 1 WHERE id = ?').run(articleId);
+      db.prepare(
+        'UPDATE articles SET read = 1, read_at = COALESCE(read_at, ?), updated_at = ? WHERE id = ?',
+      ).run(now, now, articleId);
 
       // Trigger webhook for read (via open)
       {
@@ -120,9 +131,9 @@ export function recordInteraction(
           .prepare("SELECT value FROM app_settings WHERE key = 'hide_on_open'")
           .get() as { value: string } | undefined;
         if (hideSetting?.value === 'true') {
-          db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(
-            articleId,
-          );
+          db.prepare(
+            'UPDATE articles SET hidden = 1, hidden_at = COALESCE(hidden_at, ?), updated_at = ? WHERE id = ?',
+          ).run(now, now, articleId);
           // Also record a hide interaction but mark it as auto in metadata so we could potentially ignore it in scoring
           db.prepare(
             'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
@@ -131,7 +142,9 @@ export function recordInteraction(
         break;
       }
     case 'read': {
-      db.prepare('UPDATE articles SET read = 1 WHERE id = ?').run(articleId);
+      db.prepare(
+        'UPDATE articles SET read = 1, read_at = COALESCE(read_at, ?), updated_at = ? WHERE id = ?',
+      ).run(now, now, articleId);
       // Trigger webhook
       const article = db
         .prepare('SELECT * FROM articles WHERE id = ?')
@@ -145,6 +158,11 @@ export function recordInteraction(
       }
       break;
     }
+    case 'unread':
+      db.prepare(
+        'UPDATE articles SET read = 0, read_at = NULL, updated_at = ? WHERE id = ?',
+      ).run(now, articleId);
+      break;
   }
 
   updatePreferenceMemoryFromInteraction(articleId, type);

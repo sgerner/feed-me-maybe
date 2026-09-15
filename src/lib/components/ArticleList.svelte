@@ -5,9 +5,16 @@
   import { fade } from 'svelte/transition';
   import { afterNavigate, goto, invalidateAll } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
+  import { fetchWithCsrf } from '$lib/client/csrf';
+  import {
+    cacheArticles,
+    enqueueOfflineMutation,
+    getCachedArticles,
+    type OfflineMutationType,
+  } from '$lib/offline';
 
   type InteractionType =
-    'open' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down' | 'boost';
+    'open' | 'read' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down' | 'boost';
   type ReactionType = 'thumbs_up' | 'thumbs_down' | 'boost';
 
   type Article = {
@@ -21,6 +28,7 @@
     feed_title?: string | null;
     feed_open_mode?: string | null;
     feed_url?: string | null;
+    read?: boolean | null;
     feed_site_url?: string | null;
     saved?: boolean | null;
     hidden?: boolean | null;
@@ -32,6 +40,7 @@
     articles = $bindable(),
     totalPages,
     feedId = null,
+    loadMoreSearchParams = {},
     showInfiniteScroll = true,
     feedbackMode = 'standard',
     emptyTitle = 'No articles yet',
@@ -42,6 +51,7 @@
     articles: Article[];
     totalPages: number;
     feedId?: string | null;
+    loadMoreSearchParams?: Record<string, string>;
     showInfiniteScroll?: boolean;
     feedbackMode?: 'standard' | 'boost';
     emptyTitle?: string;
@@ -57,7 +67,26 @@
     thumbs_up: 'Liked',
     thumbs_down: 'Disliked and hidden',
     boost: 'Boosted and restored',
+    read: 'Marked as read',
   };
+
+  function getOfflineMutationType(
+    type: InteractionType,
+  ): OfflineMutationType | null {
+    switch (type) {
+      case 'read':
+      case 'hide':
+      case 'save':
+      case 'thumbs_down':
+        return type;
+      default:
+        return null;
+    }
+  }
+
+  function offlineScope(): string {
+    return String($pageStore.data.userId || 'admin');
+  }
 
   const summaryCache = new WeakMap<
     Article,
@@ -141,12 +170,19 @@
       label: mode === 'tab' ? 'Opening in new tab...' : 'Loading article...',
     };
 
-    void fetch('/api/interactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ articleId: article.id, type: 'open' }),
-      keepalive: true,
-    }).catch((err) => {
+    void (
+      navigator.onLine === false
+        ? enqueueOfflineMutation(offlineScope(), {
+            articleId: article.id,
+            type: 'read',
+          })
+        : fetchWithCsrf('/api/interactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ articleId: article.id, type: 'open' }),
+            keepalive: true,
+          })
+    ).catch((err) => {
       console.error('Failed to record open interaction', err);
 
       if (
@@ -273,6 +309,17 @@
     }
   });
 
+  // Keep the most recently rendered library available for a fast, private
+  // offline reopen. The cache module bounds and account-scopes the records.
+  $effect(() => {
+    if (typeof window === 'undefined' || !$pageStore.data.sessionId) return;
+    void cacheArticles(offlineScope(), articles.slice(0, 150)).catch(
+      (error) => {
+        console.debug('Offline article cache unavailable', error);
+      },
+    );
+  });
+
   function timeAgo(date: number | null): string {
     if (!date) return '';
     const now = Date.now();
@@ -308,9 +355,13 @@
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
     const shouldRemove =
-      type === 'hide' || type === 'thumbs_down' || type === 'boost';
+      type === 'hide' ||
+      type === 'thumbs_down' ||
+      type === 'boost' ||
+      (type === 'read' && $pageStore.url.pathname === '/inbox');
     const isReaction =
       type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
+    const previousRead = previousArticle?.read;
     const previousReaction = previousArticle
       ? {
           thumbs_up: previousArticle.thumbs_up,
@@ -336,10 +387,27 @@
       );
     }
 
+    if (type === 'read' && previousArticle) {
+      articles = articles.map((a: Article) =>
+        a.id === articleId ? { ...a, read: true } : a,
+      );
+    }
+
     pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
 
     try {
-      const res = await fetch('/api/interactions', {
+      const offlineType = getOfflineMutationType(type);
+      if (navigator.onLine === false) {
+        if (!offlineType) throw new Error('This action needs a connection');
+        await enqueueOfflineMutation(offlineScope(), {
+          articleId,
+          type: offlineType,
+        });
+        addToast('Action queued — will sync when you’re online', 'info');
+        return;
+      }
+
+      const res = await fetchWithCsrf('/api/interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ articleId, type }),
@@ -372,6 +440,12 @@
         );
       }
 
+      if (type === 'read' && previousArticle) {
+        articles = articles.map((a: Article) =>
+          a.id === articleId ? { ...a, read: previousRead } : a,
+        );
+      }
+
       console.error('Action failed', err);
       addToast('Action failed', 'error');
     } finally {
@@ -381,6 +455,17 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      const openMenu = document.querySelector<HTMLDetailsElement>(
+        '[data-article-overflow][open]',
+      );
+      if (openMenu) {
+        e.preventDefault();
+        openMenu.open = false;
+        return;
+      }
+    }
+
     const target = e.target as HTMLElement;
     if (
       target.tagName === 'INPUT' ||
@@ -416,6 +501,62 @@
       e.preventDefault();
       if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'save');
     }
+    if (e.key === 'm' || e.key === 'M') {
+      e.preventDefault();
+      if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'read');
+    }
+  }
+
+  async function shareArticle(article: Article) {
+    const shareData = { title: article.title, url: article.url };
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+      } else {
+        await navigator.clipboard.writeText(article.url);
+        addToast('Link copied', 'success');
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      addToast('Could not share this article', 'error');
+    }
+  }
+
+  function articleMode(article: Article): string {
+    return (
+      article.feed_open_mode ||
+      $pageStore.data.globalSettings?.articleOpenMode ||
+      'app'
+    );
+  }
+
+  function articleHref(article: Article): string {
+    const mode = articleMode(article);
+    return mode === 'tab'
+      ? article.url
+      : `/articles/${article.id}?mode=${encodeURIComponent(mode)}`;
+  }
+
+  function handleArticleLinkClick(event: MouseEvent, article: Article): void {
+    // Keep modified clicks and the context menu fully native so users can
+    // still open an article in another tab or copy its link.
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    if (Date.now() - lastSwipeTime < 300) {
+      event.preventDefault();
+      return;
+    }
+
+    event.preventDefault();
+    void openArticle(article);
   }
 
   async function loadMore() {
@@ -425,6 +566,9 @@
       const url = new URL('/api/articles', window.location.origin);
       url.searchParams.set('page', (page + 1).toString());
       if (feedId) url.searchParams.set('feedId', feedId);
+      for (const [key, value] of Object.entries(loadMoreSearchParams)) {
+        url.searchParams.set(key, String(value));
+      }
 
       const res = await fetch(url.toString());
       if (res.ok) {
@@ -472,7 +616,27 @@
 
   onMount(() => {
     document.addEventListener('keydown', handleKeydown);
+    const onDocumentPointerDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest('[data-article-overflow]')) {
+        document
+          .querySelectorAll<HTMLDetailsElement>('[data-article-overflow]')
+          .forEach((menu) => (menu.open = false));
+      }
+    };
+    document.addEventListener('pointerdown', onDocumentPointerDown);
     scrollContainerEl = document.querySelector('main');
+
+    if (navigator.onLine === false && articles.length === 0) {
+      void getCachedArticles(offlineScope(), { limit: 150 })
+        .then((cached) => {
+          if (articles.length === 0 && cached.length > 0) {
+            articles = cached;
+            addToast('Showing your saved offline reading shelf', 'info');
+          }
+        })
+        .catch(() => undefined);
+    }
 
     const onPageShow = (event: PageTransitionEvent) => {
       if (event.persisted) {
@@ -546,6 +710,7 @@
 
     return () => {
       document.removeEventListener('keydown', handleKeydown);
+      document.removeEventListener('pointerdown', onDocumentPointerDown);
       if (scrollContainerEl) {
         scrollContainerEl.removeEventListener('scroll', onScroll);
       }
@@ -787,106 +952,92 @@
 
         <div
           id="article-{article.id}"
-          class="glass-card glass-card-hover article-card group relative flex cursor-pointer flex-col overflow-hidden p-0 min-h-[180px] md:min-h-[280px]"
+          class="glass-card glass-card-hover article-card group relative flex min-h-[180px] flex-col overflow-visible p-0 md:min-h-[280px]"
           style="touch-action: pan-y; --swipe-offset: {swipeOffset}px;"
           class:article-swiping={activeSwipeId === article.id}
           class:article-focus-ring={focusedIndex === i}
-          role="link"
-          tabindex="0"
-          onpointerdown={(e) => handlePointerDown(e, article.id)}
-          onpointermove={(e) => handlePointerMove(e, article.id)}
-          onpointerup={(e) => handlePointerUp(e, article.id)}
-          onpointercancel={(e) => handlePointerCancel(e, article.id)}
-          onclick={(e) => {
-            if (Date.now() - lastSwipeTime < 300) {
-              e.preventDefault();
-              return;
-            }
-            const target = e.target as Element;
-            if (
-              target &&
-              typeof target.closest === 'function' &&
-              target.closest('button, .action-btn')
-            ) {
-              return;
-            }
-            openArticle(article);
-          }}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              const target = e.target as Element;
-              if (
-                target &&
-                typeof target.closest === 'function' &&
-                target.closest('button, .action-btn')
-              )
-                return;
-              e.preventDefault();
-              openArticle(article);
-            }
-          }}
         >
-          {#if article.image_url}
-            <div class="absolute inset-0 z-0 bg-surface-950">
-              <img
-                src={article.image_url}
-                alt=""
-                class="article-card-image h-full w-full object-cover opacity-80"
-                loading={i < 2 ? 'eager' : 'lazy'}
-                decoding="async"
-                fetchpriority={i < 2 ? 'high' : 'low'}
-              />
-              <div
-                class="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/40 to-transparent opacity-90"
-              ></div>
-            </div>
-          {/if}
-
-          <div class="relative z-10 flex flex-1 flex-col p-3 md:p-6">
-            <div
-              class="mb-3 flex flex-wrap items-center gap-2 text-xs"
-              style="color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);"
-            >
-              <span
-                class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
-                style="background: var(--color-primary-500); border-radius: 2px;"
-              >
-                {article.feed_title || 'Unknown'}
-              </span>
-              <span class="flex items-center gap-1">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  ><circle cx="12" cy="12" r="10" /><polyline
-                    points="12 6 12 12 16 14"
-                  /></svg
-                >
-                {timeAgo(articleDate)}
-              </span>
-            </div>
-
-            <h3
-              class="article-card-title text-xl font-bold leading-tight transition-colors"
-              style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
-            >
-              {article.title}
-            </h3>
-
-            {#if article.summary}
-              <div
-                class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
-                style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
-              >
-                {@html formattedSummary}
+          <a
+            href={articleHref(article)}
+            target={articleMode(article) === 'tab' ? '_blank' : undefined}
+            rel={articleMode(article) === 'tab'
+              ? 'noopener noreferrer'
+              : undefined}
+            class="article-card-link relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm no-underline"
+            style="touch-action: pan-y;"
+            onpointerdown={(e) => handlePointerDown(e, article.id)}
+            onpointermove={(e) => handlePointerMove(e, article.id)}
+            onpointerup={(e) => handlePointerUp(e, article.id)}
+            onpointercancel={(e) => handlePointerCancel(e, article.id)}
+            onclick={(e) => handleArticleLinkClick(e, article)}
+            aria-label={`Open article: ${article.title}`}
+          >
+            {#if article.image_url}
+              <div class="absolute inset-0 z-0 bg-surface-950">
+                <img
+                  src={article.image_url}
+                  alt=""
+                  class="article-card-image h-full w-full object-cover opacity-80"
+                  loading={i < 2 ? 'eager' : 'lazy'}
+                  decoding="async"
+                  fetchpriority={i < 2 ? 'high' : 'low'}
+                />
+                <div
+                  class="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/40 to-transparent opacity-90"
+                ></div>
               </div>
             {/if}
 
-            <div class="mt-auto pt-2 md:pt-6">
+            <div class="relative z-10 flex flex-1 flex-col p-3 md:p-6">
+              <div
+                class="mb-3 flex flex-wrap items-center gap-2 text-xs"
+                style="color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);"
+              >
+                <span
+                  class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
+                  style="background: var(--color-primary-500); border-radius: 2px;"
+                >
+                  {article.feed_title || 'Unknown'}
+                </span>
+                <span class="flex items-center gap-1">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    ><circle cx="12" cy="12" r="10" /><polyline
+                      points="12 6 12 12 16 14"
+                    /></svg
+                  >
+                  {timeAgo(articleDate)}
+                </span>
+              </div>
+
+              <h3
+                class="article-card-title text-xl font-bold leading-tight transition-colors"
+                style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
+              >
+                {article.title}
+              </h3>
+
+              {#if article.summary}
+                <div
+                  class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
+                  style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
+                >
+                  {@html formattedSummary}
+                </div>
+              {/if}
+            </div>
+          </a>
+
+          <div
+            class="relative z-20 flex flex-wrap items-center gap-1.5 p-3 pt-0 md:px-6 md:pb-6"
+          >
+            <div class="w-full">
               <div
                 class="flex items-center gap-1.5 {isBoostReview
                   ? 'flex-wrap'
@@ -894,9 +1045,9 @@
               >
                 <button
                   type="button"
-                  class="action-btn {isBoostReview
+                  class="action-btn min-h-11 {isBoostReview
                     ? ''
-                    : '!hidden lg:!inline-flex'} !bg-surface-900/50 lg:backdrop-blur-sm {article.saved
+                    : '!inline-flex'} !bg-surface-900/50 lg:backdrop-blur-sm {article.saved
                     ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
                     : ''}"
                   disabled={isPending || Boolean(article.saved)}
@@ -922,6 +1073,52 @@
                   >
                   {article.saved ? 'Saved' : 'Save'}
                 </button>
+                {#if !isBoostReview && !article.read}
+                  <button
+                    type="button"
+                    class="action-btn min-h-11 !inline-flex !bg-surface-900/50 lg:backdrop-blur-sm"
+                    disabled={isPending}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onpointerup={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      interact(article.id, 'read');
+                    }}
+                    aria-label="Mark article as read"
+                    title="Mark as read (m)"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"><path d="m5 12 4 4L19 6" /></svg
+                    >
+                    <span class="hidden sm:inline">Read</span>
+                  </button>
+                {:else if !isBoostReview}
+                  <span
+                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-surface-300"
+                    aria-label="Article is read"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"><path d="m5 12 4 4L19 6" /></svg
+                    >
+                    Read
+                  </span>
+                {/if}
                 {#if isBoostReview}
                   <button
                     type="button"
@@ -954,17 +1151,168 @@
                     Keep &amp; boost
                   </button>
                 {:else}
+                  <details class="relative ml-auto" data-article-overflow>
+                    <summary
+                      class="action-btn flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center !bg-surface-900/50 lg:backdrop-blur-sm"
+                      aria-label="More article actions"
+                      title="More actions"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <circle cx="5" cy="12" r="1.5" />
+                        <circle cx="12" cy="12" r="1.5" />
+                        <circle cx="19" cy="12" r="1.5" />
+                      </svg>
+                    </summary>
+                    <div
+                      role="menu"
+                      class="absolute bottom-full right-0 z-40 mb-2 flex min-w-52 flex-col gap-1 rounded-sm border p-2 shadow-2xl backdrop-blur-xl"
+                      style="background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="article-menu-item"
+                        aria-label="Share article"
+                        onclick={(e) => {
+                          (e.currentTarget as HTMLElement)
+                            .closest('details')
+                            ?.removeAttribute('open');
+                          void shareArticle(article);
+                        }}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                          ><circle cx="18" cy="5" r="3" /><circle
+                            cx="6"
+                            cy="12"
+                            r="3"
+                          /><circle cx="18" cy="19" r="3" /><path
+                            d="m8.6 13.5 6.8 4"
+                          /><path d="m15.4 6.5-6.8 4" /></svg
+                        >
+                        Share
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="article-menu-item"
+                        aria-label="Hide article"
+                        disabled={isPending}
+                        onclick={() => interact(article.id, 'hide')}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                          ><path d="M3 6h18" /><path
+                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                          /><path
+                            d="M8 6V4a2 2 0 0 1 2-2h4c1 0 2 1 2 2v2"
+                          /></svg
+                        >
+                        Hide
+                      </button>
+                      <div
+                        class="my-1 h-px bg-surface-100/10"
+                        aria-hidden="true"
+                      ></div>
+                      <button
+                        type="button"
+                        role="menuitemcheckbox"
+                        class="article-menu-item {article.thumbs_up
+                          ? 'text-primary-300'
+                          : ''}"
+                        aria-label="Like article"
+                        disabled={isPending}
+                        aria-checked={Boolean(article.thumbs_up)}
+                        onclick={(e) => {
+                          (e.currentTarget as HTMLElement)
+                            .closest('details')
+                            ?.removeAttribute('open');
+                          interact(article.id, 'thumbs_up');
+                        }}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill={article.thumbs_up ? 'currentColor' : 'none'}
+                          stroke="currentColor"
+                          stroke-width="2"
+                          aria-hidden="true"
+                        >
+                          <path d="M7 10v12" />
+                          <path
+                            d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
+                          />
+                        </svg>
+                        Like
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitemcheckbox"
+                        class="article-menu-item {article.thumbs_down
+                          ? 'text-error-300'
+                          : ''}"
+                        aria-label="Dislike and hide article"
+                        disabled={isPending}
+                        aria-checked={Boolean(article.thumbs_down)}
+                        onclick={(e) => {
+                          (e.currentTarget as HTMLElement)
+                            .closest('details')
+                            ?.removeAttribute('open');
+                          interact(article.id, 'thumbs_down');
+                        }}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill={article.thumbs_down ? 'currentColor' : 'none'}
+                          stroke="currentColor"
+                          stroke-width="2"
+                          aria-hidden="true"
+                        >
+                          <path d="M17 14V2" />
+                          <path
+                            d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
+                          />
+                        </svg>
+                        Dislike and hide
+                      </button>
+                    </div>
+                  </details>
+                  <!-- The menu keeps the same reaction actions, but removes them from the card's primary path. -->
                   <button
                     type="button"
-                    class="action-btn !hidden lg:!inline-flex !bg-surface-900/50 lg:backdrop-blur-sm hover:!text-error-400"
-                    disabled={isPending}
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onpointerup={(e) => e.stopPropagation()}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      interact(article.id, 'hide');
-                    }}
-                    title="Hide article"
+                    class="hidden"
+                    tabindex="-1"
+                    aria-hidden="true"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -983,7 +1331,7 @@
                     </svg>
                     Hide
                   </button>
-                  <div class="ml-auto flex items-center gap-1">
+                  <div class="hidden">
                     <button
                       type="button"
                       class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_up
@@ -1129,6 +1477,34 @@
 
   .article-card button {
     touch-action: manipulation;
+  }
+
+  .article-menu-item {
+    display: flex;
+    min-height: 2.75rem;
+    width: 100%;
+    align-items: center;
+    gap: 0.75rem;
+    border-radius: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    color: var(--color-surface-100);
+    text-align: left;
+    font-size: 0.875rem;
+  }
+
+  .article-menu-item:hover,
+  .article-menu-item:focus-visible {
+    background: color-mix(in oklch, var(--color-primary-500) 14%, transparent);
+    outline: none;
+  }
+
+  .article-menu-item:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  [data-article-overflow] > summary::-webkit-details-marker {
+    display: none;
   }
 
   @media (hover: hover) and (pointer: fine) {

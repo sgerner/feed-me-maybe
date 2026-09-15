@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { formatContent } from '$lib/utils/format';
   import { buildProxyRequestUrl } from '$lib/proxy';
+  import { fetchWithCsrf } from '$lib/client/csrf';
   import {
     normalizeRedditCommentsUrl,
     parseRedditCommentsResponse,
@@ -64,7 +65,7 @@
   }
 
   async function fetchCommentsFromServer(): Promise<Comment[]> {
-    const res = await fetch('/api/reddit/comments', {
+    const res = await fetchWithCsrf('/api/reddit/comments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: permalink, useProxy }),
@@ -95,7 +96,8 @@
           error = '';
           return;
         } catch (err: unknown) {
-          error = err instanceof Error ? err.message : 'Failed to load comments';
+          error =
+            err instanceof Error ? err.message : 'Failed to load comments';
         }
       }
 

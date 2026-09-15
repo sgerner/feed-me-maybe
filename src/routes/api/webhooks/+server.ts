@@ -1,15 +1,23 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createWebhook, updateWebhook, deleteWebhook } from '$lib/server/webhooks';
+import {
+  createWebhook,
+  updateWebhook,
+  deleteWebhook,
+} from '$lib/server/webhooks';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
-  if (!locals.sessionId) return json({ error: 'Unauthorized' }, { status: 401 });
+  if (!locals.sessionId)
+    return json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await request.json();
   const { name, url, events, secret } = body;
 
   if (!name || !url || !events) {
-    return json({ error: 'name, url, and events are required' }, { status: 400 });
+    return json(
+      { error: 'name, url, and events are required' },
+      { status: 400 },
+    );
   }
 
   try {
@@ -21,7 +29,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 };
 
 export const PATCH: RequestHandler = async ({ request, locals }) => {
-  if (!locals.sessionId) return json({ error: 'Unauthorized' }, { status: 401 });
+  if (!locals.sessionId)
+    return json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await request.json();
   const { id, ...updates } = body;
@@ -37,7 +46,8 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
 };
 
 export const DELETE: RequestHandler = async ({ request, locals }) => {
-  if (!locals.sessionId) return json({ error: 'Unauthorized' }, { status: 401 });
+  if (!locals.sessionId)
+    return json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await request.json();
 

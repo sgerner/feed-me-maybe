@@ -7,6 +7,11 @@ import {
   SESSION_MAX_AGE_MS,
   validateSession,
 } from '$lib/server/auth/session';
+import {
+  consumeLoginAttempt,
+  getClientAddress as getSafeClientAddress,
+  resetLoginAttempts,
+} from '$lib/server/auth/rate-limit';
 
 export const load: PageServerLoad = async ({ cookies }) => {
   const sessionId = cookies.get(getSessionCookieName());
@@ -17,7 +22,16 @@ export const load: PageServerLoad = async ({ cookies }) => {
 };
 
 export const actions: Actions = {
-  default: async ({ request, cookies }) => {
+  default: async ({ request, cookies, getClientAddress }) => {
+    const address = getSafeClientAddress(getClientAddress);
+    const rate = consumeLoginAttempt(address);
+    if (!rate.allowed) {
+      return fail(429, {
+        error: 'Too many attempts. Try again later.',
+        retryAfterSeconds: rate.retryAfterSeconds || 300,
+      });
+    }
+
     const data = await request.formData();
     const password = data.get('password');
 
@@ -30,6 +44,7 @@ export const actions: Actions = {
     }
 
     const session = createSession();
+    resetLoginAttempts(getSafeClientAddress(getClientAddress));
     cookies.set(getSessionCookieName(), session.id, {
       path: '/',
       httpOnly: true,

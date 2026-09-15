@@ -1,6 +1,5 @@
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
-import { decrypt } from '$lib/server/ai/crypto';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};
@@ -18,23 +17,15 @@ export const load: PageServerLoad = async ({ locals }) => {
     custom_base_url: string | null;
   }>;
 
-  const decryptedConfigs = configs.map((c) => {
-    const decryptedRaw = decrypt(
-      c.api_key_encrypted || '',
-      c.api_key_nonce || '',
-    );
-    const config = (() => {
-      try {
-        return JSON.parse(decryptedRaw) as Record<string, string>;
-      } catch {
-        return { apiKey: decryptedRaw };
-      }
-    })();
+  const safeConfigs = configs.map((c) => {
     return {
-      ...c,
-      config,
+      id: c.id,
+      provider_id: c.provider_id,
+      model_id: c.model_id,
+      custom_base_url: c.custom_base_url,
+      has_api_key: Boolean(c.api_key_encrypted && c.api_key_nonce),
     };
   });
 
-  return { configs: decryptedConfigs };
+  return { configs: safeConfigs };
 };

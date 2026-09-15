@@ -1,10 +1,18 @@
 import crypto from 'node:crypto';
 import { env } from '$env/dynamic/private';
 
-const APP_SECRET = env.APP_SECRET || 'dev-secret-key-32-chars-min!!';
+function getAppSecret(): string {
+  const secret = process.env.APP_SECRET || env.APP_SECRET;
+  if (!secret || secret.length < 32) {
+    throw new Error(
+      'APP_SECRET must be set to a random value of at least 32 characters before storing encrypted credentials.',
+    );
+  }
+  return secret;
+}
 
 export function encrypt(text: string): { encrypted: string; nonce: string } {
-  const key = crypto.createHash('sha256').update(APP_SECRET).digest();
+  const key = crypto.createHash('sha256').update(getAppSecret()).digest();
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
   let encrypted = cipher.update(text, 'utf8', 'hex');
@@ -15,7 +23,7 @@ export function encrypt(text: string): { encrypted: string; nonce: string } {
 
 export function decrypt(encrypted: string, nonceHex: string): string {
   try {
-    const key = crypto.createHash('sha256').update(APP_SECRET).digest();
+    const key = crypto.createHash('sha256').update(getAppSecret()).digest();
     const nonce = Buffer.from(nonceHex, 'hex');
     const authTag = Buffer.from(encrypted.slice(-32), 'hex');
     const ciphertext = encrypted.slice(0, -32);

@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { isArticleOpenMode } from '$lib/constants/article-open-modes';
+import { getFeedHealth } from '$lib/server/feed-management';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {
@@ -15,7 +16,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     return json({ error: 'Feed not found' }, { status: 404 });
   }
 
-  return json({ feed });
+  return json({ feed, health: getFeedHealth(params.id) });
 };
 
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
@@ -39,7 +40,13 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   // Build update SET clause dynamically
-  const allowedFields = ['title', 'category', 'enabled', 'open_mode', 'use_proxy'];
+  const allowedFields = [
+    'title',
+    'category',
+    'enabled',
+    'open_mode',
+    'use_proxy',
+  ];
   const updates: string[] = [];
   const values: (string | number | boolean | null)[] = [];
 
@@ -51,7 +58,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       if (field === 'use_proxy' && typeof body[field] !== 'boolean') {
         return json({ error: 'use_proxy must be a boolean' }, { status: 400 });
       }
-      if (field === 'open_mode' && body[field] !== null && !isArticleOpenMode(body[field])) {
+      if (
+        field === 'open_mode' &&
+        body[field] !== null &&
+        !isArticleOpenMode(body[field])
+      ) {
         return json({ error: 'Invalid open mode' }, { status: 400 });
       }
       updates.push(`${field === 'open_mode' ? 'open_mode' : field} = ?`);
@@ -85,7 +96,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(params.id);
-  return json({ feed });
+  return json({ feed, health: getFeedHealth(params.id) });
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {

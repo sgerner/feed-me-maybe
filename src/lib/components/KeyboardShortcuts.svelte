@@ -2,6 +2,8 @@
   import { fade, fly } from 'svelte/transition';
 
   let { open = $bindable(false) } = $props();
+  let dialogEl = $state<HTMLDivElement | null>(null);
+  let previouslyFocused: HTMLElement | null = null;
 
   const shortcuts = [
     { key: 'j', description: 'Focus next article' },
@@ -9,9 +11,31 @@
     { key: 'o', description: 'Open focused article' },
     { key: 'h', description: 'Hide focused article' },
     { key: 's', description: 'Save focused article' },
+    { key: 'm', description: 'Mark focused article as read' },
     { key: 'Enter', description: 'Open article (when focused)' },
     { key: 'Space', description: 'Open article (when focused)' },
   ];
+
+  $effect(() => {
+    if (!open) return;
+
+    previouslyFocused = document.activeElement as HTMLElement | null;
+    requestAnimationFrame(() => dialogEl?.focus());
+
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        open = false;
+      }
+    };
+    document.addEventListener('keydown', handleKeydown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeydown);
+      previouslyFocused?.focus?.();
+      previouslyFocused = null;
+    };
+  });
 </script>
 
 {#if open}
@@ -22,13 +46,20 @@
     role="presentation"
   >
     <div
+      bind:this={dialogEl}
       class="glass-card w-full max-w-sm p-6 shadow-2xl"
       transition:fly={{ y: 20, duration: 300 }}
       onclick={(e) => e.stopPropagation()}
-      role="presentation"
+      onkeydown={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="keyboard-shortcuts-title"
+      tabindex="-1"
     >
       <div class="mb-6 flex items-center justify-between">
-        <h3 class="text-lg font-bold">Keyboard Shortcuts</h3>
+        <h3 id="keyboard-shortcuts-title" class="text-lg font-bold">
+          Keyboard Shortcuts
+        </h3>
         <button
           class="btn-icon"
           onclick={() => (open = false)}

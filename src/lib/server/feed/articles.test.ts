@@ -92,7 +92,9 @@ describe('feed article queries', () => {
     expect(result.hiddenContentLimit).toBe(30);
     expect(result.totalArticles).toBe(1);
     expect(result.totalPages).toBe(1);
-    expect(result.articles.map((article) => article.id)).toEqual(['auto-model']);
+    expect(result.articles.map((article) => article.id)).toEqual([
+      'auto-model',
+    ]);
   });
 
   it('limits hidden content to the 30 most recent model-hidden articles', async () => {

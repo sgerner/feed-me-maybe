@@ -1,5 +1,8 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
+  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { cacheSavedArticles } from '$lib/offline';
+  import { getCachedSavedArticles } from '$lib/offline';
   import { fly, fade } from 'svelte/transition';
   type SavedArticle = {
     id: string;
@@ -14,21 +17,40 @@
 
   $effect(() => {
     articles = pageData.articles;
+    if (typeof window !== 'undefined') {
+      void cacheSavedArticles('admin', pageData.articles).catch(
+        () => undefined,
+      );
+    }
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined' || navigator.onLine !== false) return;
+    if (articles.length > 0) return;
+    void getCachedSavedArticles('admin', 100)
+      .then((cached) => {
+        if (articles.length === 0 && cached.length > 0) articles = cached;
+      })
+      .catch(() => undefined);
   });
 
   async function unsave(articleId: string) {
     if (pendingArticleIds[articleId]) return;
 
-    const articleIndex = articles.findIndex((article: SavedArticle) => article.id === articleId);
+    const articleIndex = articles.findIndex(
+      (article: SavedArticle) => article.id === articleId,
+    );
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
 
     if (!previousArticle) return;
 
-    articles = articles.filter((article: SavedArticle) => article.id !== articleId);
+    articles = articles.filter(
+      (article: SavedArticle) => article.id !== articleId,
+    );
     pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
 
     try {
-      const res = await fetch('/api/interactions', {
+      const res = await fetchWithCsrf('/api/interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ articleId, type: 'unsave' }),
@@ -54,6 +76,7 @@
 
 <div class="mx-auto max-w-7xl">
   <div class="mb-8">
+    <p class="eyebrow text-primary-300">Saved articles</p>
     <h1 class="section-title">Saved</h1>
     <p class="section-subtitle">{articles.length} saved articles</p>
   </div>
@@ -76,12 +99,8 @@
           <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" />
         </svg>
       </div>
-      <p class="text-surface-300 mb-1 text-lg font-medium">
-        No saved articles yet
-      </p>
-      <p class="section-subtitle">
-        Save articles from All Feeds to read later.
-      </p>
+      <p class="text-surface-300 mb-1 text-lg font-medium">No saved articles</p>
+      <p class="section-subtitle">Save an article to read it later.</p>
     </div>
   {:else}
     <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">

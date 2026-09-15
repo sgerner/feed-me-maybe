@@ -1,15 +1,102 @@
 import { marked } from 'marked';
+import sanitizeHtmlLib from 'sanitize-html';
 
-function normalizeLinksInHtml(html: string): string {
-  return html.replace(/<a\b([^>]*)>/gi, (match, attrs) => {
-    let newAttrs = attrs.trim();
-    if (!newAttrs.includes('target=')) {
-      newAttrs += ' target="_blank"';
-    }
-    if (!newAttrs.includes('rel=')) {
-      newAttrs += ' rel="noopener noreferrer"';
-    }
-    return `<a ${newAttrs}>`;
+const ALLOWED_TAGS = [
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'cite',
+  'code',
+  'del',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  'q',
+  's',
+  'samp',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+] as const;
+
+const ALLOWED_ATTRIBUTES = {
+  '*': ['dir', 'lang', 'title'],
+  a: ['href', 'target', 'rel'],
+  img: ['src', 'alt', 'width', 'height', 'loading', 'decoding'],
+  ol: ['start', 'reversed', 'type'],
+  li: ['value'],
+  table: ['border', 'cellpadding', 'cellspacing'],
+  td: ['colspan', 'rowspan', 'headers'],
+  th: ['colspan', 'rowspan', 'headers', 'scope'],
+};
+
+/**
+ * Sanitize content from feeds, AI providers, archives, and Reddit before it
+ * reaches a Svelte {@html} sink. Keeping this policy centralized prevents a
+ * newly added renderer from accidentally reintroducing executable markup.
+ */
+export function sanitizeHtml(html: string | null | undefined): string {
+  if (!html) return '';
+
+  return sanitizeHtmlLib(html, {
+    allowedTags: [...ALLOWED_TAGS],
+    allowedAttributes: ALLOWED_ATTRIBUTES,
+    allowedSchemes: ['http', 'https', 'mailto', 'tel'],
+    allowedSchemesByTag: {
+      a: ['http', 'https', 'mailto', 'tel'],
+      img: ['http', 'https'],
+    },
+    allowedSchemesAppliedToAttributes: ['href', 'src'],
+    allowProtocolRelative: false,
+    disallowedTagsMode: 'discard',
+    nonTextTags: [
+      'script',
+      'style',
+      'textarea',
+      'option',
+      'noscript',
+      'template',
+    ],
+    transformTags: {
+      a: sanitizeHtmlLib.simpleTransform(
+        'a',
+        { target: '_blank', rel: 'noopener noreferrer' },
+        true,
+      ),
+    },
   });
 }
 
@@ -52,25 +139,25 @@ export function formatContent(text: string | null | undefined): string {
     return `<a href="${href}"${title ? ` title="${title}"` : ''} target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
 
-  let html = marked.parse(text, {
+  const html = marked.parse(text, {
     renderer,
     gfm: true,
     breaks: true,
     async: false,
   }) as string;
 
-  return normalizeLinksInHtml(html);
+  return sanitizeHtml(html);
 }
 
 /**
  * Renders content that may already be HTML or may be markdown/plain text.
- * HTML is preserved and only link targets are normalized.
+ * HTML is preserved only within the strict allowlist above.
  */
 export function renderContent(text: string | null | undefined): string {
   if (!text) return '';
 
   if (looksLikeHtml(text)) {
-    return normalizeLinksInHtml(decodeHtmlEntities(text));
+    return sanitizeHtml(decodeHtmlEntities(text));
   }
 
   return formatContent(text);

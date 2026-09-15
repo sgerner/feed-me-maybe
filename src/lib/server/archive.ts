@@ -1,6 +1,15 @@
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
-import { formatContent } from '../utils/format';
+import {
+  formatContent,
+  sanitizeHtml as sanitizeContent,
+} from '../utils/format';
+import {
+  MAX_HTML_RESPONSE_BYTES,
+  assertPublicNetworkUrl,
+  fetchSafe,
+  readResponseText,
+} from './network';
 
 const ARCHIVE_MIRRORS = [
   'https://archive.is',
@@ -43,19 +52,25 @@ function buildHeaders(): HeadersInit {
   };
 }
 
-async function fetchPage(url: string, timeoutMs = 15000): Promise<{ url: string; html: string } | null> {
+async function fetchPage(
+  url: string,
+  timeoutMs = 15000,
+): Promise<{ url: string; html: string } | null> {
   try {
-    const response = await fetch(url, {
-      headers: buildHeaders(),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    const { response, finalUrl } = await fetchSafe(
+      url,
+      {
+        headers: buildHeaders(),
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      {
+        maxBytes: MAX_HTML_RESPONSE_BYTES,
+        allowedContentTypes: ['text/html', 'application/xhtml+xml'],
+      },
+    );
     if (!response.ok) return null;
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/html')) {
-      return null;
-    }
-    const html = await response.text();
-    return { url: response.url, html };
+    const html = await readResponseText(response, MAX_HTML_RESPONSE_BYTES);
+    return { url: finalUrl, html };
   } catch (err) {
     return null;
   }
@@ -64,7 +79,8 @@ async function fetchPage(url: string, timeoutMs = 15000): Promise<{ url: string;
 function isCloudflareChallenge(html: string): boolean {
   // Actual archive snapshots have <html style="background-color:#EEEEEE">
   // Challenge pages have plain <html> with challenge text
-  const hasSnapshotStyle = /<html\b[^>]*style="[^"]*background-color\s*:\s*#EEEEEE[^"]*"/i.test(html);
+  const hasSnapshotStyle =
+    /<html\b[^>]*style="[^"]*background-color\s*:\s*#EEEEEE[^"]*"/i.test(html);
   if (hasSnapshotStyle) {
     return false;
   }
@@ -102,15 +118,22 @@ function isCloudflareChallenge(html: string): boolean {
 }
 
 function isArchiveSnapshotPage(html: string): boolean {
-  return /<html\b[^>]*style="[^"]*background-color\s*:\s*#EEEEEE[^"]*"/i.test(html);
+  return /<html\b[^>]*style="[^"]*background-color\s*:\s*#EEEEEE[^"]*"/i.test(
+    html,
+  );
 }
 
 function isArchiveSearchPage(html: string): boolean {
   // Search results pages have the yellow/beige background
-  return /<html\b[^>]*style="[^"]*background-color\s*:\s*#FFFAE1[^"]*"/i.test(html);
+  return /<html\b[^>]*style="[^"]*background-color\s*:\s*#FFFAE1[^"]*"/i.test(
+    html,
+  );
 }
 
-function extractSnapshotIdsFromSearchPage(html: string, baseHost: string): string[] {
+function extractSnapshotIdsFromSearchPage(
+  html: string,
+  baseHost: string,
+): string[] {
   const ids = new Set<string>();
   const regex = /href=(['"])([^'"]+)\1/gi;
   let match: RegExpExecArray | null;
@@ -128,7 +151,8 @@ function extractSnapshotIdsFromSearchPage(html: string, baseHost: string): strin
       // Skip non-archive hosts and non-snapshot paths
       if (!ARCHIVE_MIRRORS.some((m) => m === host)) continue;
       if (!path || path.includes('/') || path.length < 4) continue;
-      if (path === 'search' || path === 'loading' || path.startsWith('http')) continue;
+      if (path === 'search' || path === 'loading' || path.startsWith('http'))
+        continue;
       if (!/^[A-Za-z0-9_-]+$/.test(path)) continue;
 
       ids.add(`${host}/${path}`);
@@ -140,7 +164,10 @@ function extractSnapshotIdsFromSearchPage(html: string, baseHost: string): strin
   return [...ids];
 }
 
-function extractMetaContent(html: string, property: string): string | undefined {
+function extractMetaContent(
+  html: string,
+  property: string,
+): string | undefined {
   const metaRegex = /<meta\b[^>]*>/gi;
   let match: RegExpExecArray | null;
 
@@ -159,7 +186,16 @@ function extractMetaContent(html: string, property: string): string | undefined 
 }
 
 function extractImageFromHtml(html: string): string | undefined {
-  return extractMetaContent(html, 'og:image');
+  const image = extractMetaContent(html, 'og:image');
+  if (!image) return undefined;
+  try {
+    const parsed = new URL(image);
+    return ['http:', 'https:'].includes(parsed.protocol)
+      ? parsed.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -180,47 +216,37 @@ function extractTitleFromHtml(html: string, fallback: string): string {
   if (ogTitle) return decodeHtmlEntities(ogTitle);
 
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (titleMatch?.[1]) return decodeHtmlEntities(stripTags(titleMatch[1])).trim();
+  if (titleMatch?.[1])
+    return decodeHtmlEntities(stripTags(titleMatch[1])).trim();
 
   return fallback;
 }
 
-function sanitizeHtml(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
-    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '')
-    .replace(/<embed\b[^>]*>/gi, '')
-    .replace(/<form\b[^>]*>[\s\S]*?<\/form>/gi, '')
-    .replace(/<button\b[^>]*>[\s\S]*?<\/button>/gi, '')
-    .replace(/<(?:nav|header|footer|aside)\b[^>]*>[\s\S]*?<\/(?:nav|header|footer|aside)>/gi, '')
-    .replace(/\son[a-z]+=(["']).*?\1/gi, '');
-}
-
 function absolutizeUrls(html: string, baseUrl: string): string {
   const attrRegex = /\b(href|src|poster)=("([^"]*)"|'([^']*)')/gi;
-  return html.replace(attrRegex, (_match, attrName, _value, doubleQuoted, singleQuoted) => {
-    const raw = (doubleQuoted || singleQuoted || '').trim();
-    if (
-      !raw ||
-      raw.startsWith('#') ||
-      raw.startsWith('mailto:') ||
-      raw.startsWith('tel:') ||
-      raw.startsWith('data:') ||
-      raw.startsWith('javascript:')
-    ) {
-      return `${attrName}="${raw}"`;
-    }
+  return html.replace(
+    attrRegex,
+    (_match, attrName, _value, doubleQuoted, singleQuoted) => {
+      const raw = (doubleQuoted || singleQuoted || '').trim();
+      if (
+        !raw ||
+        raw.startsWith('#') ||
+        raw.startsWith('mailto:') ||
+        raw.startsWith('tel:') ||
+        raw.startsWith('data:') ||
+        raw.startsWith('javascript:')
+      ) {
+        return `${attrName}="${raw}"`;
+      }
 
-    try {
-      const resolved = new URL(raw, baseUrl).toString();
-      return `${attrName}="${resolved}"`;
-    } catch {
-      return `${attrName}="${raw}"`;
-    }
-  });
+      try {
+        const resolved = new URL(raw, baseUrl).toString();
+        return `${attrName}="${resolved}"`;
+      } catch {
+        return `${attrName}="${raw}"`;
+      }
+    },
+  );
 }
 
 function extractCandidateHtml(html: string): string {
@@ -241,14 +267,17 @@ function extractCandidateHtml(html: string): string {
     }
   }
 
-  return sanitizeHtml(best || body);
+  return best || body;
 }
 
 function normalizeContent(html: string, baseUrl: string): string {
-  return absolutizeUrls(sanitizeHtml(html), baseUrl);
+  return sanitizeContent(absolutizeUrls(html, baseUrl));
 }
 
-function extractWithReadability(html: string, pageUrl: string): { title: string; content: string } | null {
+function extractWithReadability(
+  html: string,
+  pageUrl: string,
+): { title: string; content: string } | null {
   try {
     const { document } = parseHTML(html);
     const reader = new Readability(document);
@@ -263,7 +292,11 @@ function extractWithReadability(html: string, pageUrl: string): { title: string;
   }
 }
 
-function extractWithFallback(html: string, pageUrl: string, fallbackTitle: string): { title: string; content: string; imageUrl?: string } | null {
+function extractWithFallback(
+  html: string,
+  pageUrl: string,
+  fallbackTitle: string,
+): { title: string; content: string; imageUrl?: string } | null {
   const title = extractTitleFromHtml(html, fallbackTitle);
   const imageUrl = extractImageFromHtml(html);
   const extractedHtml = extractCandidateHtml(html);
@@ -334,10 +367,13 @@ async function tryArchiveMirror(
     return null;
   }
 
-
   // If it's a direct snapshot page, extract content immediately
   if (isArchiveSnapshotPage(searchPage.html)) {
-    const result = await extractFromSnapshotPage(searchPage.html, searchPage.url, fallbackTitle);
+    const result = await extractFromSnapshotPage(
+      searchPage.html,
+      searchPage.url,
+      fallbackTitle,
+    );
     if (result) {
       return result;
     }
@@ -350,8 +386,14 @@ async function tryArchiveMirror(
   }
 
   // If it's a search results page, parse snapshot IDs and try each
-  if (isArchiveSearchPage(searchPage.html) || searchPage.html.includes('archive.')) {
-    const snapshotUrls = extractSnapshotIdsFromSearchPage(searchPage.html, mirror);
+  if (
+    isArchiveSearchPage(searchPage.html) ||
+    searchPage.html.includes('archive.')
+  ) {
+    const snapshotUrls = extractSnapshotIdsFromSearchPage(
+      searchPage.html,
+      mirror,
+    );
 
     for (const snapshotUrl of snapshotUrls.slice(0, 5)) {
       const snapshotPage = await fetchPage(snapshotUrl, 15000);
@@ -360,7 +402,11 @@ async function tryArchiveMirror(
       }
 
       if (isArchiveSnapshotPage(snapshotPage.html)) {
-        const result = await extractFromSnapshotPage(snapshotPage.html, snapshotPage.url, fallbackTitle);
+        const result = await extractFromSnapshotPage(
+          snapshotPage.html,
+          snapshotPage.url,
+          fallbackTitle,
+        );
         if (result) {
           return result;
         }
@@ -376,17 +422,27 @@ async function tryArchiveMirror(
   return null;
 }
 
-async function tryJinaAi(originalUrl: string, fallbackTitle: string): Promise<ArchivedArticle | null> {
+async function tryJinaAi(
+  originalUrl: string,
+  fallbackTitle: string,
+): Promise<ArchivedArticle | null> {
   try {
     const jinaUrl = `https://r.jina.ai/http://${originalUrl.replace(/^https?:\/\//, '')}`;
-    const response = await fetch(jinaUrl, {
-      headers: {
-        'User-Agent': ARCHIVE_USER_AGENT,
+    const { response } = await fetchSafe(
+      jinaUrl,
+      {
+        headers: {
+          'User-Agent': ARCHIVE_USER_AGENT,
+        },
+        signal: AbortSignal.timeout(20000),
       },
-      signal: AbortSignal.timeout(20000),
-    });
+      {
+        maxBytes: MAX_HTML_RESPONSE_BYTES,
+        allowedContentTypes: ['text/plain', 'text/markdown', 'text/html'],
+      },
+    );
     if (!response.ok) return null;
-    const text = await response.text();
+    const text = await readResponseText(response, MAX_HTML_RESPONSE_BYTES);
     if (!text.trim()) return null;
 
     // Parse jina.ai markdown format
@@ -400,7 +456,13 @@ async function tryJinaAi(originalUrl: string, fallbackTitle: string): Promise<Ar
       content = contentMatch[1].trim();
     } else {
       // Fallback: use everything after the metadata
-      content = text.replace(/^Title:.*$/gm, '').replace(/^URL Source:.*$/gm, '').replace(/^Published Time:.*$/gm, '').replace(/^Warning:.*$/gm, '').replace(/^Markdown Content:.*$/gm, '').trim();
+      content = text
+        .replace(/^Title:.*$/gm, '')
+        .replace(/^URL Source:.*$/gm, '')
+        .replace(/^Published Time:.*$/gm, '')
+        .replace(/^Warning:.*$/gm, '')
+        .replace(/^Markdown Content:.*$/gm, '')
+        .trim();
     }
 
     if (!content) {
@@ -424,6 +486,13 @@ export async function fetchArchivedArticle(
   originalUrl: string,
   fallbackTitle: string,
 ): Promise<ArchivedArticle | null> {
+  try {
+    // Validate before sending the URL to an archive mirror or extraction
+    // service, and again before fetching the original after redirects.
+    await assertPublicNetworkUrl(originalUrl);
+  } catch {
+    return null;
+  }
 
   // 1. Try archive mirrors in rotation
   for (const mirror of ARCHIVE_MIRRORS) {
@@ -433,18 +502,19 @@ export async function fetchArchivedArticle(
     }
   }
 
-
   // 2. Fallback: jina.ai content extraction (often bypasses paywalls)
   const jinaResult = await tryJinaAi(originalUrl, fallbackTitle);
   if (jinaResult) {
     return jinaResult;
   }
 
-
   // 3. Last resort: fetch original directly with Readability
   const originalPage = await fetchPage(originalUrl, 15000);
   if (originalPage) {
-    const readability = extractWithReadability(originalPage.html, originalPage.url);
+    const readability = extractWithReadability(
+      originalPage.html,
+      originalPage.url,
+    );
     if (readability?.content && !isGarbageContent(readability.content)) {
       return {
         archiveUrl: originalPage.url,
@@ -453,7 +523,11 @@ export async function fetchArchivedArticle(
         imageUrl: extractImageFromHtml(originalPage.html),
       };
     }
-    const fallback = extractWithFallback(originalPage.html, originalPage.url, fallbackTitle);
+    const fallback = extractWithFallback(
+      originalPage.html,
+      originalPage.url,
+      fallbackTitle,
+    );
     if (fallback && !isGarbageContent(fallback.content)) {
       return {
         archiveUrl: originalPage.url,

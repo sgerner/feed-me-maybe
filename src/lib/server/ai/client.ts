@@ -13,7 +13,11 @@ interface AiClientConfig {
 
 function clampScore(value: unknown): number {
   const parsed =
-    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number(value)
+        : NaN;
   if (!Number.isFinite(parsed)) return 0;
   return Math.max(0, Math.min(1, parsed));
 }
@@ -63,7 +67,11 @@ function normalizeSignals(data: Record<string, unknown>): string[] {
 
 function normalizeLikelihood(value: unknown): string {
   const normalized = normalizeTag(value);
-  if (normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+  if (
+    normalized === 'high' ||
+    normalized === 'medium' ||
+    normalized === 'low'
+  ) {
     return normalized;
   }
   return '';

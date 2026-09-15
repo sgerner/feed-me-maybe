@@ -292,7 +292,13 @@ describe('preference learning model', () => {
     ).run('hide_on_open', 'false', now);
     db.prepare(
       'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    ).run('feed-feedback', 'https://example.com/feedback', 'Feedback Feed', now, now);
+    ).run(
+      'feed-feedback',
+      'https://example.com/feedback',
+      'Feedback Feed',
+      now,
+      now,
+    );
 
     const insertArticle = (id: string, title: string, author: string) => {
       db.prepare(
@@ -312,9 +318,21 @@ describe('preference learning model', () => {
 
     insertArticle('a-open-feedback', 'Open feedback article', 'Open Example');
     insertArticle('a-hide-feedback', 'Hide feedback article', 'Hide Example');
-    insertArticle('a-thumb-up-feedback', 'Thumb up feedback article', 'Thumb Up Example');
-    insertArticle('a-thumb-down-feedback', 'Thumb down feedback article', 'Thumb Down Example');
-    insertArticle('a-boost-feedback', 'Boost feedback article', 'Boost Example');
+    insertArticle(
+      'a-thumb-up-feedback',
+      'Thumb up feedback article',
+      'Thumb Up Example',
+    );
+    insertArticle(
+      'a-thumb-down-feedback',
+      'Thumb down feedback article',
+      'Thumb Down Example',
+    );
+    insertArticle(
+      'a-boost-feedback',
+      'Boost feedback article',
+      'Boost Example',
+    );
 
     recordInteraction('a-open-feedback', 'open');
     recordInteraction('a-hide-feedback', 'hide');
@@ -346,7 +364,10 @@ describe('preference learning model', () => {
     const openStrength = getStrength('author:open_example', 'positive');
     const hideStrength = getStrength('author:hide_example', 'negative');
     const thumbsUpStrength = getStrength('author:thumb_up_example', 'positive');
-    const thumbsDownStrength = getStrength('author:thumb_down_example', 'negative');
+    const thumbsDownStrength = getStrength(
+      'author:thumb_down_example',
+      'negative',
+    );
     const boostStrength = getStrength('author:boost_example', 'positive');
 
     expect(openStrength).toBeGreaterThan(0);

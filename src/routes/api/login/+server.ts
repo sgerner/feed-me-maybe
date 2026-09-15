@@ -6,8 +6,32 @@ import {
   setSessionCookie,
   getSessionCookieName,
 } from '$lib/server/auth/session';
+import {
+  consumeLoginAttempt,
+  getClientAddress as getSafeClientAddress,
+  resetLoginAttempts,
+} from '$lib/server/auth/rate-limit';
 
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async ({
+  request,
+  cookies,
+  getClientAddress,
+}) => {
+  const address = getSafeClientAddress(getClientAddress);
+  const rate = consumeLoginAttempt(address);
+  if (!rate.allowed) {
+    return json(
+      { error: 'Too many attempts. Try again later.' },
+      {
+        status: 429,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Retry-After': String(rate.retryAfterSeconds || 300),
+        },
+      },
+    );
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -25,12 +49,14 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
   }
 
   const session = createSession();
+  resetLoginAttempts(getSafeClientAddress(getClientAddress));
   const cookieHeader = setSessionCookie(session.id);
 
   return new Response(JSON.stringify({ success: true }), {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
       'Set-Cookie': cookieHeader,
     },
   });

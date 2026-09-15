@@ -1,5 +1,18 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { createWebhook, dispatchWebhookEvent, deleteWebhook } from './webhooks';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from 'vitest';
+import {
+  createWebhook,
+  dispatchWebhookEvent,
+  deleteWebhook,
+  getWebhooks,
+} from './webhooks';
 import { recordInteraction } from './interactions';
 import { closeDb, getDb } from './db';
 import { initializeDatabase } from './db/migrate';
@@ -32,14 +45,18 @@ describe('Webhooks', () => {
     receivedRequest = null;
     server = http.createServer((req, res) => {
       let body = '';
-      req.on('data', chunk => { body += chunk; });
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
       req.on('end', () => {
         try {
           receivedRequest = {
             headers: req.headers,
-            body: JSON.parse(body)
+            body: JSON.parse(body),
           };
-        } catch (e) {}
+        } catch {
+          receivedRequest = null;
+        }
         res.writeHead(200);
         res.end('OK');
       });
@@ -61,21 +78,28 @@ describe('Webhooks', () => {
   });
 
   it('should register and dispatch a webhook event', async () => {
-    const hookId = createWebhook('Test Hook', WEBHOOK_URL, ['article.saved'], 'test-secret');
-    
+    const hookId = createWebhook(
+      'Test Hook',
+      WEBHOOK_URL,
+      ['article.saved'],
+      'test-secret',
+    );
+
     const event = {
       type: 'article.saved' as const,
       timestamp: Date.now(),
-      payload: { article: { id: '123', title: 'Test' } }
+      payload: { article: { id: '123', title: 'Test' } },
     };
 
     await dispatchWebhookEvent(event);
 
     // Wait a bit for async dispatch
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     expect(receivedRequest).not.toBeNull();
-    expect(receivedRequest.headers['x-feed-me-maybe-event']).toBe('article.saved');
+    expect(receivedRequest.headers['x-feed-me-maybe-event']).toBe(
+      'article.saved',
+    );
     expect(receivedRequest.headers['x-feed-me-maybe-signature']).toBeDefined();
     expect(receivedRequest.body.type).toBe('article.saved');
     expect(receivedRequest.body.payload.article.title).toBe('Test');
@@ -83,18 +107,38 @@ describe('Webhooks', () => {
     deleteWebhook(hookId);
   });
 
+  it('does not expose webhook secrets through settings data', () => {
+    const hookId = createWebhook(
+      'Private Hook',
+      WEBHOOK_URL,
+      ['article.saved'],
+      'test-secret',
+    );
+    const db = getDb();
+    const stored = db
+      .prepare('SELECT secret FROM webhooks WHERE id = ?')
+      .get(hookId) as { secret: string };
+    const publicHook = getWebhooks().find((hook) => hook.id === hookId);
+
+    expect(stored.secret).not.toBe('test-secret');
+    expect(publicHook).toMatchObject({ has_secret: 1 });
+    expect(publicHook).not.toHaveProperty('secret');
+
+    deleteWebhook(hookId);
+  });
+
   it('should not dispatch if event type is not subscribed', async () => {
     const hookId = createWebhook('Test Hook', WEBHOOK_URL, ['other.event']);
-    
+
     const event = {
       type: 'article.saved' as const,
       timestamp: Date.now(),
-      payload: { article: { id: '123' } }
+      payload: { article: { id: '123' } },
     };
 
     await dispatchWebhookEvent(event);
 
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
     expect(receivedRequest).toBeNull();
 
     deleteWebhook(hookId);
@@ -103,18 +147,34 @@ describe('Webhooks', () => {
   it('should trigger webhook when article is saved via recordInteraction', async () => {
     // Seed an article
     const db = getDb();
-    db.prepare('INSERT OR IGNORE INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)').run('test-feed', 'http://test.com', 'Test Feed', Date.now(), Date.now());
-    db.prepare('INSERT OR IGNORE INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run('test-article', 'test-feed', 'http://test.com/a1', 'Test Article', Date.now(), Date.now(), Date.now());
+    db.prepare(
+      'INSERT OR IGNORE INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run('test-feed', 'http://test.com', 'Test Feed', Date.now(), Date.now());
+    db.prepare(
+      'INSERT OR IGNORE INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'test-article',
+      'test-feed',
+      'http://test.com/a1',
+      'Test Article',
+      Date.now(),
+      Date.now(),
+      Date.now(),
+    );
 
-    const hookId = createWebhook('Integration Hook', WEBHOOK_URL, ['article.saved']);
-    
+    const hookId = createWebhook('Integration Hook', WEBHOOK_URL, [
+      'article.saved',
+    ]);
+
     recordInteraction('test-article', 'save');
 
     // Wait a bit for async dispatch
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     expect(receivedRequest).not.toBeNull();
-    expect(receivedRequest.headers['x-feed-me-maybe-event']).toBe('article.saved');
+    expect(receivedRequest.headers['x-feed-me-maybe-event']).toBe(
+      'article.saved',
+    );
     expect(receivedRequest.body.payload.article.id).toBe('test-article');
 
     deleteWebhook(hookId);

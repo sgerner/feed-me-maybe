@@ -5,6 +5,7 @@
   import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
+  import { fetchWithCsrf } from '$lib/client/csrf';
 
   type FeedArticle = {
     id: string;
@@ -128,7 +129,7 @@
     saving = true;
     saveSuccess = false;
     try {
-      const res = await fetch(`/api/feeds/${pageData.feedId}`, {
+      const res = await fetchWithCsrf(`/api/feeds/${pageData.feedId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -174,7 +175,7 @@
 
     deleting = true;
     try {
-      const res = await fetch(`/api/feeds/${pageData.feedId}`, {
+      const res = await fetchWithCsrf(`/api/feeds/${pageData.feedId}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -201,7 +202,7 @@
 
     clearing = true;
     try {
-      const res = await fetch(`/api/feeds/${pageData.feedId}/clear`, {
+      const res = await fetchWithCsrf(`/api/feeds/${pageData.feedId}/clear`, {
         method: 'POST',
       });
       if (res.ok) {
@@ -288,7 +289,9 @@
     </div>
   </div>
 
-  <div class="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+  <div
+    class="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between"
+  >
     <div class="min-w-0 flex-1">
       <h1 class="section-title break-words">{feed.title || 'Untitled Feed'}</h1>
       {#if feed.source_type === 'reddit'}
@@ -313,7 +316,8 @@
               <span>Search: {meta.query}</span>
             {/if}
             {#if meta.redditKind}
-              <span class="capitalize">{meta.redditKind.replace('_', ' ')}</span>
+              <span class="capitalize">{meta.redditKind.replace('_', ' ')}</span
+              >
             {/if}
           </div>
         {/if}
@@ -367,7 +371,9 @@
             <path
               d="M3.98 8.223A10.94 10.94 0 0 1 12 5c5.5 0 9.5 3.5 11 7a10.94 10.94 0 0 1-4.203 5.277"
             />
-            <path d="M6.228 6.228A11 11 0 0 0 2 12c1.5 3.5 5.5 7 10 7 1.223 0 2.37-.184 3.428-.514" />
+            <path
+              d="M6.228 6.228A11 11 0 0 0 2 12c1.5 3.5 5.5 7 10 7 1.223 0 2.37-.184 3.428-.514"
+            />
             <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
             <path d="m1 1 22 22" />
           </svg>
@@ -408,7 +414,9 @@
       class="mb-6 overflow-hidden rounded-sm border"
       style="border-color: color-mix(in oklch, var(--color-secondary-500) 18%, transparent); background: linear-gradient(135deg, color-mix(in oklch, var(--color-secondary-500) 14%, transparent), color-mix(in oklch, var(--color-primary-500) 8%, transparent));"
     >
-      <div class="flex flex-col gap-4 p-4 md:flex-row md:items-center md:justify-between md:p-5">
+      <div
+        class="flex flex-col gap-4 p-4 md:flex-row md:items-center md:justify-between md:p-5"
+      >
         <div class="flex min-w-0 items-start gap-3">
           <div
             class="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
@@ -423,19 +431,23 @@
               stroke="currentColor"
               stroke-width="2"
             >
-              <path d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z" />
+              <path
+                d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z"
+              />
             </svg>
           </div>
           <div class="min-w-0">
-            <p class="text-sm font-semibold text-surface-50">Auto-hidden review</p>
+            <p class="text-sm font-semibold text-surface-50">
+              Auto-hidden review
+            </p>
             <p
               class="mt-1 max-w-2xl text-sm"
               style="color: color-mix(in oklch, var(--color-surface-100) 84%, transparent);"
             >
-              These are the {pageData.hiddenContentLimit || 30} most recent
-              articles the model hid automatically. Use <strong>Keep &amp;
-              boost</strong> to restore a story to your feeds and give it a much
-              stronger positive signal than a standard thumbs-up.
+              These are the {pageData.hiddenContentLimit || 30} most recent articles
+              the model hid automatically. Use <strong>Keep &amp; boost</strong> to
+              restore a story to your feeds and give it a much stronger positive signal
+              than a standard thumbs-up.
             </p>
           </div>
         </div>
@@ -501,8 +513,7 @@
               class="text-xs"
               style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
             >
-              Set <code>PROXY_BASE_URL</code> to enable proxy fetching for
-              this feed.
+              Set <code>PROXY_BASE_URL</code> to enable proxy fetching for this feed.
             </p>
           {/if}
         </div>
@@ -548,14 +559,12 @@
     feedId={pageData.feedId}
     showInfiniteScroll={!pageData.showHiddenContent}
     feedbackMode={pageData.showHiddenContent ? 'boost' : 'standard'}
-    emptyTitle={
-      pageData.showHiddenContent ? 'No auto-hidden articles yet' : undefined
-    }
-    emptyMessage={
-      pageData.showHiddenContent
-        ? 'This feed has not produced any model-hidden items yet.'
-        : undefined
-    }
+    emptyTitle={pageData.showHiddenContent
+      ? 'No auto-hidden articles yet'
+      : undefined}
+    emptyMessage={pageData.showHiddenContent
+      ? 'This feed has not produced any model-hidden items yet.'
+      : undefined}
     emptyCtaHref={pageData.showHiddenContent ? null : undefined}
   />
 </div>

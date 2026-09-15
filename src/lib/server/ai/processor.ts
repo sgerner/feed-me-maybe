@@ -208,5 +208,4 @@ export async function processArticle(articleId: string): Promise<void> {
     Math.max(0, Math.min(100, combined)),
     articleId,
   );
-
 }
