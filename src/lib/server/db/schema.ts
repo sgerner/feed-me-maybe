@@ -102,14 +102,14 @@ export const articles = sqliteTable(
     publishedAtIdx: index('idx_articles_published_at').on(table.publishedAt),
     visibleRankIdx: index('idx_articles_visible_rank')
       .on(
-        sql`COALESCE(${table.combinedScore}, ${table.heuristicScore}, 0) DESC`,
+        sql`COALESCE(NULLIF(${table.combinedScore}, 0), ${table.heuristicScore}, 0) DESC`,
         sql`${table.publishedAt} DESC`,
       )
       .where(sql`${table.hidden} = 0`),
     feedVisibleRankIdx: index('idx_articles_feed_visible_rank')
       .on(
         table.feedId,
-        sql`COALESCE(${table.combinedScore}, ${table.heuristicScore}, 0) DESC`,
+        sql`COALESCE(NULLIF(${table.combinedScore}, 0), ${table.heuristicScore}, 0) DESC`,
         sql`${table.publishedAt} DESC`,
       )
       .where(sql`${table.hidden} = 0`),
@@ -140,6 +140,8 @@ export const articleAiMetadata = sqliteTable('article_ai_metadata', {
   likelyUserInterest: text('likely_user_interest').default(''),
   signals: text('signals').default('[]'),
   explanation: text('explanation').default(''),
+  analysisStatus: text('analysis_status').notNull().default('pending'),
+  analysisError: text('analysis_error').default(''),
   processedAt: integer('processed_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });

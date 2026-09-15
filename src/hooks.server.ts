@@ -1,5 +1,9 @@
 import { building } from '$app/environment';
-import { initializeDatabase } from '$lib/server/db/migrate';
+import {
+  initializeDatabase,
+  runPendingRankingRepair,
+} from '$lib/server/db/migrate';
+import { rebuildArticleHeuristicScores } from '$lib/server/preferences';
 import {
   validateSession,
   getSessionCookieName,
@@ -19,6 +23,7 @@ import {
 
 if (!building) {
   initializeDatabase();
+  runPendingRankingRepair(rebuildArticleHeuristicScores);
   startPolling();
 }
 

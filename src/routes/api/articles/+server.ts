@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { buildGlobalArticleRankingQuery } from '$lib/server/ranking';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId) {
@@ -14,31 +15,19 @@ export const GET: RequestHandler = async ({ locals, url }) => {
   const limit = 25;
   const offset = (page - 1) * limit;
 
-  let query = `
-    SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url, a.categories,
-           a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.thumbs_up, a.thumbs_down,
-           a.heuristic_score, a.combined_score,
-           f.title as feed_title, f.url as feed_url, f.open_mode as feed_open_mode
-    FROM articles a
-    JOIN feeds f ON f.id = a.feed_id
-    WHERE a.hidden = 0
-      AND a.thumbs_down = 0
-  `;
+  let whereClause = 'a.hidden = 0 AND a.thumbs_down = 0';
   const params: any[] = [];
 
   if (feedId) {
-    query += ' AND a.feed_id = ?';
+    whereClause += ' AND a.feed_id = ?';
     params.push(feedId);
   }
 
   if (unreadOnly) {
-    query += ' AND a.read = 0';
+    whereClause += ' AND a.read = 0';
   }
 
-  query += `
-    ORDER BY COALESCE(a.combined_score, a.heuristic_score, 0) DESC, a.published_at DESC
-    LIMIT ? OFFSET ?
-  `;
+  const query = `${buildGlobalArticleRankingQuery(whereClause)} LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
   const articles = db.prepare(query).all(...params);

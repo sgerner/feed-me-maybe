@@ -1,4 +1,5 @@
 import { getDb } from '$lib/server/db';
+import { rankingOrderExpression } from '$lib/server/ranking';
 
 export const HIDDEN_FEED_CONTENT_LIMIT = 30;
 export const DEFAULT_FEED_PAGE_LIMIT = 25;
@@ -129,7 +130,8 @@ export function getFeedArticles(
       `
       ${buildFeedArticleSelect()}
       WHERE a.hidden = 0 AND a.feed_id = ?
-      ORDER BY COALESCE(a.combined_score, a.heuristic_score, 0) DESC, a.published_at DESC
+      ORDER BY ${rankingOrderExpression('a')} DESC,
+               COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
       LIMIT ? OFFSET ?
     `,
     )

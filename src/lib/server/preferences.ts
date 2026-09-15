@@ -1,6 +1,7 @@
 import { getDb } from '$lib/server/db';
 import type { InteractionType } from '$lib/server/interactions';
 import crypto from 'node:crypto';
+import { parseJsonTextArray } from '$lib/server/normalization';
 
 type ArticleContext = {
   id: string;
@@ -120,23 +121,10 @@ function parseJsonStringArray(
   normalizer: (value: string) => string,
   limit: number,
 ): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const item of parsed) {
-      const normalized = normalizer(String(item || ''));
-      if (!normalized || seen.has(normalized)) continue;
-      seen.add(normalized);
-      out.push(normalized);
-      if (out.length >= limit) break;
-    }
-    return out;
-  } catch {
-    return [];
-  }
+  return parseJsonTextArray(value, limit)
+    .map((item) => normalizer(item))
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index);
 }
 
 function tokenize(text: string): string[] {
@@ -288,24 +276,27 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
     });
   }
 
-  // Phrase extraction with N-grams
+  // Title phrases are useful for explicit feedback, but implicit reads/open
+  // events are intentionally excluded from phrase learning below. This keeps
+  // recurring feed boilerplate (for example, "Breakfast links") from
+  // dominating the model.
   const tokens = tokenize(title);
 
   // Single tokens
   for (const token of tokens.slice(0, TITLE_PHRASE_LIMIT)) {
-    features.push({ type: 'phrase', label: `phrase:${token}`, weight: 0.6 });
+    features.push({ type: 'phrase', label: `phrase:${token}`, weight: 0.35 });
   }
 
   // Bigrams (2-word phrases)
   const bigrams = extractNGrams(tokens, 2);
   for (const gram of bigrams.slice(0, 5)) {
-    features.push({ type: 'phrase', label: `phrase:${gram}`, weight: 1.3 });
+    features.push({ type: 'phrase', label: `phrase:${gram}`, weight: 0.75 });
   }
 
   // Trigrams (3-word phrases)
   const trigrams = extractNGrams(tokens, 3);
   for (const gram of trigrams.slice(0, 3)) {
-    features.push({ type: 'phrase', label: `phrase:${gram}`, weight: 1.6 });
+    features.push({ type: 'phrase', label: `phrase:${gram}`, weight: 1.0 });
   }
 
   const dedup = new Map<string, Feature>();
@@ -399,21 +390,25 @@ export function updatePreferenceMemoryFromInteraction(
     type === 'boost'
       ? 0.45
       : type === 'thumbs_up'
-        ? 0.2
-        : type === 'open'
-          ? 0.03
-          : type === 'read'
-            ? 0.02
-            : 0;
+        ? 0.24
+        : type === 'save'
+          ? 0.28
+          : type === 'open'
+            ? 0.03
+            : type === 'read'
+              ? 0.01
+              : 0;
   const negativeDelta =
-    type === 'thumbs_down' ? 0.2 : type === 'hide' ? 0.08 : 0;
+    type === 'thumbs_down' ? 0.3 : type === 'hide' ? 0.04 : 0;
   if (!positiveDelta && !negativeDelta) return;
 
   const ctx = getArticleContext(articleId);
   if (!ctx) return;
   const features = extractFeatures(ctx);
+  const isImplicitFeedback = type === 'open' || type === 'read';
 
   for (const feature of features) {
+    if (isImplicitFeedback && feature.type === 'phrase') continue;
     if (negativeDelta) {
       upsertPreference(
         feature.type,
@@ -492,13 +487,8 @@ export function getPreferenceStateForArticle(
 
 export function applyPreferenceModelToArticle(articleId: string): void {
   const db = getDb();
+  updateHeuristicScore(articleId);
   const prefState = getPreferenceStateForArticle(articleId);
-  const base = 50;
-  const score = Math.max(0, Math.min(100, base + prefState.adjustment));
-  db.prepare('UPDATE articles SET heuristic_score = ? WHERE id = ?').run(
-    score,
-    articleId,
-  );
 
   const shouldAutoHide =
     prefState.adjustment <= -18 && prefState.totalNegativeEvidence >= 3;
@@ -514,4 +504,108 @@ export function applyPreferenceModelToArticle(articleId: string): void {
       '{"auto":true,"reason":"preference_model"}',
     );
   }
+}
+
+function hasExplicitHide(articleId: string): boolean {
+  const db = getDb();
+  const state = db
+    .prepare(
+      `
+      SELECT
+        SUM(
+          CASE
+            WHEN interaction_type = 'hide'
+              AND (metadata IS NULL OR json_extract(metadata, '$.auto') IS NULL)
+            THEN 1 ELSE 0
+          END
+        ) as explicit_hides,
+        SUM(CASE WHEN interaction_type = 'unhide' THEN 1 ELSE 0 END) as unhides
+      FROM user_interactions
+      WHERE article_id = ?
+    `,
+    )
+    .get(articleId) as
+    | {
+        explicit_hides: number | null;
+        unhides: number | null;
+      }
+    | undefined;
+
+  return (state?.explicit_hides || 0) - (state?.unhides || 0) > 0;
+}
+
+function refreshCombinedScore(articleId: string): void {
+  const db = getDb();
+  db.prepare(
+    `
+    UPDATE articles
+    SET combined_score = CASE
+      WHEN EXISTS (
+        SELECT 1 FROM article_ai_metadata am
+        WHERE am.article_id = articles.id AND am.analysis_status = 'ready'
+      ) THEN MIN(100, MAX(0, ROUND(
+        heuristic_score * 0.6 +
+        (
+          COALESCE((SELECT ai_relevance_score FROM article_ai_metadata WHERE article_id = articles.id), 0) * 0.7 +
+          COALESCE((SELECT quality_score FROM article_ai_metadata WHERE article_id = articles.id), 0) * 0.2 +
+          COALESCE((SELECT novelty_score FROM article_ai_metadata WHERE article_id = articles.id), 0) * 0.1
+        ) * 100 * 0.4
+      )))
+      ELSE NULL
+    END
+    WHERE id = ?
+  `,
+  ).run(articleId);
+}
+
+export function calculateHeuristicScore(articleId: string): number {
+  const db = getDb();
+  const article = db
+    .prepare(
+      'SELECT read, saved, thumbs_up, thumbs_down FROM articles WHERE id = ?',
+    )
+    .get(articleId) as
+    | {
+        read: number;
+        saved: number;
+        thumbs_up: number;
+        thumbs_down: number;
+      }
+    | undefined;
+
+  if (!article) return 50;
+
+  const preferenceState = getPreferenceStateForArticle(articleId);
+  const score =
+    50 +
+    (article.read ? 2 : 0) +
+    (article.saved ? 10 : 0) +
+    (article.thumbs_up ? 25 : 0) -
+    (article.thumbs_down ? 20 : 0) -
+    (hasExplicitHide(articleId) ? 10 : 0) +
+    preferenceState.adjustment;
+
+  return Math.max(0, Math.min(100, score));
+}
+
+export function updateHeuristicScore(articleId: string): void {
+  const db = getDb();
+  const score = calculateHeuristicScore(articleId);
+  db.prepare('UPDATE articles SET heuristic_score = ? WHERE id = ?').run(
+    score,
+    articleId,
+  );
+  refreshCombinedScore(articleId);
+}
+
+export function rebuildArticleHeuristicScores(): number {
+  const db = getDb();
+  const articleIds = db.prepare('SELECT id FROM articles').all() as Array<{
+    id: string;
+  }>;
+  const rebuild = db.transaction(() => {
+    for (const article of articleIds) updateHeuristicScore(article.id);
+  });
+  rebuild();
+  return articleIds.length;
 }

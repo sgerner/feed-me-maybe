@@ -3,6 +3,7 @@ import {
   ARTICLE_ANALYSIS_SYSTEM_PROMPT,
   buildArticleAnalysisPrompt,
 } from './prompts';
+import { coerceText, normalizeTextArray } from '$lib/server/normalization';
 
 interface AiClientConfig {
   baseUrl: string;
@@ -23,7 +24,7 @@ function clampScore(value: unknown): number {
 }
 
 function normalizeText(value: unknown): string {
-  return String(value || '').trim();
+  return coerceText(value);
 }
 
 function normalizeTag(value: unknown): string {
@@ -34,17 +35,7 @@ function normalizeTag(value: unknown): string {
 }
 
 function normalizeStringArray(value: unknown, limit: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const item of value) {
-    const text = normalizeText(item);
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    result.push(text);
-    if (result.length >= limit) break;
-  }
-  return result;
+  return normalizeTextArray(value, limit);
 }
 
 function normalizeTagArray(value: unknown, limit: number): string[] {
@@ -101,30 +92,66 @@ export function createAiClient(config: AiClientConfig) {
     systemPrompt: string,
     userPrompt: string,
     maxTokens = 512,
-  ): Promise<string | null> {
+  ): Promise<string> {
+    const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...defaultHeaders,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.1,
+        max_tokens: maxTokens,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300).replace(/\s+/g, ' ');
+      throw new Error(
+        `AI provider returned HTTP ${res.status}${detail ? `: ${detail}` : ''}`,
+      );
+    }
+
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    const content = data.choices?.[0]?.message?.content;
+    const text = Array.isArray(content)
+      ? content
+          .map((part) => {
+            if (!part || typeof part !== 'object') return coerceText(part);
+            const record = part as Record<string, unknown>;
+            return coerceText(record.text ?? record.content ?? record);
+          })
+          .filter(Boolean)
+          .join('\n')
+      : coerceText(content);
+    if (!text) throw new Error('AI provider returned no message content');
+    return text;
+  }
+
+  function parseJsonObject(result: string): unknown {
+    const trimmed = result.trim();
+    const unfenced = trimmed
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    const start = unfenced.indexOf('{');
+    const end = unfenced.lastIndexOf('}');
+    const candidate =
+      start >= 0 && end > start ? unfenced.slice(start, end + 1) : unfenced;
     try {
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-          ...defaultHeaders,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.1,
-          max_tokens: maxTokens,
-        }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.choices?.[0]?.message?.content || null;
+      return JSON.parse(candidate);
     } catch {
-      return null;
+      throw new Error('AI provider returned invalid JSON');
     }
   }
 
@@ -134,14 +161,9 @@ export function createAiClient(config: AiClientConfig) {
     const result = await completeChat(
       ARTICLE_ANALYSIS_SYSTEM_PROMPT,
       buildArticleAnalysisPrompt(input),
-      512,
+      768,
     );
-    if (!result) return {};
-    try {
-      return normalizeAnalysis(JSON.parse(result));
-    } catch {
-      return {};
-    }
+    return normalizeAnalysis(parseJsonObject(result));
   }
 
   async function summarizeArticle(content: string): Promise<string | null> {

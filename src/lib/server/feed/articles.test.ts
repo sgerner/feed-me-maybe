@@ -144,4 +144,115 @@ describe('feed article queries', () => {
     expect(result.articles[29]?.id).toBe('model-29');
     expect(result.totalArticles).toBe(31);
   });
+
+  it('falls back to heuristic scores when AI has not produced a score', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getFeedArticles } = await import('./articles');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'feed-fallback',
+      'https://example.com/fallback',
+      'Fallback',
+      now,
+      now,
+    );
+
+    db.prepare(
+      `INSERT OR REPLACE INTO articles
+       (id, feed_id, url, title, hidden, heuristic_score, combined_score,
+        published_at, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'heuristic-first',
+      'feed-fallback',
+      'https://example.com/heuristic-first',
+      'Heuristic first',
+      47,
+      0,
+      now,
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT OR REPLACE INTO articles
+       (id, feed_id, url, title, hidden, heuristic_score, combined_score,
+        published_at, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'ai-lower',
+      'feed-fallback',
+      'https://example.com/ai-lower',
+      'AI lower',
+      20,
+      40,
+      now,
+      now,
+      now,
+      now,
+    );
+
+    const result = getFeedArticles({ feedId: 'feed-fallback' });
+    expect(result.articles.map((article) => article.id)).toEqual([
+      'heuristic-first',
+      'ai-lower',
+    ]);
+  });
+
+  it('diversifies the cross-feed ranking after the top story', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { buildGlobalArticleRankingQuery } =
+      await import('$lib/server/ranking');
+    const db = getDb();
+    const now = Date.now();
+
+    for (const [id, title] of [
+      ['feed-a', 'Feed A'],
+      ['feed-b', 'Feed B'],
+    ]) {
+      db.prepare(
+        'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(id, `https://example.com/${id}`, title, now, now);
+    }
+
+    const insertArticle = (
+      id: string,
+      feedId: string,
+      heuristicScore: number,
+    ) => {
+      db.prepare(
+        `INSERT OR REPLACE INTO articles
+         (id, feed_id, url, title, hidden, heuristic_score, combined_score,
+          published_at, fetched_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        feedId,
+        `https://example.com/${id}`,
+        id,
+        heuristicScore,
+        now,
+        now,
+        now,
+        now,
+      );
+    };
+
+    insertArticle('a-1', 'feed-a', 100);
+    insertArticle('a-2', 'feed-a', 99);
+    insertArticle('a-3', 'feed-a', 98);
+    insertArticle('b-1', 'feed-b', 98);
+
+    const rows = db
+      .prepare(
+        `${buildGlobalArticleRankingQuery('a.hidden = 0')} LIMIT ? OFFSET ?`,
+      )
+      .all(4, 0) as Array<{ id: string }>;
+
+    expect(rows.map((row) => row.id)).toEqual(['a-1', 'b-1', 'a-2', 'a-3']);
+  });
 });

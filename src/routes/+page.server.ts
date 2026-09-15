@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
+import { buildGlobalArticleRankingQuery } from '$lib/server/ranking';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   if (!locals.sessionId) {
@@ -20,17 +21,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
   const articles = db
     .prepare(
-      `
-    SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url, a.categories,
-           a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.thumbs_up, a.thumbs_down,
-           a.heuristic_score, a.combined_score,
-           f.title as feed_title, f.url as feed_url, f.open_mode as feed_open_mode
-    FROM articles a
-    JOIN feeds f ON f.id = a.feed_id
-    WHERE a.hidden = 0
-    ORDER BY COALESCE(a.combined_score, a.heuristic_score, 0) DESC, a.published_at DESC
-    LIMIT ? OFFSET ?
-  `,
+      `${buildGlobalArticleRankingQuery('a.hidden = 0')} LIMIT ? OFFSET ?`,
     )
     .all(limit, offset);
 

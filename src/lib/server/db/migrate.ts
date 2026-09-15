@@ -1,4 +1,9 @@
 import { getDb } from './index';
+import {
+  coerceText,
+  normalizeTextArray,
+  parseJsonTextArray,
+} from '$lib/server/normalization';
 
 type Database = ReturnType<typeof getDb>;
 
@@ -241,7 +246,171 @@ const migrations: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 2,
+    name: 'ranking_data_quality_and_ai_status',
+    apply: (db) => {
+      ensureColumn(
+        db,
+        'article_ai_metadata',
+        'analysis_status',
+        "TEXT NOT NULL DEFAULT 'pending'",
+      );
+      ensureColumn(
+        db,
+        'article_ai_metadata',
+        'analysis_error',
+        "TEXT NOT NULL DEFAULT ''",
+      );
+
+      // Normalize category values already stored by rss-parser. In particular,
+      // NYT-style category objects must never become "[object Object]" model
+      // features.
+      const articleRows = db
+        .prepare('SELECT id, categories FROM articles')
+        .all() as Array<{ id: string; categories: string | null }>;
+      const updateCategories = db.prepare(
+        'UPDATE articles SET categories = ? WHERE id = ?',
+      );
+      for (const row of articleRows) {
+        const categories = parseJsonTextArray(row.categories);
+        const serialized = categories.length
+          ? JSON.stringify(categories)
+          : '[]';
+        if (serialized !== (row.categories || '')) {
+          updateCategories.run(serialized, row.id);
+        }
+      }
+
+      // Normalize legacy AI arrays and classify prior empty responses. Empty
+      // responses are failures, not successful analyses, so their scores must
+      // fall back to the heuristic score until a retry succeeds.
+      const metadataRows = db
+        .prepare(
+          `SELECT article_id, summary, topics, entities, content_type,
+                  ai_relevance_score, novelty_score, quality_score, signals
+           FROM article_ai_metadata`,
+        )
+        .all() as Array<{
+        article_id: string;
+        summary: string | null;
+        topics: string | null;
+        entities: string | null;
+        content_type: string | null;
+        ai_relevance_score: number | null;
+        novelty_score: number | null;
+        quality_score: number | null;
+        signals: string | null;
+      }>;
+      const updateMetadata = db.prepare(
+        `UPDATE article_ai_metadata
+         SET summary = ?, topics = ?, entities = ?, content_type = ?,
+             signals = ?, analysis_status = ?, analysis_error = ?
+         WHERE article_id = ?`,
+      );
+      for (const row of metadataRows) {
+        const summary = coerceText(row.summary);
+        const topics = normalizeTextArray(parseStoredValue(row.topics), 8);
+        const entities = normalizeTextArray(parseStoredValue(row.entities), 8);
+        const signals = normalizeTextArray(parseStoredValue(row.signals), 8);
+        const contentType = coerceText(parseStoredValue(row.content_type));
+        const meaningful =
+          Boolean(summary) ||
+          topics.length > 0 ||
+          entities.length > 0 ||
+          Boolean(contentType) ||
+          signals.length > 0 ||
+          Number(row.ai_relevance_score || 0) > 0 ||
+          Number(row.novelty_score || 0) > 0 ||
+          Number(row.quality_score || 0) > 0;
+        updateMetadata.run(
+          summary,
+          JSON.stringify(topics),
+          JSON.stringify(entities),
+          contentType,
+          JSON.stringify(signals),
+          meaningful ? 'ready' : 'failed',
+          meaningful ? '' : 'legacy_empty_analysis',
+          row.article_id,
+        );
+      }
+
+      db.prepare(
+        `UPDATE articles
+         SET combined_score = NULL
+         WHERE COALESCE(combined_score, 0) = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM article_ai_metadata am
+             WHERE am.article_id = articles.id AND am.analysis_status = 'ready'
+           )`,
+      ).run();
+
+      // Recreate indexes with the legacy zero-score fallback expression. An
+      // existing index with the old expression is not changed by IF NOT EXISTS.
+      db.prepare('DROP INDEX IF EXISTS idx_articles_visible_rank').run();
+      db.prepare('DROP INDEX IF EXISTS idx_articles_feed_visible_rank').run();
+    },
+  },
+  {
+    version: 3,
+    name: 'preference_cleanup_and_score_rebuild',
+    apply: (db) => {
+      db.prepare(
+        `CREATE TABLE IF NOT EXISTS user_preference_memory_archive (
+          original_id TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          type TEXT NOT NULL,
+          polarity TEXT NOT NULL,
+          strength REAL NOT NULL,
+          evidence_count INTEGER NOT NULL,
+          last_reinforced INTEGER NOT NULL,
+          explanation TEXT DEFAULT '',
+          created_at INTEGER NOT NULL,
+          archive_reason TEXT NOT NULL,
+          archived_at INTEGER NOT NULL
+        )`,
+      ).run();
+
+      const archiveReason =
+        "type = 'phrase' OR label contains a malformed object/string value";
+      db.prepare(
+        `INSERT OR IGNORE INTO user_preference_memory_archive
+         (original_id, label, type, polarity, strength, evidence_count,
+          last_reinforced, explanation, created_at, archive_reason, archived_at)
+         SELECT id, label, type, polarity, strength, evidence_count,
+                last_reinforced, explanation, created_at, ?, ?
+         FROM user_preference_memory
+         WHERE type = 'phrase'
+            OR lower(label) LIKE '%objectobject%'
+            OR lower(label) LIKE '%[object%'
+            OR lower(label) LIKE '%undefined%'`,
+      ).run(archiveReason, Date.now());
+      db.prepare(
+        `DELETE FROM user_preference_memory
+         WHERE type = 'phrase'
+            OR lower(label) LIKE '%objectobject%'
+            OR lower(label) LIKE '%[object%'
+            OR lower(label) LIKE '%undefined%'`,
+      ).run();
+
+      db.prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('ranking_rebuild_pending', 'true', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                         updated_at = excluded.updated_at`,
+      ).run(Date.now());
+    },
+  },
 ];
+
+function parseStoredValue(value: string | null | undefined): unknown {
+  if (!value) return [];
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
 
 function runVersionedMigrations(): void {
   const db = getDb();
@@ -325,7 +494,7 @@ export function initializeDatabase(): void {
     "CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT '', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', author TEXT DEFAULT '', summary TEXT DEFAULT '', content TEXT DEFAULT '', image_url TEXT DEFAULT '', categories TEXT DEFAULT '', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
   db.prepare(
-    "CREATE TABLE IF NOT EXISTS article_ai_metadata (id TEXT PRIMARY KEY, article_id TEXT NOT NULL UNIQUE REFERENCES articles(id) ON DELETE CASCADE, summary TEXT DEFAULT '', topics TEXT DEFAULT '[]', entities TEXT DEFAULT '[]', content_type TEXT DEFAULT '', ai_relevance_score REAL DEFAULT 0, novelty_score REAL DEFAULT 0, quality_score REAL DEFAULT 0, likely_user_interest TEXT DEFAULT '', signals TEXT DEFAULT '[]', explanation TEXT DEFAULT '', processed_at INTEGER, created_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS article_ai_metadata (id TEXT PRIMARY KEY, article_id TEXT NOT NULL UNIQUE REFERENCES articles(id) ON DELETE CASCADE, summary TEXT DEFAULT '', topics TEXT DEFAULT '[]', entities TEXT DEFAULT '[]', content_type TEXT DEFAULT '', ai_relevance_score REAL DEFAULT 0, novelty_score REAL DEFAULT 0, quality_score REAL DEFAULT 0, likely_user_interest TEXT DEFAULT '', signals TEXT DEFAULT '[]', explanation TEXT DEFAULT '', analysis_status TEXT NOT NULL DEFAULT 'pending', analysis_error TEXT NOT NULL DEFAULT '', processed_at INTEGER, created_at INTEGER NOT NULL)",
   ).run();
   try {
     db.prepare(
@@ -379,10 +548,10 @@ export function initializeDatabase(): void {
     'CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at DESC)',
   ).run();
   db.prepare(
-    'CREATE INDEX IF NOT EXISTS idx_articles_visible_rank ON articles(COALESCE(combined_score, heuristic_score, 0) DESC, published_at DESC) WHERE hidden = 0',
+    'CREATE INDEX IF NOT EXISTS idx_articles_visible_rank ON articles(COALESCE(NULLIF(combined_score, 0), heuristic_score, 0) DESC, published_at DESC) WHERE hidden = 0',
   ).run();
   db.prepare(
-    'CREATE INDEX IF NOT EXISTS idx_articles_feed_visible_rank ON articles(feed_id, COALESCE(combined_score, heuristic_score, 0) DESC, published_at DESC) WHERE hidden = 0',
+    'CREATE INDEX IF NOT EXISTS idx_articles_feed_visible_rank ON articles(feed_id, COALESCE(NULLIF(combined_score, 0), heuristic_score, 0) DESC, published_at DESC) WHERE hidden = 0',
   ).run();
   db.prepare(
     'CREATE INDEX IF NOT EXISTS idx_articles_saved_published ON articles(published_at DESC) WHERE saved = 1',
@@ -424,4 +593,27 @@ export function initializeDatabase(): void {
   ).run(Date.now());
 
   console.log('[db] Database initialized. First run:', !row);
+}
+
+/**
+ * Run the one-time score rebuild after initialization. Kept injectable so the
+ * database module remains usable by migrations and isolated test fixtures.
+ */
+export function runPendingRankingRepair(rebuild: () => number): number {
+  const db = getDb();
+  const pending = db
+    .prepare(
+      "SELECT value FROM app_settings WHERE key = 'ranking_rebuild_pending'",
+    )
+    .get() as { value: string } | undefined;
+  if (pending?.value !== 'true') return 0;
+
+  const repaired = rebuild();
+  db.prepare(
+    "UPDATE app_settings SET value = 'false', updated_at = ? WHERE key = 'ranking_rebuild_pending'",
+  ).run(Date.now());
+  console.log(
+    `[db] Rebuilt heuristic and combined scores for ${repaired} articles.`,
+  );
+  return repaired;
 }

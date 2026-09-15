@@ -3,6 +3,7 @@ import { getDb } from '$lib/server/db';
 import { createAiClient } from '$lib/server/ai/client';
 import { getProvider } from '$lib/server/ai/models-dev';
 import { decrypt } from './crypto';
+import { parseJsonTextArray } from '$lib/server/normalization';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -14,19 +15,6 @@ type ArticleAnalysisRow = {
   categories: string | null;
   published_at: number | string | Date | null;
 };
-
-function parseJsonArray(value: string | null | undefined): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => String(item).trim())
-      .filter((item) => item.length > 0);
-  } catch {
-    return [];
-  }
-}
 
 function coerceTimestamp(value: number | string | Date | null): number | null {
   if (value == null) return null;
@@ -57,6 +45,50 @@ function clampScore(value: unknown): number {
   return Math.max(0, Math.min(1, parsed));
 }
 
+function truncateError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.replace(/\s+/g, ' ').trim().slice(0, 500) || 'Unknown AI error'
+  );
+}
+
+function markAnalysisFailed(
+  articleId: string,
+  status: 'failed' | 'skipped',
+  message: string,
+): void {
+  const db = getDb();
+  const now = Date.now();
+  const existing = db
+    .prepare('SELECT id FROM article_ai_metadata WHERE article_id = ?')
+    .get(articleId) as { id: string } | undefined;
+
+  if (existing) {
+    db.prepare(
+      'UPDATE article_ai_metadata SET analysis_status = ?, analysis_error = ?, processed_at = ? WHERE article_id = ?',
+    ).run(status, message, now, articleId);
+  } else {
+    db.prepare(
+      `INSERT INTO article_ai_metadata
+       (id, article_id, analysis_status, analysis_error, processed_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(crypto.randomUUID(), articleId, status, message, now, now);
+  }
+}
+
+function hasMeaningfulAnalysis(analysis: Record<string, any>): boolean {
+  return (
+    Boolean(analysis.summary) ||
+    (analysis.topics?.length || 0) > 0 ||
+    (analysis.entities?.length || 0) > 0 ||
+    Boolean(analysis.contentType) ||
+    (analysis.signals?.length || 0) > 0 ||
+    Number(analysis.relevanceScore || 0) > 0 ||
+    Number(analysis.noveltyScore || 0) > 0 ||
+    Number(analysis.qualityScore || 0) > 0
+  );
+}
+
 export async function processArticle(articleId: string): Promise<void> {
   const db = getDb();
 
@@ -80,7 +112,14 @@ export async function processArticle(articleId: string): Promise<void> {
     config.api_key_encrypted || '',
     config.api_key_nonce || '',
   );
-  if (!decryptedConfigRaw) return;
+  if (!decryptedConfigRaw) {
+    markAnalysisFailed(
+      articleId,
+      'skipped',
+      'AI provider API key is not configured',
+    );
+    return;
+  }
 
   const decryptedConfig: Record<string, string> = (() => {
     try {
@@ -101,7 +140,14 @@ export async function processArticle(articleId: string): Promise<void> {
       ''
     : decryptedConfig.apiKey || Object.values(decryptedConfig)[0] || '';
 
-  if (!apiKey || !baseUrl) return;
+  if (!apiKey || !baseUrl) {
+    markAnalysisFailed(
+      articleId,
+      'skipped',
+      'AI provider configuration is incomplete',
+    );
+    return;
+  }
 
   const client = createAiClient({
     baseUrl,
@@ -109,14 +155,29 @@ export async function processArticle(articleId: string): Promise<void> {
     model: config.model_id,
   });
 
-  const analysis = await client.analyzeArticle({
-    title: article.title,
-    summary: article.summary || '',
-    content: article.content || '',
-    author: article.author || '',
-    publishedAge: getAgeBucket(article.published_at),
-    categories: parseJsonArray(article.categories),
-  });
+  let analysis: Awaited<ReturnType<typeof client.analyzeArticle>>;
+  try {
+    analysis = await client.analyzeArticle({
+      title: article.title,
+      summary: article.summary || '',
+      content: article.content || '',
+      author: article.author || '',
+      publishedAge: getAgeBucket(article.published_at),
+      categories: parseJsonTextArray(article.categories),
+    });
+  } catch (error) {
+    const message = truncateError(error);
+    markAnalysisFailed(articleId, 'failed', message);
+    throw new Error(`AI analysis failed for ${articleId}: ${message}`, {
+      cause: error,
+    });
+  }
+
+  if (!hasMeaningfulAnalysis(analysis)) {
+    const message = 'AI provider returned no usable article analysis';
+    markAnalysisFailed(articleId, 'failed', message);
+    throw new Error(`AI analysis failed for ${articleId}: ${message}`);
+  }
 
   const now = Date.now();
   const topicsJson = JSON.stringify(analysis.topics || []);
@@ -139,7 +200,7 @@ export async function processArticle(articleId: string): Promise<void> {
       UPDATE article_ai_metadata
       SET summary = ?, topics = ?, entities = ?, content_type = ?,
           ai_relevance_score = ?, novelty_score = ?, quality_score = ?, likely_user_interest = ?,
-          signals = ?, explanation = ?, processed_at = ?
+          signals = ?, explanation = ?, analysis_status = 'ready', analysis_error = '', processed_at = ?
       WHERE article_id = ?
     `,
     ).run(
@@ -163,7 +224,8 @@ export async function processArticle(articleId: string): Promise<void> {
         id, article_id, summary, topics, entities, content_type,
         ai_relevance_score, novelty_score, quality_score, likely_user_interest,
         signals, explanation, processed_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        , analysis_status, analysis_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', '')
     `,
     ).run(
       crypto.randomUUID(),
@@ -188,21 +250,9 @@ export async function processArticle(articleId: string): Promise<void> {
     .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
     .get(articleId) as { heuristic_score: number } | undefined;
   const heuristic = articleRow?.heuristic_score || 50;
-  const hasMeaningfulAnalysis =
-    Boolean(aiSummary) ||
-    (analysis.topics?.length || 0) > 0 ||
-    (analysis.entities?.length || 0) > 0 ||
-    Boolean(contentType) ||
-    (analysis.signals?.length || 0) > 0 ||
-    aiRelevanceScore > 0 ||
-    noveltyScore > 0 ||
-    qualityScore > 0;
-
   const aiComposite =
     aiRelevanceScore * 0.7 + qualityScore * 0.2 + noveltyScore * 0.1;
-  const combined = hasMeaningfulAnalysis
-    ? Math.round(heuristic * 0.6 + aiComposite * 100 * 0.4)
-    : Math.round(heuristic);
+  const combined = Math.round(heuristic * 0.6 + aiComposite * 100 * 0.4);
 
   db.prepare('UPDATE articles SET combined_score = ? WHERE id = ?').run(
     Math.max(0, Math.min(100, combined)),

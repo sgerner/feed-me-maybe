@@ -5,6 +5,7 @@ import {
   fetchSafe,
   readResponseText,
 } from '$lib/server/network';
+import { coerceText, normalizeTextArray } from '$lib/server/normalization';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 
@@ -170,12 +171,12 @@ export async function fetchFeed(
         const safeImageUrl = safeHttpUrl(imageUrl, finalUrl);
 
         return {
-          guid: String(item.guid || item.link || ''),
+          guid: coerceText(item.guid || item.link),
           url: safeUrl,
-          title: String((item.title as string)?.trim() || 'Untitled'),
+          title: coerceText(item.title) || 'Untitled',
           author:
-            (item.creator as string) ||
-            (item['dc:creator'] as string) ||
+            coerceText(item.creator) ||
+            coerceText(item['dc:creator']) ||
             undefined,
           summary:
             sanitizeHtml(
@@ -188,7 +189,7 @@ export async function fetchFeed(
                 (item.contentSnippet as string)?.trim(),
             ) || undefined,
           imageUrl: safeImageUrl || undefined,
-          categories: (item.categories as string[]) || [],
+          categories: normalizeTextArray(item.categories),
           publishedAt: item.pubDate
             ? new Date(item.pubDate as string)
             : item.isoDate
