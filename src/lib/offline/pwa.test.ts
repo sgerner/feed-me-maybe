@@ -5,11 +5,12 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 
 describe('offline PWA contract', () => {
-  it('publishes all authenticated entry-point shortcuts', () => {
+  it('publishes transparent-safe icons and authenticated entry-point shortcuts', () => {
     const manifest = JSON.parse(
       readFileSync(resolve(root, 'static/manifest.json'), 'utf8'),
     ) as {
       shortcuts?: Array<{ url?: string }>;
+      icons?: Array<{ purpose?: string }>;
     };
 
     expect(manifest.shortcuts?.map((shortcut) => shortcut.url)).toEqual([
@@ -18,6 +19,10 @@ describe('offline PWA contract', () => {
       '/digest',
       '/saved',
     ]);
+    expect(manifest.icons?.map((icon) => icon.purpose)).toEqual(['any', 'any']);
+    expect(readFileSync(resolve(root, 'vite.config.ts'), 'utf8')).not.toContain(
+      "purpose: 'any maskable'",
+    );
   });
 
   it('keeps the custom worker authenticated-navigation safe', () => {

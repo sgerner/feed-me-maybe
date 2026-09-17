@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   let { form } = $props();
 </script>
 
@@ -7,8 +8,9 @@
   <div class="w-full max-w-sm">
     <!-- App title -->
     <div class="mb-8 text-center" in:fade={{ duration: 400 }}>
+      <BrandMark size={72} class="mx-auto mb-4" />
       <h1 class="gradient-text text-4xl font-extrabold tracking-tight">
-        Feed Me Maybe
+        Feed Me <span class="italic">Maybe</span>
       </h1>
       <p
         class="mt-3 text-sm"

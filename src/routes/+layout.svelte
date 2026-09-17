@@ -10,6 +10,7 @@
   import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import PWABanner from '$lib/components/PWABanner.svelte';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 
   import { syncFeeds } from '$lib/feeds';
@@ -456,9 +457,12 @@
         <a
           href="/"
           data-sveltekit-preload-data
-          class="gradient-text text-xl font-bold no-underline"
+          class="inline-flex items-center gap-2 no-underline"
         >
-          Feed Me Maybe
+          <BrandMark size={32} class="shrink-0" />
+          <span class="gradient-text text-lg font-bold tracking-tight">
+            Feed Me <span class="italic">Maybe</span>
+          </span>
         </a>
       </div>
 
