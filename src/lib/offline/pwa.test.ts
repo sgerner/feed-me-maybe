@@ -5,12 +5,12 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 
 describe('offline PWA contract', () => {
-  it('publishes transparent-safe icons and authenticated entry-point shortcuts', () => {
+  it('publishes safe icons and authenticated entry-point shortcuts', () => {
     const manifest = JSON.parse(
       readFileSync(resolve(root, 'static/manifest.json'), 'utf8'),
     ) as {
       shortcuts?: Array<{ url?: string }>;
-      icons?: Array<{ purpose?: string }>;
+      icons?: Array<{ purpose?: string; src?: string }>;
     };
 
     expect(manifest.shortcuts?.map((shortcut) => shortcut.url)).toEqual([
@@ -19,10 +19,24 @@ describe('offline PWA contract', () => {
       '/digest',
       '/saved',
     ]);
-    expect(manifest.icons?.map((icon) => icon.purpose)).toEqual(['any', 'any']);
-    expect(readFileSync(resolve(root, 'vite.config.ts'), 'utf8')).not.toContain(
-      "purpose: 'any maskable'",
-    );
+    expect(manifest.icons?.map((icon) => icon.purpose)).toEqual([
+      'any',
+      'maskable',
+      'any',
+      'maskable',
+    ]);
+    expect(
+      manifest.icons
+        ?.filter((icon) => icon.purpose === 'maskable')
+        .map((icon) => icon.src),
+    ).toEqual([
+      '/android-chrome-maskable-192x192.png',
+      '/android-chrome-maskable-512x512.png',
+    ]);
+
+    const viteConfig = readFileSync(resolve(root, 'vite.config.ts'), 'utf8');
+    expect(viteConfig).toContain("purpose: 'maskable'");
+    expect(viteConfig).not.toContain("purpose: 'any maskable'");
   });
 
   it('keeps the custom worker authenticated-navigation safe', () => {
