@@ -481,12 +481,6 @@
                 >{@html item.icon}</span
               >
               <span class="min-w-0 flex-1 truncate">{item.label}</span>
-              {#if item.href === '/inbox' && data.counts?.unread}
-                <span
-                  class="rounded-full bg-primary-500/15 px-1.5 py-0.5 text-[10px] font-bold text-primary-300"
-                  >{data.counts.unread}</span
-                >
-              {/if}
             </a>
           {/each}
 
@@ -816,9 +810,6 @@
       >
         <span class="mobile-core-nav-icon">{@html item.icon}</span>
         <span>{item.label}</span>
-        {#if item.href === '/inbox' && data.counts?.unread}
-          <span class="mobile-core-nav-badge">{data.counts.unread}</span>
-        {/if}
       </a>
     {/each}
     <button
