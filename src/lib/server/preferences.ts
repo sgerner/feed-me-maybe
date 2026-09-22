@@ -2,6 +2,7 @@ import { getDb } from '$lib/server/db';
 import type { InteractionType } from '$lib/server/interactions';
 import crypto from 'node:crypto';
 import { parseJsonTextArray } from '$lib/server/normalization';
+import { refreshCombinedScore } from '$lib/server/scoring';
 
 type ArticleContext = {
   id: string;
@@ -532,30 +533,6 @@ function hasExplicitHide(articleId: string): boolean {
     | undefined;
 
   return (state?.explicit_hides || 0) - (state?.unhides || 0) > 0;
-}
-
-function refreshCombinedScore(articleId: string): void {
-  const db = getDb();
-  db.prepare(
-    `
-    UPDATE articles
-    SET combined_score = CASE
-      WHEN EXISTS (
-        SELECT 1 FROM article_ai_metadata am
-        WHERE am.article_id = articles.id AND am.analysis_status = 'ready'
-      ) THEN MIN(100, MAX(0, ROUND(
-        heuristic_score * 0.6 +
-        (
-          COALESCE((SELECT ai_relevance_score FROM article_ai_metadata WHERE article_id = articles.id), 0) * 0.7 +
-          COALESCE((SELECT quality_score FROM article_ai_metadata WHERE article_id = articles.id), 0) * 0.2 +
-          COALESCE((SELECT novelty_score FROM article_ai_metadata WHERE article_id = articles.id), 0) * 0.1
-        ) * 100 * 0.4
-      )))
-      ELSE NULL
-    END
-    WHERE id = ?
-  `,
-  ).run(articleId);
 }
 
 export function calculateHeuristicScore(articleId: string): number {

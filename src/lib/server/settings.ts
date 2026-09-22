@@ -11,7 +11,7 @@ export function applySettingsMutation(
     db.prepare('DELETE FROM user_preference_memory').run();
     db.prepare('DELETE FROM article_ai_metadata').run();
     db.prepare(
-      'UPDATE articles SET hidden = 0, read = 0, saved = 0, thumbs_up = 0, thumbs_down = 0, heuristic_score = 50, combined_score = 0',
+      "UPDATE articles SET hidden = 0, read = 0, saved = 0, thumbs_up = 0, thumbs_down = 0, heuristic_score = 50, jev_score = NULL, jev_processed_at = NULL, jev_error = '', combined_score = 0",
     ).run();
     return { success: true, message: 'Training data reset' };
   }

@@ -9,6 +9,7 @@ interface AiClientConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  providerId?: string;
   defaultHeaders?: Record<string, string>;
 }
 
@@ -86,14 +87,46 @@ function normalizeAnalysis(raw: unknown): Partial<ArticleScore> {
 }
 
 export function createAiClient(config: AiClientConfig) {
-  const { baseUrl, apiKey, model, defaultHeaders = {} } = config;
+  const {
+    baseUrl,
+    apiKey,
+    model,
+    providerId = '',
+    defaultHeaders = {},
+  } = config;
+  const isDeepSeek =
+    providerId.toLowerCase() === 'deepseek' ||
+    model.toLowerCase().startsWith('deepseek-');
 
   async function completeChat(
     systemPrompt: string,
     userPrompt: string,
     maxTokens = 512,
+    options: { jsonMode?: boolean } = {},
   ): Promise<string> {
     const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const requestBody: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: maxTokens,
+    };
+
+    if (isDeepSeek) {
+      // DeepSeek V4 enables thinking by default. With a small JSON budget it
+      // can spend the entire completion on reasoning_content and return an
+      // empty message.content. Article enrichment needs the final JSON, not
+      // the hidden reasoning trace.
+      requestBody.thinking = { type: 'disabled' };
+      if (options.jsonMode) {
+        requestBody.response_format = { type: 'json_object' };
+      }
+    } else {
+      requestBody.temperature = 0.1;
+    }
+
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -101,15 +134,7 @@ export function createAiClient(config: AiClientConfig) {
         Authorization: `Bearer ${apiKey}`,
         ...defaultHeaders,
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.1,
-        max_tokens: maxTokens,
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(30_000),
     });
 
@@ -121,9 +146,13 @@ export function createAiClient(config: AiClientConfig) {
     }
 
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: unknown } }>;
+      choices?: Array<{
+        finish_reason?: string | null;
+        message?: { content?: unknown; reasoning_content?: unknown };
+      }>;
     };
-    const content = data.choices?.[0]?.message?.content;
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content;
     const text = Array.isArray(content)
       ? content
           .map((part) => {
@@ -134,7 +163,17 @@ export function createAiClient(config: AiClientConfig) {
           .filter(Boolean)
           .join('\n')
       : coerceText(content);
-    if (!text) throw new Error('AI provider returned no message content');
+    if (!text) {
+      const hasReasoning = Boolean(
+        coerceText(choice?.message?.reasoning_content),
+      );
+      if (choice?.finish_reason === 'length' && hasReasoning) {
+        throw new Error(
+          'AI provider returned no final message content; reasoning consumed the output limit',
+        );
+      }
+      throw new Error('AI provider returned no message content');
+    }
     return text;
   }
 
@@ -161,7 +200,8 @@ export function createAiClient(config: AiClientConfig) {
     const result = await completeChat(
       ARTICLE_ANALYSIS_SYSTEM_PROMPT,
       buildArticleAnalysisPrompt(input),
-      768,
+      isDeepSeek ? 1024 : 768,
+      { jsonMode: true },
     );
     return normalizeAnalysis(parseJsonObject(result));
   }

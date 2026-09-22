@@ -4,6 +4,8 @@ import { createAiClient } from '$lib/server/ai/client';
 import { getProvider } from '$lib/server/ai/models-dev';
 import { decrypt } from './crypto';
 import { parseJsonTextArray } from '$lib/server/normalization';
+import { refreshCombinedScore } from '$lib/server/scoring';
+import { recordAppError } from '$lib/server/logging';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -153,6 +155,7 @@ export async function processArticle(articleId: string): Promise<void> {
     baseUrl,
     apiKey,
     model: config.model_id,
+    providerId: config.provider_id,
   });
 
   let analysis: Awaited<ReturnType<typeof client.analyzeArticle>>;
@@ -245,17 +248,21 @@ export async function processArticle(articleId: string): Promise<void> {
     );
   }
 
-  // Combined score: 60% user heuristic, 40% AI. Quality now contributes to AI ranking.
-  const articleRow = db
-    .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
-    .get(articleId) as { heuristic_score: number } | undefined;
-  const heuristic = articleRow?.heuristic_score || 50;
-  const aiComposite =
-    aiRelevanceScore * 0.7 + qualityScore * 0.2 + noveltyScore * 0.1;
-  const combined = Math.round(heuristic * 0.6 + aiComposite * 100 * 0.4);
+  // Recompute after enrichment. If a Jev score is already present, this
+  // activates the hybrid score; otherwise it preserves the LLM-only formula.
+  refreshCombinedScore(articleId);
 
-  db.prepare('UPDATE articles SET combined_score = ? WHERE id = ?').run(
-    Math.max(0, Math.min(100, combined)),
-    articleId,
-  );
+  // Jev's candidate state includes this newly extracted enrichment, so
+  // refresh its judgment whenever an LLM analysis succeeds. The queue
+  // deduplicates an already queued or processing Jev job for this article.
+  try {
+    const { enqueueJevProcess } = await import('$lib/server/feed/job-queue');
+    enqueueJevProcess(articleId);
+  } catch (error) {
+    recordAppError({
+      source: 'ai.processor.jev.enqueue',
+      error,
+      details: { articleId },
+    });
+  }
 }

@@ -48,5 +48,6 @@ export async function getConfiguredAiClient() {
     baseUrl,
     apiKey,
     model: config.model_id,
+    providerId: config.provider_id,
   });
 }

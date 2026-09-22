@@ -401,6 +401,15 @@ const migrations: Migration[] = [
       ).run(Date.now());
     },
   },
+  {
+    version: 4,
+    name: 'jev_personalized_ranking_score',
+    apply: (db) => {
+      ensureColumn(db, 'articles', 'jev_score', 'REAL');
+      ensureColumn(db, 'articles', 'jev_processed_at', 'INTEGER');
+      ensureColumn(db, 'articles', 'jev_error', "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {

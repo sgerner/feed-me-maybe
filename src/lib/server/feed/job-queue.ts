@@ -1,14 +1,18 @@
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
+import { isJevConfigured } from '$lib/server/ai/jev';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
+export const JEV_PROCESS_JOB_TYPE = 'jev_process';
 
 export const DEFAULT_FEED_FETCH_MAX_ATTEMPTS = 4;
 export const DEFAULT_AI_PROCESS_MAX_ATTEMPTS = 3;
+export const DEFAULT_JEV_PROCESS_MAX_ATTEMPTS = 4;
 export const FEED_FETCH_LEASE_MS = 10 * 60 * 1000;
 export const AI_PROCESS_LEASE_MS = 30 * 60 * 1000;
+export const JEV_PROCESS_LEASE_MS = 5 * 60 * 1000;
 export const DEFAULT_RETRY_BASE_MS = 30 * 1000;
 export const MAX_RETRY_DELAY_MS = 60 * 60 * 1000;
 
@@ -24,7 +28,13 @@ export type AiProcessJobPayload = {
   feedId?: string;
 };
 
-export type JobPayload = FeedFetchJobPayload | AiProcessJobPayload;
+export type JevProcessJobPayload = {
+  articleId: string;
+  feedId?: string;
+};
+
+export type JobPayload =
+  FeedFetchJobPayload | AiProcessJobPayload | JevProcessJobPayload;
 
 export type JobRecord = {
   id: string;
@@ -166,9 +176,9 @@ export function getRetryDelayMs(
 }
 
 function leaseMsForJobType(type: string): number {
-  return type === AI_PROCESS_JOB_TYPE
-    ? AI_PROCESS_LEASE_MS
-    : FEED_FETCH_LEASE_MS;
+  if (type === AI_PROCESS_JOB_TYPE) return AI_PROCESS_LEASE_MS;
+  if (type === JEV_PROCESS_JOB_TYPE) return JEV_PROCESS_LEASE_MS;
+  return FEED_FETCH_LEASE_MS;
 }
 
 function getPayloadId(row: RawJobRow, key: string): string | null {
@@ -398,6 +408,25 @@ export function enqueueAiProcess(
   );
 }
 
+export function enqueueJevProcess(
+  articleId: string,
+  options: { feedId?: string; now?: number } = {},
+): JobRecord | null {
+  // Avoid filling local databases with no-op jobs when the optional Jev
+  // secret has not been configured. Production has the secret mounted.
+  if (!isJevConfigured()) return null;
+  return enqueueJob(
+    JEV_PROCESS_JOB_TYPE,
+    { articleId, feedId: options.feedId },
+    'articleId',
+    articleId,
+    {
+      now: options.now,
+      maxAttempts: DEFAULT_JEV_PROCESS_MAX_ATTEMPTS,
+    },
+  );
+}
+
 export function getJob(jobId: string): JobRecord | null {
   return readJob(jobId);
 }
@@ -537,6 +566,15 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!articleId) throw new Error('AI process job is missing articleId');
     const { processArticle } = await import('$lib/server/ai/processor');
     await processArticle(articleId);
+    return { articleId, processed: true };
+  }
+
+  if (job.type === JEV_PROCESS_JOB_TYPE) {
+    const articleId =
+      typeof payload.articleId === 'string' ? payload.articleId : '';
+    if (!articleId) throw new Error('Jev process job is missing articleId');
+    const { processJevArticle } = await import('$lib/server/ai/jev');
+    await processJevArticle(articleId);
     return { articleId, processed: true };
   }
 

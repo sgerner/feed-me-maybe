@@ -10,7 +10,10 @@ import { dispatchWebhookEvent } from '$lib/server/webhooks';
 import { broadcast } from '$lib/server/realtime';
 import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
 import { recordAppError } from '$lib/server/logging';
-import { enqueueAiProcess } from '$lib/server/feed/job-queue';
+import {
+  enqueueAiProcess,
+  enqueueJevProcess,
+} from '$lib/server/feed/job-queue';
 import { normalizeFeedUrl } from '$lib/server/feed-management';
 import crypto from 'node:crypto';
 
@@ -629,6 +632,15 @@ export async function ingestFeed(
       } catch (err) {
         recordAppError({
           source: 'feed.ingester.ai.enqueue',
+          error: err,
+          details: { articleId, feedId },
+        });
+      }
+      try {
+        enqueueJevProcess(articleId, { feedId });
+      } catch (err) {
+        recordAppError({
+          source: 'feed.ingester.jev.enqueue',
           error: err,
           details: { articleId, feedId },
         });
