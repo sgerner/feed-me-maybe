@@ -35,7 +35,7 @@
   --fmm-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
   --fmm-duration-fast: 160ms;
   --fmm-duration-moderate: 280ms;
-  --fmm-mobile-nav-height: 4.5rem;
+  --fmm-mobile-nav-height: 4rem;
   --fmm-focus-ring: color-mix(
     in oklch,
     var(--color-primary-300) 88%,
@@ -494,7 +494,7 @@ body {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   min-height: var(--fmm-mobile-nav-height);
-  padding: 0.375rem 0.5rem max(0.375rem, env(safe-area-inset-bottom));
+  padding: 0 0 env(safe-area-inset-bottom);
   border-top: 1px solid
     color-mix(in oklch, var(--color-surface-100) 8%, transparent);
   background-color: color-mix(
@@ -1018,7 +1018,9 @@ main::-webkit-scrollbar-thumb,
   }
 
   main {
-    padding-bottom: calc(var(--fmm-mobile-nav-height) + 1rem);
+    padding-bottom: calc(
+      var(--fmm-mobile-nav-height) + env(safe-area-inset-bottom) + 1rem
+    );
   }
 }
 
