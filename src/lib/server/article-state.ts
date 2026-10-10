@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
+import { refreshRankingAfterFeedback } from '$lib/server/ranking-freshness';
 
 export const ARTICLE_STATE_ACTIONS = [
   'read',
@@ -351,6 +352,7 @@ type ArticleStateMutationInput = {
   articleIds: string[];
   action: ArticleStateAction;
   idempotencyKey?: string;
+  visibleArticleIds?: unknown;
 };
 
 export function applyArticleState(
@@ -359,17 +361,26 @@ export function applyArticleState(
 export function applyArticleState(
   articleIds: string[],
   patch: ArticleStatePatch,
-  options?: { action?: string; idempotencyKey?: string },
+  options?: {
+    action?: string;
+    idempotencyKey?: string;
+    visibleArticleIds?: unknown;
+  },
 ): StateMutationResult;
 export function applyArticleState(
   inputOrArticleIds: ArticleStateMutationInput | string[],
   patch: ArticleStatePatch = {},
-  options: { action?: string; idempotencyKey?: string } = {},
+  options: {
+    action?: string;
+    idempotencyKey?: string;
+    visibleArticleIds?: unknown;
+  } = {},
 ): StateMutationResult {
   const input: {
     articleIds: string[];
     action: HistoryAction;
     idempotencyKey?: string;
+    visibleArticleIds?: unknown;
     patch?: ArticleStatePatch;
   } = Array.isArray(inputOrArticleIds)
     ? {
@@ -383,6 +394,7 @@ export function applyArticleState(
             ? (options.action as HistoryAction)
             : 'state_change',
         idempotencyKey: options.idempotencyKey,
+        visibleArticleIds: options.visibleArticleIds,
         patch,
       }
     : inputOrArticleIds;
@@ -455,6 +467,27 @@ export function applyArticleState(
         createdAt: now,
         undoneAt: null,
       });
+    }
+
+    const feedbackType =
+      input.action === 'reject'
+        ? 'thumbs_down'
+        : input.action === 'thumbs_up' || input.action === 'boost'
+          ? input.action
+          : null;
+    if (feedbackType) {
+      const changedArticleIds = output
+        .filter((change) => change.changed)
+        .map((change) => change.articleId);
+      if (changedArticleIds.length) {
+        // Keep preference learning and its durable refresh marker atomic with
+        // the idempotent state mutation, so a replay can never lose the vote.
+        refreshRankingAfterFeedback({
+          articleIds: changedArticleIds,
+          type: feedbackType,
+          visibleArticleIds: input.visibleArticleIds,
+        });
+      }
     }
     return output;
   })();

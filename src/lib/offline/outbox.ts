@@ -222,12 +222,28 @@ function createId(prefix: string): string {
   return `${prefix}-${uuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
 
+function normalizeVisibleArticleIds(value: string[] | undefined): string[] {
+  if (!value) return [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value.slice(0, 60)) {
+    if (typeof candidate !== 'string') continue;
+    const articleId = candidate.trim();
+    if (!articleId || articleId.length > 200 || seen.has(articleId)) continue;
+    seen.add(articleId);
+    ids.push(articleId);
+    if (ids.length === 30) break;
+  }
+  return ids;
+}
+
 function buildMutation(
   scope: string,
   articleId: string,
   type: OfflineMutationType,
   sequence: number,
   queuedAt: number,
+  visibleArticleIds?: string[],
 ): OfflineMutation {
   return {
     id: createId('offline-mutation'),
@@ -235,6 +251,7 @@ function buildMutation(
     scope,
     articleId,
     type,
+    ...(visibleArticleIds?.length ? { visibleArticleIds } : {}),
     dedupeKey: mutationDedupeKey(articleId, type),
     sequence,
     queuedAt,
@@ -275,13 +292,21 @@ export function buildInteractionRequest(
     body: JSON.stringify({
       articleId: mutation.articleId,
       type: mutation.type,
+      ...(mutation.visibleArticleIds?.length
+        ? { visibleArticleIds: mutation.visibleArticleIds }
+        : {}),
     }),
   };
 }
 
 export async function enqueueOfflineMutation(
   userScope: string,
-  input: { articleId: string; type: OfflineMutationType; queuedAt?: number },
+  input: {
+    articleId: string;
+    type: OfflineMutationType;
+    queuedAt?: number;
+    visibleArticleIds?: string[];
+  },
 ): Promise<OfflineMutation> {
   return serializeEnqueue(async () => {
     const scope = await activateOfflineUser(userScope);
@@ -300,6 +325,7 @@ export async function enqueueOfflineMutation(
       input.type,
       nextSequence,
       input.queuedAt ?? Date.now(),
+      normalizeVisibleArticleIds(input.visibleArticleIds),
     );
     const next = coalesceMutations([...existing, mutation]);
     const nextKeys = new Set(next.map((item) => item.id));

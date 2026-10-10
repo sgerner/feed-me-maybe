@@ -350,6 +350,9 @@
   async function interact(type: InteractionType) {
     if (pendingAction) return;
 
+    const visibleArticleIds =
+      type === 'thumbs_up' || type === 'thumbs_down' ? [article.id] : undefined;
+
     // Optimistic UI updates
     const prevLiked = liked;
     const prevDisliked = disliked;
@@ -391,13 +394,20 @@
         await enqueueOfflineMutation(offlineScope(), {
           articleId: article.id,
           type: queuedType,
+          ...(actualType === 'thumbs_down' && visibleArticleIds
+            ? { visibleArticleIds }
+            : {}),
         });
         addToast('Action queued — will sync when you’re online', 'info');
       } else {
         const res = await fetchWithCsrf('/api/interactions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ articleId: article.id, type: actualType }),
+          body: JSON.stringify({
+            articleId: article.id,
+            type: actualType,
+            ...(visibleArticleIds ? { visibleArticleIds } : {}),
+          }),
         });
         if (!res.ok) throw new Error();
       }

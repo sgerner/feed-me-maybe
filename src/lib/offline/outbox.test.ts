@@ -110,6 +110,7 @@ describe('offline mutation outbox', () => {
     const item = mutation(1, 'article-1', 'thumbs_down', {
       id: 'mutation-stable',
       idempotencyKey: 'idempotency-stable',
+      visibleArticleIds: ['article-1', 'article-2'],
     });
     const request = buildInteractionRequest(item);
 
@@ -122,7 +123,11 @@ describe('offline mutation outbox', () => {
       },
     });
     expect(request.body).toBe(
-      JSON.stringify({ articleId: 'article-1', type: 'thumbs_down' }),
+      JSON.stringify({
+        articleId: 'article-1',
+        type: 'thumbs_down',
+        visibleArticleIds: ['article-1', 'article-2'],
+      }),
     );
   });
 

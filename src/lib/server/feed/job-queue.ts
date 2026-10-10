@@ -10,6 +10,9 @@ export const JEV_PROCESS_JOB_TYPE = 'jev_process';
 export const DEFAULT_FEED_FETCH_MAX_ATTEMPTS = 4;
 export const DEFAULT_AI_PROCESS_MAX_ATTEMPTS = 3;
 export const DEFAULT_JEV_PROCESS_MAX_ATTEMPTS = 4;
+export const DEFAULT_JEV_QUEUE_CAPACITY = 4;
+export const DEFAULT_JEV_BACKFILL_BATCH_SIZE = 4;
+export const DEFAULT_JEV_JOBS_PER_RUN = 4;
 export const FEED_FETCH_LEASE_MS = 10 * 60 * 1000;
 export const AI_PROCESS_LEASE_MS = 30 * 60 * 1000;
 export const JEV_PROCESS_LEASE_MS = 5 * 60 * 1000;
@@ -31,6 +34,8 @@ export type AiProcessJobPayload = {
 export type JevProcessJobPayload = {
   articleId: string;
   feedId?: string;
+  backfill?: boolean;
+  feedback?: boolean;
 };
 
 export type JobPayload =
@@ -348,15 +353,26 @@ function enqueueJob(
         const forceRefresh =
           type === FEED_FETCH_JOB_TYPE &&
           (payload as FeedFetchJobPayload).force === true;
+        const explicitJevRefresh = type === JEV_PROCESS_JOB_TYPE;
         db.prepare(
           `
             UPDATE jobs
             SET scheduled_at = MIN(COALESCE(scheduled_at, ?), ?),
                 error_message = '',
-                payload = CASE WHEN ? = 1 THEN json_set(payload, '$.force', 1) ELSE payload END
+                payload = CASE
+                  WHEN ? = 1 THEN json_set(payload, '$.force', 1)
+                  WHEN ? = 1 THEN json_remove(payload, '$.backfill')
+                  ELSE payload
+                END
             WHERE id = ? AND status = 'queued'
           `,
-        ).run(scheduledAt, scheduledAt, forceRefresh ? 1 : 0, existing.id);
+        ).run(
+          scheduledAt,
+          scheduledAt,
+          forceRefresh ? 1 : 0,
+          explicitJevRefresh ? 1 : 0,
+          existing.id,
+        );
       }
       return readJob(existing.id) || existing;
     }
@@ -410,21 +426,189 @@ export function enqueueAiProcess(
 
 export function enqueueJevProcess(
   articleId: string,
-  options: { feedId?: string; now?: number } = {},
+  options: { feedId?: string; now?: number; feedback?: boolean } = {},
 ): JobRecord | null {
-  // Avoid filling local databases with no-op jobs when the optional Jev
-  // secret has not been configured. Production has the secret mounted.
   if (!isJevConfigured()) return null;
-  return enqueueJob(
-    JEV_PROCESS_JOB_TYPE,
-    { articleId, feedId: options.feedId },
-    'articleId',
-    articleId,
-    {
-      now: options.now,
-      maxAttempts: DEFAULT_JEV_PROCESS_MAX_ATTEMPTS,
-    },
+  if (!options.feedback) {
+    const db = getDb();
+    const now = options.now ?? Date.now();
+    const enqueueTx = db.transaction(() => {
+      const existing = readActiveJob(
+        JEV_PROCESS_JOB_TYPE,
+        'articleId',
+        articleId,
+      );
+      if (existing) return existing;
+      const active = db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM jobs
+           WHERE type = ? AND status IN ('queued', 'processing')`,
+        )
+        .get(JEV_PROCESS_JOB_TYPE) as { count: number };
+      if (Number(active.count) >= DEFAULT_JEV_QUEUE_CAPACITY) return null;
+      const id = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO jobs (
+          id, type, status, payload, result, error_message, attempts,
+          max_attempts, scheduled_at, created_at
+        ) VALUES (?, ?, 'queued', ?, '{}', '', 0, ?, ?, ?)`,
+      ).run(
+        id,
+        JEV_PROCESS_JOB_TYPE,
+        JSON.stringify({ articleId, feedId: options.feedId }),
+        DEFAULT_JEV_PROCESS_MAX_ATTEMPTS,
+        now,
+        now,
+      );
+      return readJob(id) as JobRecord;
+    });
+    return enqueueTx.immediate();
+  }
+
+  const db = getDb();
+  const now = options.now ?? Date.now();
+  const enqueueTx = db.transaction(() => {
+    const activeRows = db
+      .prepare(
+        `SELECT * FROM jobs
+         WHERE type = ? AND status IN ('queued', 'processing')
+           AND json_valid(payload) = 1
+           AND json_extract(payload, '$.articleId') = ?
+         ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at ASC`,
+      )
+      .all(JEV_PROCESS_JOB_TYPE, articleId) as RawJobRow[];
+    const queued = activeRows.find((row) => row.status === 'queued');
+    if (queued) {
+      db.prepare(
+        `UPDATE jobs
+         SET payload = json_set(payload, '$.feedback', 1, '$.backfill', 0),
+             scheduled_at = MIN(COALESCE(scheduled_at, ?), ?)
+         WHERE id = ? AND status = 'queued'`,
+      ).run(now, now, queued.id);
+      return readJob(queued.id) || toJobRecord(queued);
+    }
+
+    const active = db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM jobs
+         WHERE type = ? AND status IN ('queued', 'processing')`,
+      )
+      .get(JEV_PROCESS_JOB_TYPE) as { count: number };
+    if (Number(active.count) >= DEFAULT_JEV_QUEUE_CAPACITY) return null;
+
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO jobs (
+        id, type, status, payload, result, error_message, attempts,
+        max_attempts, scheduled_at, created_at
+      ) VALUES (?, ?, 'queued', ?, '{}', '', 0, ?, ?, ?)`,
+    ).run(
+      id,
+      JEV_PROCESS_JOB_TYPE,
+      JSON.stringify({
+        articleId,
+        feedId: options.feedId,
+        feedback: true,
+      } satisfies JevProcessJobPayload),
+      DEFAULT_JEV_PROCESS_MAX_ATTEMPTS,
+      now,
+      now,
+    );
+    return readJob(id) as JobRecord;
+  });
+
+  return enqueueTx.immediate();
+}
+
+/**
+ * Queue a bounded batch of existing articles without a Jev score. Active or
+ * failed jobs exclude an article; completed backfill jobs also exclude it so
+ * a no-op completion cannot loop. A completed ordinary job may receive one
+ * backfill pass if it never produced a score.
+ */
+export function enqueueJevBackfill(
+  options: { now?: number; limit?: number } = {},
+): number {
+  if (!isJevConfigured()) return 0;
+
+  const requestedLimit = Math.floor(
+    options.limit ?? DEFAULT_JEV_BACKFILL_BATCH_SIZE,
   );
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.min(DEFAULT_JEV_BACKFILL_BATCH_SIZE, requestedLimit))
+    : 0;
+  if (limit === 0) return 0;
+
+  const db = getDb();
+  const now = options.now ?? Date.now();
+  const enqueueTx = db.transaction(() => {
+    const active = db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM jobs
+         WHERE type = ? AND status IN ('queued', 'processing')`,
+      )
+      .get(JEV_PROCESS_JOB_TYPE) as { count: number };
+    const remainingCapacity = Math.max(
+      0,
+      DEFAULT_JEV_QUEUE_CAPACITY - Number(active.count),
+    );
+    const batchSize = Math.min(limit, remainingCapacity);
+    if (batchSize === 0) return 0;
+
+    const candidates = db
+      .prepare(
+        `SELECT a.id, a.feed_id
+         FROM articles a
+         WHERE a.jev_score IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM ranking_refresh_queue r
+             WHERE r.article_id = a.id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM jobs j
+             WHERE j.type = 'jev_process'
+               AND CASE WHEN json_valid(j.payload) = 1
+                        THEN json_extract(j.payload, '$.articleId')
+                   END = a.id
+               AND (
+                 j.status != 'completed'
+                 OR CASE WHEN json_valid(j.payload) = 1
+                         THEN json_extract(j.payload, '$.backfill')
+                    END = 1
+               )
+           )
+         ORDER BY a.fetched_at ASC, a.id ASC
+         LIMIT ?`,
+      )
+      .all(batchSize) as Array<{
+      id: string;
+      feed_id: string;
+    }>;
+
+    const insert = db.prepare(
+      `INSERT INTO jobs (
+        id, type, status, payload, result, error_message, attempts,
+        max_attempts, scheduled_at, created_at
+      ) VALUES (?, ?, 'queued', ?, '{}', '', 0, ?, ?, ?)`,
+    );
+    for (const article of candidates) {
+      insert.run(
+        crypto.randomUUID(),
+        JEV_PROCESS_JOB_TYPE,
+        JSON.stringify({
+          articleId: article.id,
+          feedId: article.feed_id,
+          backfill: true,
+        } satisfies JevProcessJobPayload),
+        DEFAULT_JEV_PROCESS_MAX_ATTEMPTS,
+        now,
+        now,
+      );
+    }
+    return candidates.length;
+  });
+
+  return enqueueTx.immediate();
 }
 
 export function getJob(jobId: string): JobRecord | null {
@@ -447,19 +631,31 @@ export function getLatestFeedFetchJob(feedId: string): JobRecord | null {
 }
 
 export function getNextQueuedJobAt(): number | null {
+  const jevConfigured = isJevConfigured();
   const row = getDb()
     .prepare(
       `
-        SELECT MIN(COALESCE(scheduled_at, created_at)) as scheduled_at
-        FROM jobs
-        WHERE status = 'queued' AND attempts < max_attempts
+        SELECT MIN(scheduled_at) AS scheduled_at FROM (
+          SELECT MIN(COALESCE(scheduled_at, created_at)) AS scheduled_at
+          FROM jobs
+          WHERE status = 'queued' AND attempts < max_attempts
+            AND (? = 1 OR type != ?)
+          UNION ALL
+          SELECT MIN(not_before) AS scheduled_at
+          FROM ranking_refresh_queue
+          WHERE ? = 1
+        )
       `,
     )
-    .get() as { scheduled_at: number | null } | undefined;
+    .get(jevConfigured ? 1 : 0, JEV_PROCESS_JOB_TYPE, jevConfigured ? 1 : 0) as
+    { scheduled_at: number | null } | undefined;
   return row?.scheduled_at == null ? null : Number(row.scheduled_at);
 }
 
-function claimNextJob(now: number): JobRecord | null {
+function claimNextJob(
+  now: number,
+  options: { allowJev?: boolean } = {},
+): JobRecord | null {
   const db = getDb();
   const claimTx = db.transaction(() => {
     const row = db
@@ -469,11 +665,32 @@ function claimNextJob(now: number): JobRecord | null {
           WHERE status = 'queued'
             AND (scheduled_at IS NULL OR scheduled_at <= ?)
             AND attempts < max_attempts
-          ORDER BY COALESCE(scheduled_at, created_at) ASC, created_at ASC
+            AND (? = 1 OR type != ?)
+            AND (type != ? OR NOT EXISTS (
+              SELECT 1 FROM ranking_refresh_queue q
+              WHERE q.article_id = CASE WHEN json_valid(jobs.payload) = 1
+                THEN json_extract(jobs.payload, '$.articleId') END
+                AND q.not_before > ?
+            ))
+          ORDER BY CASE
+                     WHEN type = ? AND json_valid(payload) = 1
+                       AND json_extract(payload, '$.feedback') = 1 THEN 0
+                     WHEN type = ? THEN 1
+                     ELSE 0
+                   END ASC,
+                   COALESCE(scheduled_at, created_at) ASC, created_at ASC
           LIMIT 1
         `,
       )
-      .get(now) as RawJobRow | undefined;
+      .get(
+        now,
+        options.allowJev === false ? 0 : 1,
+        JEV_PROCESS_JOB_TYPE,
+        JEV_PROCESS_JOB_TYPE,
+        now,
+        JEV_PROCESS_JOB_TYPE,
+        JEV_PROCESS_JOB_TYPE,
+      ) as RawJobRow | undefined;
     if (!row) return null;
 
     const result = db
@@ -573,6 +790,21 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     const articleId =
       typeof payload.articleId === 'string' ? payload.articleId : '';
     if (!articleId) throw new Error('Jev process job is missing articleId');
+    const article = getDb()
+      .prepare('SELECT jev_score FROM articles WHERE id = ?')
+      .get(articleId) as { jev_score: number | null } | undefined;
+    if (
+      !article ||
+      ((payload.backfill === true || payload.feedback === true) &&
+        article.jev_score != null)
+    ) {
+      return { articleId, processed: false, skipped: true };
+    }
+    // The claim query excludes Jev jobs when configuration is absent. Keep a
+    // second check here in case configuration changes after the claim.
+    if (!isJevConfigured()) {
+      throw new Error('Jev scoring is not configured');
+    }
     const { processJevArticle } = await import('$lib/server/ai/jev');
     await processJevArticle(articleId);
     return { articleId, processed: true };
@@ -589,6 +821,12 @@ async function runDueJobsInternal(
   const now = options.now ?? Date.now();
   const maxJobs = Math.max(1, Math.floor(options.maxJobs ?? 16));
   const recovered = recoverAbandonedJobs(now);
+  const { flushRankingRefreshQueue } =
+    await import('$lib/server/ranking-freshness');
+  // Preference refreshes use their own durable lane and claim Jev capacity
+  // before ordinary unscored-article backfill.
+  await flushRankingRefreshQueue(now, DEFAULT_JEV_QUEUE_CAPACITY);
+  enqueueJevBackfill({ now });
   const result: RunJobsResult = {
     processed: 0,
     completed: 0,
@@ -596,11 +834,17 @@ async function runDueJobsInternal(
     failed: 0,
     recovered,
   };
+  let jevExecutions = 0;
 
   for (let index = 0; index < maxJobs; index += 1) {
-    const job = claimNextJob(Date.now());
+    await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
+    const jevConfigured = isJevConfigured();
+    const job = claimNextJob(Date.now(), {
+      allowJev: jevConfigured && jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
+    });
     if (!job) break;
     result.processed += 1;
+    if (job.type === JEV_PROCESS_JOB_TYPE) jevExecutions += 1;
 
     try {
       const output = await executeJob(job);

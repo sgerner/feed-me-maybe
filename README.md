@@ -301,3 +301,18 @@ feed-me-maybe/
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+### Jev score backfill
+
+When a Jev API key is configured, each job worker cycle discovers up to four
+articles without `jev_score`, with at most four active Jev jobs before discovery
+adds more. Each cycle executes at most four Jev jobs and gives feed ingestion
+and AI processing priority. Backfill uses the persistent job queue, exponential
+retry delays, and lease recovery after restarts. It does not reset existing
+retries or automatically re-enqueue articles with completed backfill jobs or
+exhausted Jev jobs. Historical completed jobs that left no score get one backfill
+pass. Successful AI enrichment can still explicitly request a fresh Jev score.
+Without credentials, Jev discovery and execution pause.
+
+Settings → System Status shows score coverage, Jev queue states, recent attempts,
+retry schedules, and failures. Exhausted jobs remain visible for diagnosis.

@@ -312,7 +312,8 @@ function getArticleContext(articleId: string): ArticleContext | undefined {
   return db
     .prepare(
       `
-    SELECT a.id, a.title, a.summary, a.content, a.author, a.categories,
+    SELECT a.id, a.title, a.summary, substr(a.content, 1, 8000) AS content,
+           a.author, a.categories,
            COALESCE(am.topics, '[]') as ai_topics,
            COALESCE(am.entities, '[]') as ai_entities,
            COALESCE(am.content_type, '') as ai_content_type,
@@ -323,6 +324,48 @@ function getArticleContext(articleId: string): ArticleContext | undefined {
   `,
     )
     .get(articleId) as ArticleContext | undefined;
+}
+
+/** Return normalized preference feature keys for a bounded set of articles. */
+export function getPreferenceFeatureKeysForArticles(
+  articleIds: string[],
+): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  const uniqueIds = [...new Set(articleIds)].filter(Boolean);
+  const db = getDb();
+  // SQLite builds commonly cap bound parameters at 999. Keep each query below
+  // that limit even when this helper is reused by a larger maintenance task.
+  for (let offset = 0; offset < uniqueIds.length; offset += 400) {
+    const ids = uniqueIds.slice(offset, offset + 400);
+    if (!ids.length) continue;
+    const rows = db
+      .prepare(
+        `
+        SELECT a.id, a.title, a.summary, substr(a.content, 1, 8000) AS content,
+               a.author, a.categories,
+               COALESCE(am.topics, '[]') AS ai_topics,
+               COALESCE(am.entities, '[]') AS ai_entities,
+               COALESCE(am.content_type, '') AS ai_content_type,
+               COALESCE(am.signals, '[]') AS ai_signals
+        FROM articles a
+        LEFT JOIN article_ai_metadata am ON am.article_id = a.id
+        WHERE a.id IN (${ids.map(() => '?').join(', ')})
+      `,
+      )
+      .all(...ids) as ArticleContext[];
+
+    for (const row of rows) {
+      result.set(
+        row.id,
+        new Set(
+          extractFeatures(row).map(
+            (feature) => `${feature.type}|${feature.label}`,
+          ),
+        ),
+      );
+    }
+  }
+  return result;
 }
 
 function getDecayedStrength(strength: number, lastReinforced: number): number {
@@ -386,7 +429,7 @@ function upsertPreference(
 export function updatePreferenceMemoryFromInteraction(
   articleId: string,
   type: InteractionType,
-): void {
+): string[] {
   const positiveDelta =
     type === 'boost'
       ? 0.45
@@ -401,15 +444,17 @@ export function updatePreferenceMemoryFromInteraction(
               : 0;
   const negativeDelta =
     type === 'thumbs_down' ? 0.3 : type === 'hide' ? 0.04 : 0;
-  if (!positiveDelta && !negativeDelta) return;
+  if (!positiveDelta && !negativeDelta) return [];
 
   const ctx = getArticleContext(articleId);
-  if (!ctx) return;
+  if (!ctx) return [];
   const features = extractFeatures(ctx);
   const isImplicitFeedback = type === 'open' || type === 'read';
+  const changedFeatureKeys: string[] = [];
 
   for (const feature of features) {
     if (isImplicitFeedback && feature.type === 'phrase') continue;
+    changedFeatureKeys.push(`${feature.type}|${feature.label}`);
     if (negativeDelta) {
       upsertPreference(
         feature.type,
@@ -427,6 +472,7 @@ export function updatePreferenceMemoryFromInteraction(
       );
     }
   }
+  return changedFeatureKeys;
 }
 
 export function getPreferenceStateForArticle(

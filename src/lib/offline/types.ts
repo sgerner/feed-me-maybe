@@ -75,6 +75,7 @@ export interface OfflineMutation {
   scope: string;
   articleId: string;
   type: OfflineMutationType;
+  visibleArticleIds?: string[];
   dedupeKey: string;
   sequence: number;
   queuedAt: number;

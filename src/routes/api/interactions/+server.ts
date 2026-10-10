@@ -14,6 +14,36 @@ import {
   OFFLINE_PROTOCOL_VERSION,
 } from '$lib/server/auth/csrf';
 
+const MAX_VISIBLE_ARTICLE_IDS = 30;
+const MAX_ARTICLE_ID_LENGTH = 200;
+const REACTION_TYPES = new Set<InteractionType>([
+  'thumbs_up',
+  'thumbs_down',
+  'boost',
+]);
+
+function readVisibleArticleIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value.slice(0, MAX_VISIBLE_ARTICLE_IDS * 2)) {
+    if (typeof candidate !== 'string') continue;
+    const articleId = candidate.trim();
+    if (
+      !articleId ||
+      articleId.length > MAX_ARTICLE_ID_LENGTH ||
+      seen.has(articleId)
+    ) {
+      continue;
+    }
+    seen.add(articleId);
+    ids.push(articleId);
+    if (ids.length === MAX_VISIBLE_ARTICLE_IDS) break;
+  }
+  return ids;
+}
+
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
     return json({ error: 'Unauthorized' }, { status: 401 });
@@ -21,12 +51,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   let body: Record<string, unknown>;
   try {
-    body = await request.json();
+    const parsedBody: unknown = await request.json();
+    if (
+      !parsedBody ||
+      typeof parsedBody !== 'object' ||
+      Array.isArray(parsedBody)
+    ) {
+      return json({ error: 'Invalid request body' }, { status: 400 });
+    }
+    body = parsedBody as Record<string, unknown>;
   } catch {
     return json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { articleId, type } = body as { articleId?: string; type?: string };
+  const rawArticleId = body.articleId;
+  const type = body.type;
   const validTypes: InteractionType[] = [
     'read',
     'unread',
@@ -40,12 +79,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     'open',
   ];
 
-  if (!articleId || !type || !validTypes.includes(type as InteractionType)) {
+  if (
+    typeof rawArticleId !== 'string' ||
+    !rawArticleId.trim() ||
+    rawArticleId.length > MAX_ARTICLE_ID_LENGTH ||
+    typeof type !== 'string' ||
+    !validTypes.includes(type as InteractionType)
+  ) {
     return json(
       { error: 'articleId and valid type are required' },
       { status: 400 },
     );
   }
+  const articleId = rawArticleId.trim();
+  const visibleArticleIds = readVisibleArticleIds(body.visibleArticleIds);
 
   // The service worker replays mutations through this compatibility endpoint
   // so older clients and the installed PWA share one queue contract. Route
@@ -76,6 +123,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         articleIds: [articleId],
         action,
         idempotencyKey: `offline:${offlineKey}`,
+        ...(type === 'thumbs_down' ? { visibleArticleIds } : {}),
       });
       return json({ success: true, ...result });
     } catch (caught) {
@@ -88,6 +136,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     }
   }
 
-  recordInteraction(articleId, type as InteractionType);
+  if (REACTION_TYPES.has(type as InteractionType)) {
+    recordInteraction(articleId, type as InteractionType, {
+      visibleArticleIds,
+    });
+  } else {
+    recordInteraction(articleId, type as InteractionType);
+  }
   return json({ success: true });
 };

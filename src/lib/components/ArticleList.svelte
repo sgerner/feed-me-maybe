@@ -16,6 +16,8 @@
   type InteractionType =
     'open' | 'read' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down' | 'boost';
   type ReactionType = 'thumbs_up' | 'thumbs_down' | 'boost';
+  const MAX_VISIBLE_ARTICLE_IDS = 30;
+  const VISIBLE_ARTICLE_RECENCY_MS = 10 * 60 * 1000;
 
   type Article = {
     id: string;
@@ -223,10 +225,88 @@
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
+  let recentVisibleArticles: Array<{ id: string; seenAt: number }> = [];
+  let currentlyVisibleArticleIds = new Set<string>();
+  let articleVisibilityObserver: IntersectionObserver | null = null;
   let openingArticle = $state<{ id: string; label: string } | null>(null);
   let openingTimeout: ReturnType<typeof setTimeout> | null = null;
   let isRestoringScroll = $state(false);
   let scrollWriteTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function rememberVisibleArticle(articleId: string): void {
+    const now = Date.now();
+    recentVisibleArticles = [
+      { id: articleId, seenAt: now },
+      ...recentVisibleArticles.filter(
+        (article) =>
+          article.id !== articleId &&
+          now - article.seenAt <= VISIBLE_ARTICLE_RECENCY_MS,
+      ),
+    ].slice(0, MAX_VISIBLE_ARTICLE_IDS);
+  }
+
+  function getVisibleArticleContext(articleId: string): string[] {
+    const now = Date.now();
+    const currentArticleIds = new Set(
+      articles.map((article: Article) => article.id),
+    );
+    for (const visibleId of currentlyVisibleArticleIds) {
+      if (currentArticleIds.has(visibleId)) rememberVisibleArticle(visibleId);
+    }
+    return [
+      articleId,
+      ...recentVisibleArticles
+        .filter(
+          (article) =>
+            article.id !== articleId &&
+            currentArticleIds.has(article.id) &&
+            now - article.seenAt <= VISIBLE_ARTICLE_RECENCY_MS,
+        )
+        .map((article) => article.id),
+    ].slice(0, MAX_VISIBLE_ARTICLE_IDS);
+  }
+
+  function trackArticleVisibility(node: HTMLElement, articleId: string) {
+    if (typeof IntersectionObserver === 'undefined') return;
+
+    if (!articleVisibilityObserver) {
+      articleVisibilityObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            const visibleId = (entry.target as HTMLElement).dataset.articleId;
+            if (!visibleId) continue;
+            if (entry.isIntersecting) {
+              currentlyVisibleArticleIds.add(visibleId);
+              rememberVisibleArticle(visibleId);
+            } else {
+              currentlyVisibleArticleIds.delete(visibleId);
+            }
+          }
+        },
+        { root: document.querySelector('main'), threshold: 0.1 },
+      );
+    }
+
+    node.dataset.articleId = articleId;
+    articleVisibilityObserver.observe(node);
+
+    return {
+      update(nextArticleId: string) {
+        if (nextArticleId === node.dataset.articleId) return;
+        const previousArticleId = node.dataset.articleId;
+        articleVisibilityObserver?.unobserve(node);
+        if (previousArticleId) {
+          currentlyVisibleArticleIds.delete(previousArticleId);
+        }
+        node.dataset.articleId = nextArticleId;
+        articleVisibilityObserver?.observe(node);
+      },
+      destroy() {
+        articleVisibilityObserver?.unobserve(node);
+        currentlyVisibleArticleIds.delete(node.dataset.articleId || '');
+      },
+    };
+  }
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
@@ -352,6 +432,11 @@
   async function interact(articleId: string, type: InteractionType) {
     if (pendingArticleIds[articleId]) return;
 
+    const isReaction =
+      type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
+    const visibleArticleIds = isReaction
+      ? getVisibleArticleContext(articleId)
+      : undefined;
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
     const shouldRemove =
@@ -359,8 +444,6 @@
       type === 'thumbs_down' ||
       type === 'boost' ||
       (type === 'read' && $pageStore.url.pathname === '/inbox');
-    const isReaction =
-      type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
     const previousRead = previousArticle?.read;
     const previousReaction = previousArticle
       ? {
@@ -402,6 +485,9 @@
         await enqueueOfflineMutation(offlineScope(), {
           articleId,
           type: offlineType,
+          ...(type === 'thumbs_down' && visibleArticleIds
+            ? { visibleArticleIds }
+            : {}),
         });
         addToast('Action queued — will sync when you’re online', 'info');
         return;
@@ -410,7 +496,11 @@
       const res = await fetchWithCsrf('/api/interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ articleId, type }),
+        body: JSON.stringify({
+          articleId,
+          type,
+          ...(visibleArticleIds ? { visibleArticleIds } : {}),
+        }),
       });
       if (res.ok) {
         addToast(INTERACTION_LABELS[type] || type, 'success');
@@ -726,6 +816,10 @@
         openingTimeout = null;
       }
       observer.disconnect();
+      articleVisibilityObserver?.disconnect();
+      articleVisibilityObserver = null;
+      recentVisibleArticles = [];
+      currentlyVisibleArticleIds.clear();
     };
   });
 
@@ -952,6 +1046,7 @@
 
         <div
           id="article-{article.id}"
+          use:trackArticleVisibility={article.id}
           class="glass-card glass-card-hover article-card group relative flex min-h-[180px] flex-col overflow-visible p-0 md:min-h-[280px]"
           style="touch-action: pan-y; --swipe-offset: {swipeOffset}px;"
           class:article-swiping={activeSwipeId === article.id}

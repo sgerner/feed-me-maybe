@@ -1,5 +1,6 @@
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
+import { isJevConfigured } from '$lib/server/ai/jev';
 
 function parseDetails(
   value: string | null | undefined,
@@ -27,6 +28,43 @@ export const load: PageServerLoad = async ({ locals }) => {
       .prepare("SELECT COUNT(*) as c FROM jobs WHERE status = 'queued'")
       .get() as { c: number }
   ).c;
+  const jev = {
+    configured: isJevConfigured(),
+    ...(db
+      .prepare(
+        `
+      SELECT COUNT(*) AS total,
+        COUNT(jev_score) AS scored,
+        SUM(CASE WHEN jev_score IS NULL THEN 1 ELSE 0 END) AS missing
+      FROM articles
+    `,
+      )
+      .get() as { total: number; scored: number; missing: number | null }),
+    jobs: db
+      .prepare(
+        `
+      SELECT status, COUNT(*) AS count FROM jobs
+      WHERE type = 'jev_process' GROUP BY status
+    `,
+      )
+      .all() as Array<{ status: string; count: number }>,
+    recentJobs: db
+      .prepare(
+        `
+      SELECT id, status, attempts, max_attempts, scheduled_at, error_message
+      FROM jobs WHERE type = 'jev_process'
+      ORDER BY created_at DESC, id DESC LIMIT 10
+    `,
+      )
+      .all() as Array<{
+      id: string;
+      status: string;
+      attempts: number;
+      max_attempts: number;
+      scheduled_at: number | null;
+      error_message: string | null;
+    }>,
+  };
   const recentJobs = db
     .prepare('SELECT * FROM feed_fetch_logs ORDER BY created_at DESC LIMIT 10')
     .all();
@@ -39,5 +77,5 @@ export const load: PageServerLoad = async ({ locals }) => {
     details: parseDetails(row.details),
   }));
 
-  return { feedCount, articleCount, jobCount, recentJobs, recentErrors };
+  return { feedCount, articleCount, jobCount, recentJobs, recentErrors, jev };
 };

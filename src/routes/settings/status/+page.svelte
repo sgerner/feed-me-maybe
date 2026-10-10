@@ -18,6 +18,20 @@
 
   let { data: pageData } = $props<{
     data: {
+      jev?: {
+        configured: boolean;
+        scored: number;
+        missing: number | null;
+        jobs: Array<{ status: string; count: number }>;
+        recentJobs: Array<{
+          id: string;
+          status: string;
+          attempts: number;
+          max_attempts: number;
+          scheduled_at: number | null;
+          error_message: string | null;
+        }>;
+      };
       feedCount?: number;
       articleCount?: number;
       jobCount?: number;
@@ -59,6 +73,36 @@
     </p>
   </div>
 </div>
+
+{#if pageData.jev}
+  <h3 class="mb-3 mt-8 text-sm font-semibold">Jev Scoring</h3>
+  <div class="glass-card space-y-2 p-3 text-xs">
+    <p>
+      {pageData.jev.configured
+        ? 'Configured'
+        : 'Paused: API key not configured'} · {pageData.jev.scored} scored · {pageData
+        .jev.missing ?? 0} missing scores
+    </p>
+    <p>
+      {#each pageData.jev.jobs as group}
+        <span class="mr-3">{group.count} {group.status}</span>
+      {/each}
+    </p>
+    <p>
+      Missing scores are backfilled gradually. Failed jobs stop after their
+      retry budget is exhausted.
+    </p>
+    {#each pageData.jev.recentJobs as job (job.id)}
+      <div class="border-t border-white/10 pt-2">
+        <p>
+          {job.status} · attempt {job.attempts}/{job.max_attempts}{#if job.status === 'queued' && job.scheduled_at}
+            · scheduled {new Date(job.scheduled_at).toLocaleString()}{/if}
+        </p>
+        {#if job.error_message}<p>{job.error_message}</p>{/if}
+      </div>
+    {/each}
+  </div>
+{/if}
 
 {#if (pageData.recentJobs ?? []).length > 0}
   <h3

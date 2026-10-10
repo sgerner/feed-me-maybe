@@ -4,6 +4,10 @@ import {
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
 } from '$lib/server/preferences';
+import {
+  refreshRankingAfterFeedback,
+  refreshRankingAfterProfileMutation,
+} from '$lib/server/ranking-freshness';
 import { dispatchWebhookEvent } from '$lib/server/webhooks';
 
 export type InteractionType =
@@ -21,6 +25,7 @@ export type InteractionType =
 export function recordInteraction(
   articleId: string,
   type: InteractionType,
+  options: { visibleArticleIds?: unknown } = {},
 ): void {
   const db = getDb();
   const now = Date.now();
@@ -165,8 +170,25 @@ export function recordInteraction(
       break;
   }
 
-  updatePreferenceMemoryFromInteraction(articleId, type);
+  if (type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost') {
+    refreshRankingAfterFeedback({
+      articleIds: [articleId],
+      type,
+      visibleArticleIds: options.visibleArticleIds,
+      interactionAlreadyRecorded: true,
+    });
+    return;
+  }
 
-  // Update heuristic score
+  updatePreferenceMemoryFromInteraction(articleId, type);
+  if (
+    type === 'save' ||
+    type === 'hide' ||
+    type === 'open' ||
+    type === 'read'
+  ) {
+    refreshRankingAfterProfileMutation(articleId);
+    return;
+  }
   updateHeuristicScore(articleId);
 }

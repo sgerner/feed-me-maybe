@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import { getDb } from '$lib/server/db';
 import { parseJsonTextArray } from '$lib/server/normalization';
 import { refreshCombinedScore } from '$lib/server/scoring';
+import {
+  getRankingFeedbackRevision,
+  markArticleForRankingRefresh,
+} from '$lib/server/ranking-freshness';
 
 const JEV_ENDPOINT =
   process.env.TYPESAFE_API_URL ||
@@ -317,22 +321,54 @@ export async function scoreArticleWithJev(
   if (!article) return null;
 
   const db = getDb();
+  const profileRevision = getRankingFeedbackRevision();
   try {
     const score = await requestJevScore(buildState(article), apiKey);
-    db.prepare(
-      `
-        UPDATE articles
-        SET jev_score = ?, jev_processed_at = ?, jev_error = ''
-        WHERE id = ?
-      `,
-    ).run(score, Date.now(), articleId);
-    refreshCombinedScore(articleId);
-    return score;
+    const stored = db
+      .transaction(() => {
+        const currentRevision = getRankingFeedbackRevision();
+        if (currentRevision !== profileRevision) {
+          markArticleForRankingRefresh(articleId, currentRevision);
+          return false;
+        }
+        const now = Date.now();
+        const result = db
+          .prepare(
+            `
+              UPDATE articles
+              SET jev_score = ?, jev_processed_at = ?, jev_error = '',
+                  ranking_refreshed_at = ?
+              WHERE id = ?
+            `,
+          )
+          .run(score, now, now, articleId);
+        if (result.changes === 0) return false;
+        // A current-profile result can satisfy any older pending request for
+        // this article, including a marker left by capacity or cooldown.
+        db.prepare(
+          'DELETE FROM ranking_refresh_queue WHERE article_id = ? AND requested_revision <= ?',
+        ).run(articleId, profileRevision);
+        refreshCombinedScore(articleId);
+        return true;
+      })
+      .immediate();
+    return stored ? score : null;
   } catch (error) {
     const message = truncateError(error);
-    db.prepare(
-      'UPDATE articles SET jev_processed_at = ?, jev_error = ? WHERE id = ?',
-    ).run(Date.now(), message, articleId);
+    const recordError = db
+      .transaction(() => {
+        const currentRevision = getRankingFeedbackRevision();
+        if (currentRevision !== profileRevision) {
+          markArticleForRankingRefresh(articleId, currentRevision);
+          return false;
+        }
+        db.prepare(
+          'UPDATE articles SET jev_processed_at = ?, jev_error = ? WHERE id = ?',
+        ).run(Date.now(), message, articleId);
+        return true;
+      })
+      .immediate();
+    if (!recordError) return null;
     throw new Error(`Jev scoring failed for ${articleId}: ${message}`, {
       cause: error,
     });

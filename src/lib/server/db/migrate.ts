@@ -410,6 +410,47 @@ const migrations: Migration[] = [
       ensureColumn(db, 'articles', 'jev_error', "TEXT NOT NULL DEFAULT ''");
     },
   },
+  {
+    version: 5,
+    name: 'jev_backfill_lookup_indexes',
+    apply: (db) => {
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_jev_article_id
+         ON jobs (CASE WHEN json_valid(payload) = 1
+                       THEN json_extract(payload, '$.articleId') END)
+         WHERE type = 'jev_process'`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_articles_jev_backfill
+         ON articles (fetched_at, id)
+         WHERE jev_score IS NULL`,
+      ).run();
+    },
+  },
+  {
+    version: 6,
+    name: 'targeted_preference_ranking_refresh',
+    apply: (db) => {
+      ensureColumn(db, 'articles', 'ranking_refreshed_at', 'INTEGER');
+      db.prepare(
+        `CREATE TABLE IF NOT EXISTS ranking_refresh_queue (
+          article_id TEXT PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,
+          requested_revision INTEGER NOT NULL,
+          heuristic_revision INTEGER,
+          not_before INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        )`,
+      ).run();
+      db.prepare(
+        'CREATE INDEX IF NOT EXISTS idx_ranking_refresh_due ON ranking_refresh_queue(not_before, created_at)',
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_articles_jev_recent_scored
+         ON articles (fetched_at, id)
+         WHERE jev_score IS NOT NULL`,
+      ).run();
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {
