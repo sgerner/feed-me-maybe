@@ -641,6 +641,9 @@ export function initializeDatabase(): void {
   db.prepare(
     "INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('hide_on_open', 'true', ?)",
   ).run(Date.now());
+  db.prepare(
+    "INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('ranking_provider', 'jev', ?)",
+  ).run(Date.now());
 
   console.log('[db] Database initialized. First run:', !row);
 }

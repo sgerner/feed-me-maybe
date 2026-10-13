@@ -311,8 +311,8 @@ export async function flushRankingRefreshQueue(
   }>;
   if (!rows.length) return 0;
 
-  const { isJevConfigured } = await import('$lib/server/ai/jev');
-  const jevConfigured = isJevConfigured();
+  const { isRankingProviderConfigured } = await import('$lib/server/ai/jev');
+  const rankingProviderConfigured = isRankingProviderConfigured();
   const { enqueueJevProcess } = await import('$lib/server/feed/job-queue');
 
   let queued = 0;
@@ -355,7 +355,7 @@ export async function flushRankingRefreshQueue(
     ) {
       continue;
     }
-    if (!jevConfigured) continue;
+    if (!rankingProviderConfigured) continue;
 
     const job = enqueueJevProcess(row.article_id, {
       feedId: row.feed_id,

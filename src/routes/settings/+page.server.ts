@@ -2,6 +2,8 @@ import type { PageServerLoad, Actions } from './$types';
 import { getDb } from '$lib/server/db';
 import { fail } from '@sveltejs/kit';
 import { isArticleOpenMode } from '$lib/constants/article-open-modes';
+import { isJevConfigured, isSubqConfigured } from '$lib/server/ai/jev';
+import { getRankingProvider } from '$lib/server/ranking-provider';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};
@@ -21,6 +23,11 @@ export const load: PageServerLoad = async ({ locals }) => {
     pollInterval: parseInt(pollInterval?.value || '15', 10),
     articleOpenMode: openMode?.value || 'app',
     hideOnOpen: hideOnOpen?.value === 'true',
+    rankingProvider: getRankingProvider(),
+    rankingProviderConfigured: {
+      jev: isJevConfigured(),
+      subq: isSubqConfigured(),
+    },
   };
 };
 

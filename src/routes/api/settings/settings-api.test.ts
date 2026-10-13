@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { POST } from './+server';
 
 describe('settings API mutations', () => {
   const testDbPath = join(process.cwd(), 'data', 'test-settings-api.db');
@@ -49,6 +50,74 @@ describe('settings API mutations', () => {
 
     expect(result.success).toBe(true);
     expect(row).toBeUndefined();
+  });
+
+  it('selects a ranking provider through the settings API without returning key material', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'ranking-feed',
+      'https://example.com/ranking.xml',
+      'Ranking',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, jev_score, heuristic_score, combined_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'ranking-article',
+      'ranking-feed',
+      'https://example.com/ranking-article',
+      'Article',
+      0.91,
+      50,
+      77,
+      now,
+      now,
+      now,
+    );
+
+    const response = await POST({
+      request: new Request('http://localhost/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'ranking_provider', value: 'subq' }),
+      }),
+      locals: { sessionId: 'test-session' },
+    } as Parameters<typeof POST>[0]);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      success: true,
+      provider: 'subq',
+      changed: true,
+    });
+    expect(Object.keys(payload).sort()).toEqual(
+      ['changed', 'configured', 'message', 'provider', 'success'].sort(),
+    );
+    expect(
+      db
+        .prepare(
+          "SELECT value FROM app_settings WHERE key = 'ranking_provider'",
+        )
+        .get(),
+    ).toEqual({ value: 'subq' });
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .get('ranking-article'),
+    ).toEqual({ jev_score: null });
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('ranking-article'),
+    ).toEqual({ article_id: 'ranking-article' });
   });
 
   it('resets training data and article interaction state', async () => {

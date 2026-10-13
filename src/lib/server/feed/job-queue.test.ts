@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 const jevMocks = vi.hoisted(() => ({
-  isJevConfigured: vi.fn(() => true),
+  isRankingProviderConfigured: vi.fn(() => true),
   processJevArticle: vi.fn(async () => undefined),
 }));
 const aiMocks = vi.hoisted(() => ({
@@ -40,7 +40,7 @@ describe('feed job queue', () => {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM feeds').run();
     db.prepare('DELETE FROM app_error_logs').run();
-    jevMocks.isJevConfigured.mockReturnValue(true);
+    jevMocks.isRankingProviderConfigured.mockReturnValue(true);
     jevMocks.processJevArticle.mockReset().mockResolvedValue(undefined);
     aiMocks.processArticle.mockReset().mockResolvedValue(undefined);
   });
@@ -609,7 +609,7 @@ describe('feed job queue', () => {
     const { getDb } = await import('$lib/server/db');
     const db = getDb();
     const now = Date.now();
-    jevMocks.isJevConfigured.mockReturnValue(false);
+    jevMocks.isRankingProviderConfigured.mockReturnValue(false);
     db.prepare(
       'INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, scheduled_at, created_at) VALUES (?, ?, ?, ?, 0, 4, ?, ?)',
     ).run(

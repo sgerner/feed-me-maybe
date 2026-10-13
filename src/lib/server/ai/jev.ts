@@ -2,6 +2,11 @@ import fs from 'node:fs';
 import { getDb } from '$lib/server/db';
 import { parseJsonTextArray } from '$lib/server/normalization';
 import { refreshCombinedScore } from '$lib/server/scoring';
+import { JEV_DECISION_QUESTIONS } from '$lib/server/ai/decision-input';
+import {
+  getRankingProviderSnapshot,
+  type RankingProvider,
+} from '$lib/server/ranking-provider';
 import {
   getRankingFeedbackRevision,
   markArticleForRankingRefresh,
@@ -12,6 +17,8 @@ const JEV_ENDPOINT =
   process.env.JEV_API_URL ||
   'https://api.typesafe.ai/v1/systemone';
 const JEV_MODEL = 'jev-latest';
+const SUBQ_ENDPOINT = 'https://api.subq.ai/v1/systemone';
+const SUBQ_MODEL = 'subq-snap-preview';
 const PREFERENCE_HALF_LIFE_DAYS = 45;
 
 type ArticleJevRow = {
@@ -48,20 +55,23 @@ function compactText(value: unknown, limit: number): string {
     .slice(0, limit);
 }
 
-function readApiKey(): string {
-  const direct = (
-    process.env.TYPESAFE_API_KEY ||
-    process.env.JEV_API_KEY ||
-    ''
-  ).trim();
+function readApiKey(provider: RankingProvider): string {
+  const direct =
+    provider === 'jev'
+      ? (process.env.TYPESAFE_API_KEY || process.env.JEV_API_KEY || '').trim()
+      : (process.env.SUBQ_API_KEY || '').trim();
   if (direct) return direct;
 
-  const paths = [
-    process.env.TYPESAFE_API_KEY_FILE,
-    process.env.JEV_API_KEY_FILE,
-    '/run/secrets/typesafe_api_key',
-    '/run/secrets/jev_api_key',
-  ].filter((value): value is string => Boolean(value));
+  const paths = (
+    provider === 'jev'
+      ? [
+          process.env.TYPESAFE_API_KEY_FILE,
+          process.env.JEV_API_KEY_FILE,
+          '/run/secrets/typesafe_api_key',
+          '/run/secrets/jev_api_key',
+        ]
+      : [process.env.SUBQ_API_KEY_FILE, '/run/secrets/subq_api_key']
+  ).filter((value): value is string => Boolean(value));
 
   for (const filePath of paths) {
     try {
@@ -75,7 +85,17 @@ function readApiKey(): string {
 }
 
 export function isJevConfigured(): boolean {
-  return Boolean(readApiKey());
+  return Boolean(readApiKey('jev'));
+}
+
+export function isSubqConfigured(): boolean {
+  return Boolean(readApiKey('subq'));
+}
+
+export function isRankingProviderConfigured(
+  provider = getRankingProviderSnapshot().provider,
+): boolean {
+  return Boolean(readApiKey(provider));
 }
 
 function decayedStrength(strength: number, lastReinforced: number): number {
@@ -260,15 +280,19 @@ function buildState(article: ArticleJevRow): Record<string, unknown> {
 function truncateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return (
-    message.replace(/\s+/g, ' ').trim().slice(0, 500) || 'Unknown Jev error'
+    message.replace(/\s+/g, ' ').trim().slice(0, 500) || 'Unknown ranking error'
   );
 }
 
-async function requestJevScore(
+async function requestRankingScore(
+  provider: RankingProvider,
   state: Record<string, unknown>,
   apiKey: string,
 ): Promise<number> {
-  const response = await fetch(JEV_ENDPOINT, {
+  const endpoint = provider === 'jev' ? JEV_ENDPOINT : SUBQ_ENDPOINT;
+  const model = provider === 'jev' ? JEV_MODEL : SUBQ_MODEL;
+  const providerName = provider === 'jev' ? 'TypeSafe' : 'SubQ';
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -276,18 +300,9 @@ async function requestJevScore(
     },
     body: JSON.stringify({
       state,
-      model: JEV_MODEL,
+      model,
       questions: {
-        would_open: {
-          type: 'noul',
-          instructions:
-            'Would this reader choose to open this candidate article next? Judge personalized reading relevance, not generic quality. Do not reward title keyword overlap alone. A high value means the article is likely worth opening in this feed today.',
-          criteria: {
-            true: 'The candidate is a strong match for this reader and is likely worth opening next.',
-            false:
-              'The candidate is not a strong match for this reader, even if it is generally well written or newsworthy.',
-          },
-        },
+        would_open: JEV_DECISION_QUESTIONS.would_open,
       },
     }),
     signal: AbortSignal.timeout(20_000),
@@ -296,25 +311,29 @@ async function requestJevScore(
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 300).replace(/\s+/g, ' ');
     throw new Error(
-      `TypeSafe API returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
+      `${providerName} API returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
     );
   }
 
   const data = (await response.json()) as {
     answers?: { would_open?: { noul?: unknown } };
   };
-  const score = Number(data.answers?.would_open?.noul);
-  if (!Number.isFinite(score)) {
-    throw new Error('TypeSafe API returned no usable would_open score');
+  const rawScore = data.answers?.would_open?.noul;
+  if (typeof rawScore !== 'number' || !Number.isFinite(rawScore)) {
+    throw new Error(`${providerName} API returned no usable would_open score`);
   }
-  return Math.max(0, Math.min(1, score));
+  return Math.max(0, Math.min(1, rawScore));
 }
 
-/** Score one article with Jev and activate it in the stored ranking score. */
+/**
+ * Score one article with the selected ranking provider. The legacy Jev name is
+ * retained because persisted worker jobs and callers use it as a stable API.
+ */
 export async function scoreArticleWithJev(
   articleId: string,
 ): Promise<number | null> {
-  const apiKey = readApiKey();
+  const providerSnapshot = getRankingProviderSnapshot();
+  const apiKey = readApiKey(providerSnapshot.provider);
   if (!apiKey) return null;
 
   const article = getArticle(articleId);
@@ -323,11 +342,20 @@ export async function scoreArticleWithJev(
   const db = getDb();
   const profileRevision = getRankingFeedbackRevision();
   try {
-    const score = await requestJevScore(buildState(article), apiKey);
+    const score = await requestRankingScore(
+      providerSnapshot.provider,
+      buildState(article),
+      apiKey,
+    );
     const stored = db
       .transaction(() => {
         const currentRevision = getRankingFeedbackRevision();
-        if (currentRevision !== profileRevision) {
+        const currentProvider = getRankingProviderSnapshot();
+        if (
+          currentRevision !== profileRevision ||
+          currentProvider.provider !== providerSnapshot.provider ||
+          currentProvider.revision !== providerSnapshot.revision
+        ) {
           markArticleForRankingRefresh(articleId, currentRevision);
           return false;
         }
@@ -358,7 +386,12 @@ export async function scoreArticleWithJev(
     const recordError = db
       .transaction(() => {
         const currentRevision = getRankingFeedbackRevision();
-        if (currentRevision !== profileRevision) {
+        const currentProvider = getRankingProviderSnapshot();
+        if (
+          currentRevision !== profileRevision ||
+          currentProvider.provider !== providerSnapshot.provider ||
+          currentProvider.revision !== providerSnapshot.revision
+        ) {
           markArticleForRankingRefresh(articleId, currentRevision);
           return false;
         }
@@ -369,9 +402,10 @@ export async function scoreArticleWithJev(
       })
       .immediate();
     if (!recordError) return null;
-    throw new Error(`Jev scoring failed for ${articleId}: ${message}`, {
-      cause: error,
-    });
+    throw new Error(
+      `${providerSnapshot.provider === 'jev' ? 'Jev' : 'SubQ'} scoring failed for ${articleId}: ${message}`,
+      { cause: error },
+    );
   }
 }
 

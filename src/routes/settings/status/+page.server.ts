@@ -1,6 +1,11 @@
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
-import { isJevConfigured } from '$lib/server/ai/jev';
+import {
+  isJevConfigured,
+  isRankingProviderConfigured,
+  isSubqConfigured,
+} from '$lib/server/ai/jev';
+import { getRankingProvider } from '$lib/server/ranking-provider';
 
 function parseDetails(
   value: string | null | undefined,
@@ -23,6 +28,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   const articleCount = (
     db.prepare('SELECT COUNT(*) as c FROM articles').get() as { c: number }
   ).c;
+  const rankingProvider = getRankingProvider();
   const jobCount = (
     db
       .prepare("SELECT COUNT(*) as c FROM jobs WHERE status = 'queued'")
@@ -30,6 +36,9 @@ export const load: PageServerLoad = async ({ locals }) => {
   ).c;
   const jev = {
     configured: isJevConfigured(),
+    activeProvider: rankingProvider,
+    activeProviderConfigured: isRankingProviderConfigured(rankingProvider),
+    subqConfigured: isSubqConfigured(),
     ...(db
       .prepare(
         `

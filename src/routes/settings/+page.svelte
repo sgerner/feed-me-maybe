@@ -6,6 +6,48 @@
   import { fetchWithCsrf } from '$lib/client/csrf';
 
   let { data } = $props();
+  let rankingProvider = $state<'jev' | 'subq'>('jev');
+  let savedRankingProvider = $state<'jev' | 'subq'>('jev');
+  let rankingProviderAvailability = $derived(
+    data.rankingProviderConfigured ?? { jev: false, subq: false },
+  );
+  let savingRankingProvider = $state(false);
+  let rankingProviderMessage = $state('');
+
+  $effect(() => {
+    const currentProvider = data.rankingProvider ?? 'jev';
+    rankingProvider = currentProvider;
+    savedRankingProvider = currentProvider;
+  });
+
+  async function saveRankingProvider() {
+    savingRankingProvider = true;
+    rankingProviderMessage = '';
+    try {
+      const response = await fetchWithCsrf('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: 'ranking_provider',
+          value: rankingProvider,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        rankingProviderMessage =
+          result.message || result.error || 'Could not save ranking provider.';
+        return;
+      }
+      savedRankingProvider = result.provider || rankingProvider;
+      rankingProviderMessage = result.configured
+        ? result.message || 'Ranking provider saved.'
+        : 'Provider saved, but its server-side API key is missing. Scores remain queued until a key is configured.';
+    } catch {
+      rankingProviderMessage = 'Could not save ranking provider.';
+    } finally {
+      savingRankingProvider = false;
+    }
+  }
 
   async function importOpml() {
     const input = document.createElement('input');
@@ -39,6 +81,71 @@
       below.
     </p>
   </div>
+
+  <section
+    class="glass-card p-5"
+    aria-labelledby="ranking-provider-heading"
+    in:fly={{ y: 12, duration: 300, delay: 30 }}
+  >
+    <div class="mb-4">
+      <h2
+        id="ranking-provider-heading"
+        class="text-sm font-semibold text-surface-100"
+      >
+        Article ranking provider
+      </h2>
+      <p class="mt-1 text-xs leading-5 text-surface-400">
+        Choose which model produces personalized article scores. Changing the
+        provider clears old model scores and queues articles for rescoring.
+      </p>
+    </div>
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+      <label class="label flex-1">
+        <span class="mb-1 block text-xs text-surface-300">Provider</span>
+        <select
+          class="select glass-input text-sm"
+          bind:value={rankingProvider}
+          aria-describedby="ranking-provider-status"
+        >
+          <option value="jev"
+            >Jev · {rankingProviderAvailability.jev
+              ? 'configured'
+              : 'API key missing'}</option
+          >
+          <option value="subq"
+            >SubQ Snap · {rankingProviderAvailability.subq
+              ? 'configured'
+              : 'API key missing'}</option
+          >
+        </select>
+      </label>
+      <button
+        type="button"
+        class="btn preset-filled-primary-500 inline-flex min-h-11 items-center justify-center text-sm"
+        onclick={saveRankingProvider}
+        disabled={savingRankingProvider ||
+          rankingProvider === savedRankingProvider}
+      >
+        {savingRankingProvider ? 'Saving…' : 'Save provider'}
+      </button>
+    </div>
+    <p
+      id="ranking-provider-status"
+      class="mt-3 text-xs leading-5 text-surface-400"
+      aria-live="polite"
+    >
+      {#if rankingProviderMessage}
+        {rankingProviderMessage}
+      {:else if !rankingProviderAvailability[rankingProvider]}
+        The selected provider has no server-side API key configured. Scores will
+        remain queued until its key is available.
+      {:else}
+        Ready to score articles with {rankingProvider === 'subq'
+          ? 'SubQ Snap'
+          : 'Jev'}.
+      {/if}
+    </p>
+  </section>
 
   <section
     class="glass-card p-5"

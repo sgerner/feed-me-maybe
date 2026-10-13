@@ -20,6 +20,9 @@
     data: {
       jev?: {
         configured: boolean;
+        activeProvider?: 'jev' | 'subq';
+        activeProviderConfigured?: boolean;
+        subqConfigured?: boolean;
         scored: number;
         missing: number | null;
         jobs: Array<{ status: string; count: number }>;
@@ -75,12 +78,29 @@
 </div>
 
 {#if pageData.jev}
-  <h3 class="mb-3 mt-8 text-sm font-semibold">Jev Scoring</h3>
+  <h3 class="mb-3 mt-8 text-sm font-semibold">Article Ranking</h3>
   <div class="glass-card space-y-2 p-3 text-xs">
+    {#if pageData.jev.activeProvider}
+      <p>
+        Selected provider: {pageData.jev.activeProvider === 'subq'
+          ? 'SubQ Snap'
+          : 'Jev'} · {pageData.jev.activeProviderConfigured
+          ? 'configured'
+          : 'API key missing'}
+      </p>
+      <p>
+        Jev key: {pageData.jev.configured ? 'configured' : 'missing'} · SubQ key:
+        {pageData.jev.subqConfigured ? 'configured' : 'missing'}
+      </p>
+    {/if}
     <p>
-      {pageData.jev.configured
-        ? 'Configured'
-        : 'Paused: API key not configured'} · {pageData.jev.scored} scored · {pageData
+      {pageData.jev.activeProvider
+        ? pageData.jev.activeProviderConfigured
+          ? 'Active provider ready'
+          : 'Paused: active provider API key not configured'
+        : pageData.jev.configured
+          ? 'Configured'
+          : 'Paused: API key not configured'} · {pageData.jev.scored} scored · {pageData
         .jev.missing ?? 0} missing scores
     </p>
     <p>

@@ -302,17 +302,23 @@ feed-me-maybe/
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-### Jev score backfill
+### Ranking provider backfill
 
-When a Jev API key is configured, each job worker cycle discovers up to four
-articles without `jev_score`, with at most four active Jev jobs before discovery
-adds more. Each cycle executes at most four Jev jobs and gives feed ingestion
-and AI processing priority. Backfill uses the persistent job queue, exponential
-retry delays, and lease recovery after restarts. It does not reset existing
-retries or automatically re-enqueue articles with completed backfill jobs or
-exhausted Jev jobs. Historical completed jobs that left no score get one backfill
-pass. Successful AI enrichment can still explicitly request a fresh Jev score.
-Without credentials, Jev discovery and execution pause.
+The selected provider is Jev by default; SubQ Snap can be selected in Settings.
+Configure `TYPESAFE_API_KEY` (or `JEV_API_KEY`) for Jev, or `SUBQ_API_KEY` for
+SubQ. File-based secrets are supported through `JEV_API_KEY_FILE` and
+`SUBQ_API_KEY_FILE`, with `/run/secrets/typesafe_api_key` and
+`/run/secrets/subq_api_key` checked by default. Provider keys stay on the server.
 
-Settings → System Status shows score coverage, Jev queue states, recent attempts,
-retry schedules, and failures. Exhausted jobs remain visible for diagnosis.
+Each worker cycle discovers up to four articles without a ranking score, with
+at most four active ranking jobs before discovery adds more. Each cycle executes
+at most four ranking jobs and gives feed ingestion and AI processing priority.
+Backfill uses the persistent job queue, exponential retry delays, and lease
+recovery after restarts. Changing providers clears cached ranking scores and
+queues articles for rescoring; a revision guard rejects responses that began
+under an earlier provider selection. Without the selected provider's key,
+ranking work remains queued.
+
+Settings → System Status shows provider key availability, score coverage, queue
+states, recent attempts, retry schedules, and failures. Exhausted jobs remain
+visible for diagnosis.

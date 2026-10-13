@@ -1,12 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetDb, mockIsJevConfigured } = vi.hoisted(() => ({
+const {
+  mockGetDb,
+  mockIsJevConfigured,
+  mockIsRankingProviderConfigured,
+  mockIsSubqConfigured,
+  mockGetRankingProvider,
+} = vi.hoisted(() => ({
   mockGetDb: vi.fn(),
   mockIsJevConfigured: vi.fn(),
+  mockIsRankingProviderConfigured: vi.fn(),
+  mockIsSubqConfigured: vi.fn(),
+  mockGetRankingProvider: vi.fn(),
 }));
 
 vi.mock('$lib/server/db', () => ({ getDb: mockGetDb }));
-vi.mock('$lib/server/ai/jev', () => ({ isJevConfigured: mockIsJevConfigured }));
+vi.mock('$lib/server/ai/jev', () => ({
+  isJevConfigured: mockIsJevConfigured,
+  isRankingProviderConfigured: mockIsRankingProviderConfigured,
+  isSubqConfigured: mockIsSubqConfigured,
+}));
+vi.mock('$lib/server/ranking-provider', () => ({
+  getRankingProvider: mockGetRankingProvider,
+}));
 
 import { load } from './+page.server';
 
@@ -66,6 +82,9 @@ describe('settings status page load', () => {
   beforeEach(() => {
     mockGetDb.mockReset();
     mockIsJevConfigured.mockReset();
+    mockIsRankingProviderConfigured.mockReset();
+    mockIsSubqConfigured.mockReset();
+    mockGetRankingProvider.mockReset();
   });
 
   it('does not load status data without an authenticated session', async () => {
@@ -80,6 +99,9 @@ describe('settings status page load', () => {
     const db = createStatusDb();
     mockGetDb.mockReturnValue(db);
     mockIsJevConfigured.mockReturnValue(true);
+    mockIsRankingProviderConfigured.mockReturnValue(true);
+    mockIsSubqConfigured.mockReturnValue(false);
+    mockGetRankingProvider.mockReturnValue('jev');
 
     const result = await load(eventWithSession('user-session'));
 

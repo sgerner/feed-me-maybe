@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
-import { isJevConfigured } from '$lib/server/ai/jev';
+import { isRankingProviderConfigured } from '$lib/server/ai/jev';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
@@ -428,7 +428,7 @@ export function enqueueJevProcess(
   articleId: string,
   options: { feedId?: string; now?: number; feedback?: boolean } = {},
 ): JobRecord | null {
-  if (!isJevConfigured()) return null;
+  if (!isRankingProviderConfigured()) return null;
   if (!options.feedback) {
     const db = getDb();
     const now = options.now ?? Date.now();
@@ -529,7 +529,7 @@ export function enqueueJevProcess(
 export function enqueueJevBackfill(
   options: { now?: number; limit?: number } = {},
 ): number {
-  if (!isJevConfigured()) return 0;
+  if (!isRankingProviderConfigured()) return 0;
 
   const requestedLimit = Math.floor(
     options.limit ?? DEFAULT_JEV_BACKFILL_BATCH_SIZE,
@@ -631,7 +631,7 @@ export function getLatestFeedFetchJob(feedId: string): JobRecord | null {
 }
 
 export function getNextQueuedJobAt(): number | null {
-  const jevConfigured = isJevConfigured();
+  const rankingProviderConfigured = isRankingProviderConfigured();
   const row = getDb()
     .prepare(
       `
@@ -647,8 +647,11 @@ export function getNextQueuedJobAt(): number | null {
         )
       `,
     )
-    .get(jevConfigured ? 1 : 0, JEV_PROCESS_JOB_TYPE, jevConfigured ? 1 : 0) as
-    { scheduled_at: number | null } | undefined;
+    .get(
+      rankingProviderConfigured ? 1 : 0,
+      JEV_PROCESS_JOB_TYPE,
+      rankingProviderConfigured ? 1 : 0,
+    ) as { scheduled_at: number | null } | undefined;
   return row?.scheduled_at == null ? null : Number(row.scheduled_at);
 }
 
@@ -802,8 +805,8 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     }
     // The claim query excludes Jev jobs when configuration is absent. Keep a
     // second check here in case configuration changes after the claim.
-    if (!isJevConfigured()) {
-      throw new Error('Jev scoring is not configured');
+    if (!isRankingProviderConfigured()) {
+      throw new Error('Selected ranking provider is not configured');
     }
     const { processJevArticle } = await import('$lib/server/ai/jev');
     await processJevArticle(articleId);
@@ -838,9 +841,10 @@ async function runDueJobsInternal(
 
   for (let index = 0; index < maxJobs; index += 1) {
     await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
-    const jevConfigured = isJevConfigured();
+    const rankingProviderConfigured = isRankingProviderConfigured();
     const job = claimNextJob(Date.now(), {
-      allowJev: jevConfigured && jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
+      allowJev:
+        rankingProviderConfigured && jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
     });
     if (!job) break;
     result.processed += 1;
