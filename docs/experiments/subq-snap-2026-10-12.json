@@ -1,0 +1,720 @@
+{
+  "date": "2026-10-12",
+  "productionSnapshotUtc": "2026-10-13T03:05:00Z",
+  "productionArticles": 12525,
+  "models": {
+    "jev": "jev-1.13.0",
+    "subq": "subq-snap-preview"
+  },
+  "limitations": [
+    "Action-conditioned open/down labels; no impressions or randomized exposure",
+    "Profiles reconstructed from pre-cutoff events; article text/history versions unavailable",
+    "Temporal cohorts overlap by 34 articles; 104 distinct labeled articles",
+    "Stored baseline metrics excluded because current heuristic/profile data can leak labels",
+    "Brier/topK are conditional on deliberately sampled class mix; no calibration claim"
+  ],
+  "temporal": {
+    "rows": 58,
+    "metrics": {
+      "jev_full": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.8354166666666667,
+        "brier": 0.42460172413793107,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "jev_compact": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.7791666666666667,
+        "brier": 0.4477965517241379,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "jev_minimal": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.80625,
+        "brier": 0.4499844827586207,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_full": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.8263888888888888,
+        "brier": 0.5489203154756244,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_compact": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.8458333333333333,
+        "brier": 0.5536315260472295,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_minimal": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.8555555555555555,
+        "brier": 0.569708055186968,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_compact_narrow_would_open": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.8458333333333333,
+        "brier": 0.5533181056388452,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_compact_narrow_blend": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.7111111111111111,
+        "brier": 0.41283133524978927,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_compact_single_open_with_narrow_blend": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.7138888888888889,
+        "brier": 0.4130336515796883,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      }
+    },
+    "calls": {
+      "jev_full_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 145.0344827586207,
+        "requestBytes": 255089,
+        "actualUsageTokenTotals": {
+          "input_tokens": 112150,
+          "output_tokens": 1218
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "jev_compact_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 140.55172413793105,
+        "requestBytes": 228775,
+        "actualUsageTokenTotals": {
+          "input_tokens": 104771,
+          "output_tokens": 1218
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "jev_minimal_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 139.68965517241378,
+        "requestBytes": 182334,
+        "actualUsageTokenTotals": {
+          "input_tokens": 87284,
+          "output_tokens": 1218
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "subq_full_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 205.29310344827587,
+        "requestBytes": 255495,
+        "actualUsageTokenTotals": {
+          "input_tokens": 82819,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_compact_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 202.05172413793105,
+        "requestBytes": 229181,
+        "actualUsageTokenTotals": {
+          "input_tokens": 76036,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_minimal_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 191.72413793103448,
+        "requestBytes": 182740,
+        "actualUsageTokenTotals": {
+          "input_tokens": 61443,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_compact_narrow_multiquestion": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 285.05172413793105,
+        "requestBytes": 285963,
+        "actualUsageTokenTotals": {
+          "input_tokens": 87868,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      }
+    }
+  },
+  "september": {
+    "rows": 80,
+    "metrics": {
+      "jev_full": {
+        "labeledRows": 80,
+        "scoredRows": 80,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 40,
+        "auc": 0.728125,
+        "brier": 0.32938875,
+        "topK": {
+          "k": 10,
+          "precision": 0.7,
+          "recall": 0.175,
+          "positiveMass": 7,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "jev_minimal": {
+        "labeledRows": 80,
+        "scoredRows": 80,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 40,
+        "auc": 0.6815625,
+        "brier": 0.3350675,
+        "topK": {
+          "k": 10,
+          "precision": 0.8333333333333334,
+          "recall": 0.20833333333333334,
+          "positiveMass": 8.333333333333334,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_full": {
+        "labeledRows": 80,
+        "scoredRows": 80,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 40,
+        "auc": 0.743125,
+        "brier": 0.39761590478488457,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_minimal": {
+        "labeledRows": 80,
+        "scoredRows": 80,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 40,
+        "auc": 0.65875,
+        "brier": 0.4082367744220008,
+        "topK": {
+          "k": 10,
+          "precision": 0.9,
+          "recall": 0.225,
+          "positiveMass": 9,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      }
+    },
+    "calls": {
+      "jev_full_would_open": {
+        "calls": 80,
+        "succeeded": 80,
+        "failed": 0,
+        "usageAvailable": 80,
+        "usageMissing": 0,
+        "meanLatencyMs": 132.7125,
+        "requestBytes": 331521,
+        "actualUsageTokenTotals": {
+          "input_tokens": 149406,
+          "output_tokens": 1680
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "jev_minimal_would_open": {
+        "calls": 80,
+        "succeeded": 80,
+        "failed": 0,
+        "usageAvailable": 80,
+        "usageMissing": 0,
+        "meanLatencyMs": 128.125,
+        "requestBytes": 244970,
+        "actualUsageTokenTotals": {
+          "input_tokens": 118077,
+          "output_tokens": 1680
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "subq_full_would_open": {
+        "calls": 80,
+        "succeeded": 80,
+        "failed": 0,
+        "usageAvailable": 80,
+        "usageMissing": 0,
+        "meanLatencyMs": 196.275,
+        "requestBytes": 332081,
+        "actualUsageTokenTotals": {
+          "input_tokens": 109347,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_minimal_would_open": {
+        "calls": 80,
+        "succeeded": 80,
+        "failed": 0,
+        "usageAvailable": 80,
+        "usageMissing": 0,
+        "meanLatencyMs": 191.6125,
+        "requestBytes": 245530,
+        "actualUsageTokenTotals": {
+          "input_tokens": 82637,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      }
+    }
+  },
+  "current": {
+    "rows": 4,
+    "metrics": {},
+    "calls": {
+      "jev_full_would_open": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 176.25,
+        "requestBytes": 16389,
+        "actualUsageTokenTotals": {
+          "input_tokens": 7687,
+          "output_tokens": 84
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "jev_compact_would_open": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 141.25,
+        "requestBytes": 14361,
+        "actualUsageTokenTotals": {
+          "input_tokens": 6855,
+          "output_tokens": 84
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "jev_minimal_would_open": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 138.5,
+        "requestBytes": 12217,
+        "actualUsageTokenTotals": {
+          "input_tokens": 5864,
+          "output_tokens": 84
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "subq_full_would_open": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 227,
+        "requestBytes": 16417,
+        "actualUsageTokenTotals": {
+          "input_tokens": 5621,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_compact_would_open": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 195.75,
+        "requestBytes": 14389,
+        "actualUsageTokenTotals": {
+          "input_tokens": 4913,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_minimal_would_open": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 187.75,
+        "requestBytes": 12245,
+        "actualUsageTokenTotals": {
+          "input_tokens": 4108,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      },
+      "subq_compact_narrow_multiquestion": {
+        "calls": 4,
+        "succeeded": 4,
+        "failed": 0,
+        "usageAvailable": 4,
+        "usageMissing": 0,
+        "meanLatencyMs": 291,
+        "requestBytes": 18305,
+        "actualUsageTokenTotals": {
+          "input_tokens": 5729,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      }
+    }
+  },
+  "temporal-packed": {
+    "rows": 58,
+    "metrics": {
+      "jev_full": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.7527777777777778,
+        "brier": 0.4520327586206897,
+        "topK": {
+          "k": 10,
+          "precision": 0.9,
+          "recall": 0.225,
+          "positiveMass": 9,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      },
+      "subq_full": {
+        "labeledRows": 58,
+        "scoredRows": 58,
+        "missingPredictions": 0,
+        "unlabeledRows": 0,
+        "positives": 40,
+        "negatives": 18,
+        "auc": 0.8277777777777777,
+        "brier": 0.5661140079663226,
+        "topK": {
+          "k": 10,
+          "precision": 1,
+          "recall": 0.25,
+          "positiveMass": 10,
+          "tiePolicy": "fractional inclusion for scores tied across the cutoff"
+        }
+      }
+    },
+    "calls": {
+      "jev_full_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 139.18965517241378,
+        "requestBytes": 164697,
+        "actualUsageTokenTotals": {
+          "input_tokens": 76583,
+          "output_tokens": 1218
+        },
+        "resolvedModels": ["jev-1.13.0"]
+      },
+      "subq_full_would_open": {
+        "calls": 58,
+        "succeeded": 58,
+        "failed": 0,
+        "usageAvailable": 58,
+        "usageMissing": 0,
+        "meanLatencyMs": 192.24137931034483,
+        "requestBytes": 165103,
+        "actualUsageTokenTotals": {
+          "input_tokens": 55324,
+          "output_tokens": 0
+        },
+        "resolvedModels": ["subq-snap-preview"]
+      }
+    }
+  },
+  "uncertainty": {
+    "temporal": {
+      "dayClusters": 20,
+      "pairedDayClusterBootstrapVsJevFull": {
+        "subq_full": {
+          "deltaAuc": -0.009027777777777857,
+          "ci95": [-0.12535014005602252, 0.09545454545454546],
+          "samples": 3000
+        },
+        "subq_minimal": {
+          "deltaAuc": 0.02013888888888893,
+          "ci95": [-0.10054347826086951, 0.1290106951871659],
+          "samples": 3000
+        }
+      },
+      "sourceCounts": {
+        "0": {
+          "NYT": 15,
+          "The Verge": 2,
+          "Greater Greater Washington": 1
+        },
+        "1": {
+          "NYT": 29,
+          "The Verge": 10,
+          "Greater Greater Washington": 1
+        }
+      },
+      "rows": 58
+    },
+    "september": {
+      "dayClusters": 34,
+      "pairedDayClusterBootstrapVsJevFull": {
+        "subq_full": {
+          "deltaAuc": 0.015000000000000013,
+          "ci95": [-0.06698685540950466, 0.10128518971848222],
+          "samples": 3000
+        },
+        "subq_minimal": {
+          "deltaAuc": -0.06937499999999996,
+          "ci95": [-0.14845938375350143, 0.025900900900900914],
+          "samples": 3000
+        }
+      },
+      "sourceCounts": {
+        "0": {
+          "NYT": 35,
+          "Greater Greater Washington": 3,
+          "The Verge": 2
+        },
+        "1": {
+          "NYT": 31,
+          "The Verge": 8,
+          "Greater Greater Washington": 1
+        }
+      },
+      "rows": 80
+    }
+  },
+  "batch4": {
+    "jev": {
+      "rows": 58,
+      "auc": 0.7458333333333333,
+      "calls": 15,
+      "inputTokens": 39148,
+      "meanLatencyMs": 146.93333333333334
+    },
+    "subq": {
+      "rows": 58,
+      "auc": 0.7902777777777777,
+      "calls": 15,
+      "inputTokens": 31587,
+      "meanLatencyMs": 399
+    }
+  },
+  "batch8": {
+    "jev": {
+      "rows": 58,
+      "auc": 0.7701388888888889,
+      "calls": 8,
+      "inputTokens": 32799,
+      "meanLatencyMs": 167.875
+    },
+    "subq": {
+      "rows": 58,
+      "auc": 0.7152777777777778,
+      "calls": 8,
+      "inputTokens": 27534,
+      "meanLatencyMs": 373.125
+    }
+  },
+  "images": {
+    "pairs": 12,
+    "labelCounts": {
+      "1": 11,
+      "0": 1
+    },
+    "modes": {
+      "text_only": {
+        "inputTokens": 17515,
+        "meanLatencyMs": 462.20633333333336
+      },
+      "with_image": {
+        "inputTokens": 20545,
+        "meanLatencyMs": 1315.2583333333334
+      }
+    },
+    "scoreDeltas": {
+      "would_open": {
+        "mean": 0.02858694673826297,
+        "meanAbsolute": 0.02858694673826297
+      },
+      "evidence_quality": {
+        "mean": 0.034708465759952865,
+        "meanAbsolute": 0.048880791291594505
+      },
+      "hype_speculation": {
+        "mean": -0.014485455583781004,
+        "meanAbsolute": 0.015484549881269535
+      }
+    }
+  },
+  "static": {
+    "calls": 58,
+    "inputTokens": 29926,
+    "meanLatencyMs": 387.2065344827586,
+    "task": "profile-free evidence quality and hype/speculation; no annotation-based accuracy claim"
+  },
+  "recordedTotals": {
+    "jev": {
+      "calls": 553,
+      "inputTokens": 951620,
+      "outputTokens": 13426,
+      "errors": 0
+    },
+    "subq": {
+      "calls": 735,
+      "inputTokens": 910103,
+      "outputTokens": 0,
+      "errors": 0
+    }
+  },
+  "estimatedInputCostUsd": 0.08547319
+}
