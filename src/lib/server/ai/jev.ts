@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { buildRankingPreferenceInput } from '$lib/server/ai/preference-input';
 import { getDb } from '$lib/server/db';
 import { parseJsonTextArray } from '$lib/server/normalization';
 import { refreshCombinedScore } from '$lib/server/scoring';
@@ -261,23 +262,25 @@ function buildState(article: ArticleJevRow): Record<string, unknown> {
   const entities = parseJsonTextArray(article.ai_entities, 8);
   const signals = parseJsonTextArray(article.ai_signals, 8);
 
-  return buildSafeDecisionInput({
-    reader_profile: getReaderProfile(),
-    candidate: {
-      title: compactText(article.title, 240),
-      author: compactText(article.author, 120),
-      source: compactText(article.feed_title, 120),
-      source_category: compactText(article.feed_category, 80),
-      summary: compactText(article.ai_summary || article.summary, 1400),
-      content_excerpt: compactText(article.content, 2200),
-      categories,
-      topics,
-      entities,
-      content_type: compactText(article.ai_content_type, 50),
-      signals,
-      age_hours: ageHours == null ? null : Number(ageHours.toFixed(1)),
-    },
-  });
+  return buildRankingPreferenceInput(
+    buildSafeDecisionInput({
+      reader_profile: getReaderProfile(),
+      candidate: {
+        title: compactText(article.title, 240),
+        author: compactText(article.author, 120),
+        source: compactText(article.feed_title, 120),
+        source_category: compactText(article.feed_category, 80),
+        summary: compactText(article.ai_summary || article.summary, 1400),
+        content_excerpt: compactText(article.content, 2200),
+        categories,
+        topics,
+        entities,
+        content_type: compactText(article.ai_content_type, 50),
+        signals,
+        age_hours: ageHours == null ? null : Number(ageHours.toFixed(1)),
+      },
+    }),
+  );
 }
 
 function truncateError(error: unknown): string {

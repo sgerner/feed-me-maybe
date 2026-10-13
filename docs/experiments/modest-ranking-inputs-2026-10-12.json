@@ -1,0 +1,207 @@
+{
+  "selected": "prefix_stripped_round2",
+  "criterion": "At most 0.01 AUC loss in either cohort for either model versus original and fresh controls",
+  "limitations": [
+    "Observational open/down labels without impression logs",
+    "Reused overlapping cohorts; exploratory validation, not independent holdout proof",
+    "Identical Jev control requests showed AUC variation"
+  ],
+  "cohorts": {
+    "temporal": {
+      "jev": {
+        "originalControl": {
+          "auc": 0.8409722222222222,
+          "inputTokens": 110896,
+          "rows": 58,
+          "resolvedModels": ["jev-1.13.0"]
+        },
+        "control": {
+          "auc": 0.8243055555555556,
+          "inputTokens": 110896,
+          "rows": 58,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.016666666666666607,
+          "inputReductionVsOriginal": 0.0
+        },
+        "prefix_stripped": {
+          "auc": 0.8319444444444444,
+          "inputTokens": 108054,
+          "rows": 58,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.009027777777777857,
+          "inputReductionVsOriginal": 0.025627615062761455
+        },
+        "prefix_stripped_round2": {
+          "auc": 0.8340277777777777,
+          "inputTokens": 107880,
+          "rows": 58,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.006944444444444531,
+          "inputReductionVsOriginal": 0.027196652719665315
+        },
+        "prefix_stripped_no_evidence_count": {
+          "auc": 0.79375,
+          "inputTokens": 92568,
+          "rows": 58,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.047222222222222276,
+          "inputReductionVsOriginal": 0.16527196652719667
+        },
+        "prefix_top10": {
+          "auc": 0.8083333333333333,
+          "inputTokens": 105154,
+          "rows": 58,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.032638888888888884,
+          "inputReductionVsOriginal": 0.05177824267782427
+        }
+      },
+      "subq": {
+        "originalControl": {
+          "auc": 0.8388888888888889,
+          "inputTokens": 81916,
+          "rows": 58,
+          "resolvedModels": ["subq-snap-preview"]
+        },
+        "control": {
+          "auc": 0.8388888888888889,
+          "inputTokens": 81916,
+          "rows": 58,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": 0.0,
+          "inputReductionVsOriginal": 0.0
+        },
+        "prefix_stripped": {
+          "auc": 0.8291666666666667,
+          "inputTokens": 79132,
+          "rows": 58,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": -0.009722222222222188,
+          "inputReductionVsOriginal": 0.033986034474339566
+        },
+        "prefix_stripped_round2": {
+          "auc": 0.8500000000000001,
+          "inputTokens": 78958,
+          "rows": 58,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": 0.011111111111111183,
+          "inputReductionVsOriginal": 0.03611016162898584
+        },
+        "prefix_stripped_no_evidence_count": {
+          "auc": 0.8041666666666667,
+          "inputTokens": 65096,
+          "rows": 58,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": -0.03472222222222221,
+          "inputReductionVsOriginal": 0.20533229161580158
+        },
+        "prefix_top10": {
+          "auc": 0.8041666666666667,
+          "inputTokens": 76696,
+          "rows": 58,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": -0.03472222222222221,
+          "inputReductionVsOriginal": 0.0637238146393867
+        }
+      }
+    },
+    "september": {
+      "jev": {
+        "originalControl": {
+          "auc": 0.7284375,
+          "inputTokens": 145893,
+          "rows": 80,
+          "resolvedModels": ["jev-1.13.0"]
+        },
+        "control": {
+          "auc": 0.7178125,
+          "inputTokens": 145893,
+          "rows": 80,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.010624999999999996,
+          "inputReductionVsOriginal": 0.0
+        },
+        "prefix_stripped": {
+          "auc": 0.7365625,
+          "inputTokens": 142133,
+          "rows": 80,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": 0.008125000000000049,
+          "inputReductionVsOriginal": 0.02577231258525081
+        },
+        "prefix_stripped_round2": {
+          "auc": 0.7196875,
+          "inputTokens": 141973,
+          "rows": 80,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.008749999999999925,
+          "inputReductionVsOriginal": 0.02686900673781467
+        },
+        "prefix_stripped_no_evidence_count": {
+          "auc": 0.724375,
+          "inputTokens": 121173,
+          "rows": 80,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": -0.004062499999999969,
+          "inputReductionVsOriginal": 0.1694392465711172
+        },
+        "prefix_top10": {
+          "auc": 0.73625,
+          "inputTokens": 139013,
+          "rows": 80,
+          "resolvedModels": ["jev-1.13.0"],
+          "deltaAucVsOriginal": 0.0078125,
+          "inputReductionVsOriginal": 0.047157848560246185
+        }
+      },
+      "subq": {
+        "originalControl": {
+          "auc": 0.77,
+          "inputTokens": 106766,
+          "rows": 80,
+          "resolvedModels": ["subq-snap-preview"]
+        },
+        "control": {
+          "auc": 0.77,
+          "inputTokens": 106766,
+          "rows": 80,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": 0.0,
+          "inputReductionVsOriginal": 0.0
+        },
+        "prefix_stripped": {
+          "auc": 0.759375,
+          "inputTokens": 103086,
+          "rows": 80,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": -0.010624999999999996,
+          "inputReductionVsOriginal": 0.03446790176647996
+        },
+        "prefix_stripped_round2": {
+          "auc": 0.7731250000000001,
+          "inputTokens": 102926,
+          "rows": 80,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": 0.0031250000000000444,
+          "inputReductionVsOriginal": 0.035966506191109526
+        },
+        "prefix_stripped_no_evidence_count": {
+          "auc": 0.78625,
+          "inputTokens": 84126,
+          "rows": 80,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": 0.016249999999999987,
+          "inputReductionVsOriginal": 0.2120525260850833
+        },
+        "prefix_top10": {
+          "auc": 0.77125,
+          "inputTokens": 100526,
+          "rows": 80,
+          "resolvedModels": ["subq-snap-preview"],
+          "deltaAucVsOriginal": 0.0012499999999999734,
+          "inputReductionVsOriginal": 0.05844557256055294
+        }
+      }
+    }
+  }
+}
