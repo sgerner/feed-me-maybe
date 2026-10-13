@@ -1,5 +1,11 @@
 # Deployment Guide
 
+The repository's `captain-definition` points CapRover at the existing Dockerfile.
+The production `feed` app's GitHub push hook deploys `master`. Ordinary in-place
+CapRover updates preserve its Swarm secret attachments and persistent data volume.
+Keep Jev and SubQ credentials as separate secrets; attaching a SubQ secret does
+not change the selected ranking provider.
+
 ## Docker
 
 ### Building the Image
