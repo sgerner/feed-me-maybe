@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildSafeDecisionInput,
   buildDecisionInputVariants,
   buildPackedDecisionInput,
   decisionInputJsonLength,
@@ -116,6 +117,95 @@ describe('experimental Jev decision inputs', () => {
         (item) => item.length <= 80,
       ),
     ).toBe(true);
+  });
+
+  it('keeps full text and every preference and candidate fact in the safe input', () => {
+    const state = makeState();
+    state.candidate.title = 'Long title '.repeat(60);
+    state.candidate.summary = 'Summary text '.repeat(120);
+    state.candidate.content_excerpt = 'Excerpt text '.repeat(240);
+    const original = structuredClone(state);
+
+    const safe = buildSafeDecisionInput(state);
+
+    expect(state).toEqual(original);
+    expect(safe.reader_profile).toEqual(state.reader_profile);
+    expect(safe.candidate).toEqual(state.candidate);
+    expect(safe.reader_profile.positive_preferences).toHaveLength(14);
+    expect(safe.candidate.title).toBe(state.candidate.title);
+    expect(safe.candidate.summary).toBe(state.candidate.summary);
+    expect(safe.candidate.content_excerpt).toBe(
+      state.candidate.content_excerpt,
+    );
+  });
+
+  it('removes only exact normalized duplicate sentences while preserving clauses, negation, and new numbers', () => {
+    const state = makeState();
+    state.candidate.summary =
+      'The report reviewed 12 studies in 2024. The trial found a benefit.';
+    state.candidate.content_excerpt =
+      'The report  reviewed 12 studies in 2024. The trial did not find a benefit; the 2025 cohort was too small. An additional 24 cases are pending.';
+
+    const safe = buildSafeDecisionInput(state);
+
+    expect(safe.candidate.content_excerpt).toBe(
+      'The trial did not find a benefit; the 2025 cohort was too small. An additional 24 cases are pending.',
+    );
+    expect(safe.candidate.summary).toBe(state.candidate.summary);
+    expect(safe.candidate.categories).toEqual(state.candidate.categories);
+    expect(safe.reader_profile.negative_preferences).toEqual(
+      state.reader_profile.negative_preferences,
+    );
+  });
+
+  it('keeps sentences whose punctuation or case changes their meaning', () => {
+    const state = makeState();
+    state.candidate.summary = "Let's eat, Grandma. US helped us.";
+    state.candidate.content_excerpt =
+      "Let's eat Grandma. us helped US. The article includes different wording.";
+
+    const safe = buildSafeDecisionInput(state);
+
+    expect(safe.candidate.content_excerpt).toBe(
+      "Let's eat Grandma. us helped US. The article includes different wording.",
+    );
+  });
+
+  it('omits empty fields recursively but keeps meaningful zero and false values', () => {
+    const state = makeState();
+    state.unused = null;
+    state.reader_profile.display_name = '  ';
+    state.reader_profile.optional = null;
+    state.reader_profile.no_preferences = [];
+    state.reader_profile.metadata = {
+      empty: '',
+      missing: null,
+      no_items: [],
+      count: 0,
+      enabled: false,
+    };
+    (
+      state.reader_profile.positive_preferences as Record<string, unknown>[]
+    )[0].optional_note = '';
+    state.candidate.extra = { empty: ' ', nullable: null, tags: [] };
+    state.candidate.age_hours = 0;
+    const original = structuredClone(state);
+
+    const safe = buildSafeDecisionInput(state);
+
+    expect(state).toEqual(original);
+    expect(safe).not.toHaveProperty('unused');
+    expect(safe.reader_profile).not.toHaveProperty('display_name');
+    expect(safe.reader_profile).not.toHaveProperty('optional');
+    expect(safe.reader_profile).not.toHaveProperty('no_preferences');
+    expect(safe.reader_profile.metadata).toEqual({ count: 0, enabled: false });
+    expect(
+      (
+        safe.reader_profile.positive_preferences as Record<string, unknown>[]
+      )[0],
+    ).not.toHaveProperty('optional_note');
+    expect(safe.candidate.extra).toEqual({});
+    expect(safe.candidate.age_hours).toBe(0);
   });
 
   it('does not mutate input and preserves negative preferences, avoided sources, and distinct evidence', () => {

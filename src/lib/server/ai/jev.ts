@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import { getDb } from '$lib/server/db';
 import { parseJsonTextArray } from '$lib/server/normalization';
 import { refreshCombinedScore } from '$lib/server/scoring';
-import { JEV_DECISION_QUESTIONS } from '$lib/server/ai/decision-input';
+import {
+  buildSafeDecisionInput,
+  JEV_DECISION_QUESTIONS,
+} from '$lib/server/ai/decision-input';
 import {
   getRankingProviderSnapshot,
   type RankingProvider,
@@ -258,7 +261,7 @@ function buildState(article: ArticleJevRow): Record<string, unknown> {
   const entities = parseJsonTextArray(article.ai_entities, 8);
   const signals = parseJsonTextArray(article.ai_signals, 8);
 
-  return {
+  return buildSafeDecisionInput({
     reader_profile: getReaderProfile(),
     candidate: {
       title: compactText(article.title, 240),
@@ -274,7 +277,7 @@ function buildState(article: ArticleJevRow): Record<string, unknown> {
       signals,
       age_hours: ageHours == null ? null : Number(ageHours.toFixed(1)),
     },
-  };
+  });
 }
 
 function truncateError(error: unknown): string {

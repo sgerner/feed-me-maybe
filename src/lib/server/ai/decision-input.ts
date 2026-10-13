@@ -1,7 +1,6 @@
 /**
- * Experimental Jev decision inputs. The full variant mirrors the current Jev
- * state shape; compact and minimal are opt-in payloads for offline evaluation.
- * Nothing in this module is wired into the active scoring path.
+ * Full-information cleanup is used by the active ranking scorer. Compact,
+ * minimal, and packed variants remain opt-in inputs for offline evaluation.
  */
 
 export type DecisionState = {
@@ -9,6 +8,162 @@ export type DecisionState = {
   candidate: Record<string, unknown>;
   [key: string]: unknown;
 };
+
+const SENTENCE_ABBREVIATIONS = new Set([
+  'approx',
+  'assoc',
+  'capt',
+  'ch',
+  'cmdr',
+  'co',
+  'col',
+  'corp',
+  'dept',
+  'dr',
+  'e.g',
+  'eq',
+  'fig',
+  'figs',
+  'gen',
+  'gov',
+  'hon',
+  'i.e',
+  'inc',
+  'jr',
+  'maj',
+  'mr',
+  'mrs',
+  'ms',
+  'no',
+  'nos',
+  'pres',
+  'prof',
+  'rep',
+  'rev',
+  'sen',
+  'sr',
+  'st',
+  'univ',
+  'vol',
+  'vs',
+]);
+
+function isSentenceBoundary(
+  value: string,
+  index: number,
+  start: number,
+): boolean {
+  const character = value[index];
+  if (character === '!' || character === '?') return true;
+  if (character !== '.') return false;
+
+  const isDecimalPoint =
+    /\d/.test(value[index - 1] || '') && /\d/.test(value[index + 1] || '');
+  if (isDecimalPoint) return false;
+
+  const prefix = value.slice(start, index + 1).trimEnd();
+  const trailingToken = prefix.match(/([\p{L}.]+\.)$/u)?.[1];
+  if (trailingToken) {
+    const abbreviation = trailingToken.slice(0, -1).toLowerCase();
+    if (
+      SENTENCE_ABBREVIATIONS.has(abbreviation) ||
+      /^(?:\p{L}\.){1,5}$/u.test(trailingToken)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Keep punctuation and whitespace in each surviving sentence unchanged. */
+function splitPreservingSentences(value: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    if (!isSentenceBoundary(value, index, start)) continue;
+
+    let end = index + 1;
+    while (/["'’”»)}\]]/u.test(value[end] || '')) end += 1;
+    while (/\s/u.test(value[end] || '')) end += 1;
+    sentences.push(value.slice(start, end));
+    start = end;
+    index = end - 1;
+  }
+
+  if (start < value.length) sentences.push(value.slice(start));
+  return sentences;
+}
+
+function exactSentenceKey(value: string): string {
+  return value.replace(/\s+/gu, ' ').trim();
+}
+
+function removeExactRepeatedSentences(
+  summary: string,
+  excerpt: string,
+): string {
+  const summaryKeys = new Set(
+    splitPreservingSentences(summary)
+      .map((sentence) => {
+        const key = exactSentenceKey(sentence);
+        return key;
+      })
+      .filter(Boolean),
+  );
+  const sentences = splitPreservingSentences(excerpt);
+  const kept = sentences.filter((sentence) => {
+    const key = exactSentenceKey(sentence);
+    if (!key) return true;
+    return !summaryKeys.has(key);
+  });
+  return kept.length === sentences.length ? excerpt : kept.join('');
+}
+
+function omitEmptyFields(value: unknown): void {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) omitEmptyFields(item);
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const [key, item] of Object.entries(record)) {
+    if (
+      item === null ||
+      (typeof item === 'string' && item.trim().length === 0) ||
+      (Array.isArray(item) && item.length === 0)
+    ) {
+      delete record[key];
+    } else {
+      omitEmptyFields(item);
+    }
+  }
+}
+
+/**
+ * Remove only structurally empty fields and full excerpt sentences already
+ * represented in the summary. This preserves text bounds and all profile and
+ * candidate facts; unlike the experimental variants, it does not clip or pack.
+ */
+export function buildSafeDecisionInput(state: DecisionState): DecisionState {
+  const safe = cloneValue(state);
+  omitEmptyFields(safe);
+
+  if (
+    typeof safe.candidate.summary === 'string' &&
+    typeof safe.candidate.content_excerpt === 'string'
+  ) {
+    const excerpt = removeExactRepeatedSentences(
+      safe.candidate.summary,
+      safe.candidate.content_excerpt,
+    );
+    if (excerpt.trim().length === 0) delete safe.candidate.content_excerpt;
+    else safe.candidate.content_excerpt = excerpt;
+  }
+
+  return safe;
+}
 
 export type DecisionInputVariants = {
   full: DecisionState;
