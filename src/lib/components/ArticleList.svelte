@@ -1138,6 +1138,40 @@
                   ? 'flex-wrap'
                   : ''}"
               >
+                {#if !isBoostReview}
+                  <button
+                    type="button"
+                    class="action-btn min-h-11 !inline-flex !bg-surface-900/50 lg:backdrop-blur-sm"
+                    disabled={isPending}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onpointerup={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      interact(article.id, 'hide');
+                    }}
+                    aria-label="Hide article"
+                    title="Hide article (h)"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                      ><path d="M3 6h18" /><path
+                        d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                      /><path
+                        d="M8 6V4a2 2 0 0 1 2-2h4c1 0 2 1 2 2v2"
+                      /></svg
+                    >
+                    Hide
+                  </button>
+                {/if}
                 <button
                   type="button"
                   class="action-btn min-h-11 {isBoostReview
@@ -1168,34 +1202,7 @@
                   >
                   {article.saved ? 'Saved' : 'Save'}
                 </button>
-                {#if !isBoostReview && !article.read}
-                  <button
-                    type="button"
-                    class="action-btn min-h-11 !inline-flex !bg-surface-900/50 lg:backdrop-blur-sm"
-                    disabled={isPending}
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onpointerup={(e) => e.stopPropagation()}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      interact(article.id, 'read');
-                    }}
-                    aria-label="Mark article as read"
-                    title="Mark as read (m)"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"><path d="m5 12 4 4L19 6" /></svg
-                    >
-                    <span class="hidden sm:inline">Read</span>
-                  </button>
-                {:else if !isBoostReview}
+                {#if !isBoostReview && article.read}
                   <span
                     class="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-surface-300"
                     aria-label="Article is read"
@@ -1303,33 +1310,36 @@
                         >
                         Share
                       </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        class="article-menu-item"
-                        aria-label="Hide article"
-                        disabled={isPending}
-                        onclick={() => interact(article.id, 'hide')}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          aria-hidden="true"
-                          ><path d="M3 6h18" /><path
-                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
-                          /><path
-                            d="M8 6V4a2 2 0 0 1 2-2h4c1 0 2 1 2 2v2"
-                          /></svg
+                      {#if !article.read}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          class="article-menu-item"
+                          aria-label="Mark article as read"
+                          title="Mark as read (m)"
+                          disabled={isPending}
+                          onclick={(e) => {
+                            (e.currentTarget as HTMLElement)
+                              .closest('details')
+                              ?.removeAttribute('open');
+                            interact(article.id, 'read');
+                          }}
                         >
-                        Hide
-                      </button>
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
+                          >
+                          Read
+                        </button>
+                      {/if}
                       <div
                         class="article-menu-reaction-divider my-1 h-px bg-surface-100/10"
                         aria-hidden="true"
