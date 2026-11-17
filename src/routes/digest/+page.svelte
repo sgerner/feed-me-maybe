@@ -428,7 +428,7 @@
           <div
             class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
           >
-            <div class="text-surface-400">Eligible</div>
+            <div class="text-surface-300">Eligible</div>
             <div class="mt-1 text-xl font-semibold text-surface-50">
               {digest.inclusionCounts.eligibleArticles}
             </div>
@@ -436,7 +436,7 @@
           <div
             class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
           >
-            <div class="text-surface-400">Read</div>
+            <div class="text-surface-300">Read</div>
             <div class="mt-1 text-xl font-semibold text-surface-50">
               {digest.inclusionCounts.read}
             </div>
@@ -444,7 +444,7 @@
           <div
             class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
           >
-            <div class="text-surface-400">Unread</div>
+            <div class="text-surface-300">Unread</div>
             <div class="mt-1 text-xl font-semibold text-secondary-300">
               {digest.inclusionCounts.unread}
             </div>
@@ -452,7 +452,7 @@
           <div
             class="rounded-2xl border border-surface-200/10 bg-surface-950/20 p-3"
           >
-            <div class="text-surface-400">Grouped</div>
+            <div class="text-surface-300">Grouped</div>
             <div class="mt-1 text-xl font-semibold text-warning-300">
               {digest.inclusionCounts.deduplicatedArticles}
             </div>
@@ -531,7 +531,7 @@
                 Recommended reading
               </h2>
             </div>
-            <span class="text-xs text-surface-400"
+            <span class="text-xs text-surface-300"
               >{rankedStories.length} stories</span
             >
           </div>
@@ -548,7 +548,7 @@
                     </div>
                     <div class="min-w-0 flex-1">
                       <div
-                        class="mb-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-surface-400"
+                        class="mb-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-surface-300"
                       >
                         <span style="color: {story.accent};"
                           >{story.section}</span
@@ -589,7 +589,7 @@
                         >{#if isTrue(story.article.saved)}<span
                             class="text-success-300">Saved</span
                           >{/if}{#if isTrue(story.article.read)}<span
-                            class="text-surface-400">Read</span
+                            class="text-surface-300">Read</span
                           >{:else}<span class="text-secondary-300">Unread</span
                           >{/if}{#if story.relatedArticleIds.length > 1}<span
                             class="text-surface-500"
@@ -600,7 +600,7 @@
                   </div>
                 </article>{/each}
             </div>{:else}<div
-              class="rounded-2xl border border-dashed border-surface-200/15 p-5 text-sm text-surface-400"
+              class="rounded-2xl border border-dashed border-surface-200/15 p-5 text-sm text-surface-300"
             >
               No recommended stories for the selected window.
             </div>{/if}
@@ -614,7 +614,7 @@
               class="cursor-pointer text-lg font-semibold text-surface-50"
             >
               Related themes <span
-                class="ml-1 text-xs font-normal text-surface-400"
+                class="ml-1 text-xs font-normal text-surface-300"
                 >({digest.themes.length})</span
               >
             </summary>
@@ -623,7 +623,7 @@
                   <div class="text-sm font-semibold text-surface-100">
                     {theme.name}
                   </div>
-                  <p class="mt-1 text-xs leading-relaxed text-surface-400">
+                  <p class="mt-1 text-xs leading-relaxed text-surface-300">
                     {theme.summary}
                   </p>
                   <div class="mt-2 space-y-1">
@@ -634,7 +634,7 @@
                       >{/each}
                   </div>
                 </div>{/each}{#if digest.themes.length === 0}<p
-                  class="text-sm text-surface-400"
+                  class="text-sm text-surface-300"
                 >
                   Themes will appear as coverage accumulates.
                 </p>{/if}
@@ -646,7 +646,7 @@
             <summary
               class="cursor-pointer text-lg font-semibold text-surface-50"
             >
-              Sources <span class="ml-1 text-xs font-normal text-surface-400"
+              Sources <span class="ml-1 text-xs font-normal text-surface-300"
                 >({digest.activeFeeds.length})</span
               >
             </summary>
@@ -656,7 +656,7 @@
                 >
                   <span class="truncate text-surface-200">{feed.title}</span
                   ><span
-                    class="flex-none rounded-full bg-surface-200/10 px-2 py-1 text-xs text-surface-400"
+                    class="flex-none rounded-full bg-surface-200/10 px-2 py-1 text-xs text-surface-300"
                     >{feed.count}</span
                   >
                 </div>{/each}
@@ -669,7 +669,7 @@
                 class="cursor-pointer text-lg font-semibold text-surface-50"
               >
                 Briefing history <span
-                  class="ml-1 text-xs font-normal text-surface-400"
+                  class="ml-1 text-xs font-normal text-surface-300"
                   >({digest.history.length})</span
                 >
               </summary>
@@ -714,7 +714,7 @@
             >
               All included
             </h2>
-            <p class="mt-1 text-sm text-surface-400">
+            <p class="mt-1 text-sm text-surface-300">
               Browse every eligible article used to build this briefing,
               including read items and grouped coverage.
             </p>
@@ -754,7 +754,7 @@
                     <span>{article.feed_title || 'Unknown feed'}</span><span
                       >·</span
                     ><span>{timeAgo(articleDate(article))}</span
-                    >{#if isTrue(article.read)}<span class="text-surface-400"
+                    >{#if isTrue(article.read)}<span class="text-surface-300"
                         >read</span
                       >{:else}<span class="text-secondary-300">unread</span
                       >{/if}{#if isTrue(article.hidden)}<span
@@ -772,7 +772,7 @@
               </article>{/each}
           </div>
           {#if filteredAllArticles.length === 0}<p
-              class="mt-5 rounded-xl border border-dashed border-surface-200/15 p-5 text-sm text-surface-400"
+              class="mt-5 rounded-xl border border-dashed border-surface-200/15 p-5 text-sm text-surface-300"
             >
               No included stories match that filter.
             </p>{/if}{/if}

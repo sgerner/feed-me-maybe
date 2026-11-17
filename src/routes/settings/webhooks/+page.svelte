@@ -82,6 +82,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Webhooks · Feed Me Maybe</title>
+</svelte:head>
+
 <div class="space-y-6">
   <section class="glass-card p-5 md:p-6" in:fly={{ y: 12, duration: 320 }}>
     <h2

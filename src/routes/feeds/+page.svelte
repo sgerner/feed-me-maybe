@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
   import { fade, fly } from 'svelte/transition';
 
   type Feed = {
@@ -20,6 +21,7 @@
 
   let { data }: { data: { feeds: Feed[] } } = $props();
   let query = $state('');
+  const openAddFeed = getContext<() => void>('openAddFeed');
 
   const filteredFeeds = $derived(
     data.feeds.filter((feed) => {
@@ -59,7 +61,7 @@
   }
 
   function statusClass(feed: Feed): string {
-    if (!feed.enabled) return 'text-surface-400 bg-surface-200/10';
+    if (!feed.enabled) return 'text-surface-300 bg-surface-200/10';
     if (feed.error_count > 0 || feed.last_fetch_status === 'error') {
       return 'text-error-300 bg-error-500/10';
     }
@@ -97,26 +99,33 @@
         {data.feeds.length} feeds · {totalUnread} unread stories.
       </p>
     </div>
-    <label class="relative block w-full md:w-80">
-      <span class="sr-only">Search feeds</span>
-      <svg
-        class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-surface-400"
-        xmlns="http://www.w3.org/2000/svg"
-        width="17"
-        height="17"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        ><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+    <div class="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        class="btn preset-filled-primary-500"
+        onclick={openAddFeed}>Add feed</button
       >
-      <input
-        class="input glass-input w-full pl-10"
-        type="search"
-        bind:value={query}
-        placeholder="Search feeds"
-      />
-    </label>
+      <label class="relative block w-full md:w-80">
+        <span class="sr-only">Search feeds</span>
+        <svg
+          class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-surface-300"
+          xmlns="http://www.w3.org/2000/svg"
+          width="17"
+          height="17"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          ><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+        >
+        <input
+          class="input glass-input w-full pl-10"
+          type="search"
+          bind:value={query}
+          placeholder="Search feeds"
+        />
+      </label>
+    </div>
   </div>
 
   {#if data.feeds.length === 0}
@@ -147,10 +156,10 @@
         >
           <div class="mb-3 flex items-center justify-between">
             <div>
-              <p class="eyebrow text-surface-400">Category</p>
+              <p class="eyebrow text-surface-300">Category</p>
               <h2 class="text-xl font-semibold text-surface-100">{category}</h2>
             </div>
-            <span class="text-xs uppercase tracking-[0.18em] text-surface-400"
+            <span class="text-xs uppercase tracking-[0.18em] text-surface-300"
               >{feeds.length} feeds</span
             >
           </div>
@@ -189,7 +198,7 @@
                       >
                         {feedLabel(feed)}
                       </h3>
-                      <p class="truncate text-xs text-surface-400">
+                      <p class="truncate text-xs text-surface-300">
                         {new URL(feed.url).hostname}
                       </p>
                     </div>

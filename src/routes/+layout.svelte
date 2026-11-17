@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../app.css';
+  import { setContext } from 'svelte';
   import { page } from '$app/stores';
   import { navigating } from '$app/state';
   import {
@@ -12,6 +13,7 @@
   import PWABanner from '$lib/components/PWABanner.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
+  import { getSingleKeyShortcutsEnabled } from '$lib/utils/keyboard-shortcuts';
 
   import { syncFeeds } from '$lib/feeds';
   import { fetchWithCsrf } from '$lib/client/csrf';
@@ -38,6 +40,8 @@
   let toasts = $state<Toast[]>([]);
   let stopOfflineSync: (() => void) | null = null;
   let { children, data } = $props();
+
+  setContext('openAddFeed', () => (showAddFeedModal = true));
 
   function applyOfflineStatus(pendingCount: number, blocked = false) {
     queuedActions = pendingCount;
@@ -221,6 +225,42 @@
       if (event.key === 'Escape') {
         event.preventDefault();
         showAddFeedModal = false;
+        return;
+      }
+
+      if (event.key !== 'Tab' || !addFeedDialogEl) return;
+
+      const focusableElements = Array.from(
+        addFeedDialogEl.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        addFeedDialogEl.focus();
+        return;
+      }
+
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (!addFeedDialogEl.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (
+        event.shiftKey &&
+        (activeElement === first || activeElement === addFeedDialogEl)
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (activeElement === last || activeElement === addFeedDialogEl)
+      ) {
+        event.preventDefault();
+        first.focus();
       }
     };
     document.addEventListener('keydown', handleKeydown);
@@ -230,6 +270,39 @@
       addFeedPreviouslyFocused?.focus?.();
       addFeedPreviouslyFocused = null;
     };
+  });
+
+  $effect(() => {
+    const handleShortcutHelp = (event: KeyboardEvent) => {
+      if (event.key !== '?' || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      // Honor the same opt-out as article shortcuts, and keep dialogs exclusive.
+      if (
+        !getSingleKeyShortcutsEnabled() ||
+        showAddFeedModal ||
+        showShortcuts
+      ) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target?.closest(
+          'input, textarea, select, [role="dialog"], [aria-modal="true"]',
+        )
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      showShortcuts = true;
+    };
+
+    document.addEventListener('keydown', handleShortcutHelp);
+    return () => document.removeEventListener('keydown', handleShortcutHelp);
   });
 
   const navItems = [
@@ -419,6 +492,8 @@
 </script>
 
 <!-- Cinematic Background -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+
 <div class="cinematic-bg" aria-hidden="true">
   <div class="cinematic-bg-orb cinematic-bg-orb-1"></div>
   <div class="cinematic-bg-orb cinematic-bg-orb-2"></div>
@@ -488,7 +563,7 @@
             <div class="mt-4 flex items-center justify-between px-3 pb-1">
               <div
                 class="text-[10px] font-bold uppercase tracking-widest"
-                style="color: color-mix(in oklch, var(--color-surface-200) 30%, transparent);"
+                style="color: var(--color-surface-300);"
               >
                 Sources
               </div>
@@ -520,7 +595,7 @@
             >
               <summary class="nav-feed-summary">
                 <span>Browse sources</span>
-                <span class="text-[10px] text-surface-400"
+                <span class="text-[10px] text-surface-300"
                   >{data.feeds.length}</span
                 >
               </summary>
@@ -552,7 +627,7 @@
                           fill="none"
                           stroke="currentColor"
                           stroke-width="2"
-                          style="color: color-mix(in oklch, var(--color-surface-200) 40%, transparent);"
+                          style="color: var(--color-surface-300);"
                           ><path d="M4 11a9 9 0 0 1 9 9" /><path
                             d="M4 4a16 16 0 0 1 16 16"
                           /><circle cx="5" cy="19" r="1" /></svg
@@ -620,7 +695,7 @@
           >
             <span class="flex items-center gap-3">
               <span
-                class="flex h-5 w-5 items-center justify-center text-surface-400"
+                class="flex h-5 w-5 items-center justify-center text-surface-300"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -791,7 +866,11 @@
     </aside>
 
     <!-- Main Content -->
-    <main class="relative flex-1 overflow-auto md:p-8">
+    <main
+      id="main-content"
+      tabindex="-1"
+      class="relative flex-1 overflow-auto md:p-8"
+    >
       {#key $page.url.pathname}
         {@render children()}
       {/key}
@@ -816,7 +895,6 @@
       class={'mobile-core-nav-link' +
         (sidebarOpen ? ' mobile-core-nav-link-active' : '')}
       onclick={openMore}
-      aria-label="Open more navigation"
       aria-expanded={sidebarOpen}
       aria-controls="app-sidebar"
       type="button"
@@ -857,11 +935,11 @@
           : 'Loading article...'}
       </p>
       {#if navigating.to?.url?.searchParams?.get('mode') === 'archive'}
-        <p class="max-w-xs text-center text-xs text-surface-400">
+        <p class="max-w-xs text-center text-xs text-surface-300">
           This may take a few moments as we retrieve the archived version.
         </p>
       {:else}
-        <p class="max-w-xs text-center text-xs text-surface-400">
+        <p class="max-w-xs text-center text-xs text-surface-300">
           We’re opening the article in the reader.
         </p>
       {/if}
@@ -901,15 +979,15 @@
     <div
       class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-md"
       transition:fade={{ duration: 200 }}
-      onclick={() => (showAddFeedModal = false)}
+      onclick={(event) => {
+        if (event.target === event.currentTarget) showAddFeedModal = false;
+      }}
       role="presentation"
     >
       <div
         bind:this={addFeedDialogEl}
         class="glass-card w-full max-w-md p-6 shadow-2xl"
         transition:fly={{ y: 20, duration: 300 }}
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-feed-title"

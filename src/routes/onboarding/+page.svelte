@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { fly } from 'svelte/transition';
   import { fetchWithCsrf } from '$lib/client/csrf';
 
@@ -9,7 +10,6 @@
   let loading = $state(false);
   let importing = $state(false);
   let error = $state('');
-  let opmlMessage = $state('');
 
   function finishFeeds() {
     step = 2;
@@ -52,7 +52,6 @@
 
       importing = true;
       error = '';
-      opmlMessage = '';
 
       try {
         const text = await file.text();
@@ -68,11 +67,6 @@
           return;
         }
 
-        const result = await res.json();
-        opmlMessage =
-          result.imported > 0
-            ? `Imported ${result.imported} feed${result.imported === 1 ? '' : 's'}.`
-            : 'No new feeds were imported.';
         finishFeeds();
       } catch {
         error = 'Connection error';
@@ -83,29 +77,39 @@
     input.click();
   }
 
-  function skipFeeds() {
-    finishFeeds();
-  }
-
-  async function finishSetup() {
+  async function finishSetup(destination: string) {
+    if (loading) return;
     loading = true;
-    await fetchWithCsrf('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'setup_complete', value: 'true' }),
-    });
-    window.location.href = '/';
+    error = '';
+
+    try {
+      const response = await fetchWithCsrf('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'setup_complete', value: 'true' }),
+      });
+      if (!response.ok) throw new Error('Setup could not be saved');
+      await goto(destination, { invalidateAll: true });
+    } catch {
+      error = 'Could not finish setup. Please try again.';
+    } finally {
+      loading = false;
+    }
   }
 </script>
+
+<svelte:head>
+  <title>Get Started · Feed Me Maybe</title>
+</svelte:head>
 
 <div class="container mx-auto max-w-lg px-4 py-8 sm:py-10">
   <div class="mb-8 flex items-center justify-between gap-4">
     <p
-      class="text-xs font-semibold uppercase tracking-[0.2em] text-surface-400"
+      class="text-xs font-semibold uppercase tracking-[0.2em] text-surface-300"
     >
       Set up Feed Me Maybe
     </p>
-    <p class="text-xs text-surface-400" aria-live="polite">
+    <p class="text-xs text-surface-300" aria-live="polite">
       Step {step} of {totalSteps}
     </p>
   </div>
@@ -168,14 +172,14 @@
             aria-describedby="feed-url-help"
             required
           />
-          <span id="feed-url-help" class="mt-1 block text-xs text-surface-400">
+          <span id="feed-url-help" class="mt-1 block text-xs text-surface-300">
             RSS, website, Reddit community, search, or post URLs work too.
           </span>
         </label>
 
         <label class="label block">
           <span class="mb-1 block text-sm font-medium text-surface-200">
-            Feed title <span class="font-normal text-surface-400"
+            Feed title <span class="font-normal text-surface-300"
               >(optional)</span
             >
           </span>
@@ -213,16 +217,6 @@
               /><line x1="12" y1="16" x2="12.01" y2="16" /></svg
             >
             {error}
-          </div>
-        {/if}
-
-        {#if opmlMessage}
-          <div
-            class="px-3 py-2 text-sm text-success-300"
-            role="status"
-            style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent); border-radius: 2px;"
-          >
-            {opmlMessage}
           </div>
         {/if}
 
@@ -264,7 +258,7 @@
         <button
           type="button"
           class="min-h-11 px-2 py-2 text-sm text-surface-300 underline decoration-surface-500 underline-offset-4 hover:text-surface-100"
-          onclick={skipFeeds}
+          onclick={finishFeeds}
           disabled={loading || importing}
         >
           I'll add feeds later
@@ -293,8 +287,8 @@
       </div>
       <h1 class="text-2xl font-bold text-surface-50">You're ready to read</h1>
       <p class="mx-auto mt-4 max-w-sm text-surface-300">
-        Your feeds are ready. AI summaries and recommendations are optional—you
-        can configure them later in Settings.
+        AI summaries and recommendations are optional. You can configure them in
+        Settings.
       </p>
       <div
         class="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center"
@@ -302,7 +296,7 @@
         <button
           type="button"
           class="btn preset-filled-primary-500 inline-flex min-h-11 items-center justify-center gap-2"
-          onclick={finishSetup}
+          onclick={() => finishSetup('/')}
           disabled={loading}
         >
           {#if loading}
@@ -322,14 +316,19 @@
             Start reading
           {/if}
         </button>
-        <a
-          href="/settings/ai"
+        <button
+          type="button"
+          onclick={() => finishSetup('/settings/ai')}
+          disabled={loading}
           class="min-h-11 px-3 py-2 text-sm text-surface-300 underline decoration-surface-500 underline-offset-4 hover:text-surface-100"
         >
-          Configure AI later
-        </a>
+          Configure AI
+        </button>
       </div>
-      <p class="mt-5 text-xs text-surface-400">
+      {#if error}
+        <p class="mt-4 text-sm text-error-300" role="alert">{error}</p>
+      {/if}
+      <p class="mt-5 text-xs text-surface-300">
         You can also add more feeds anytime from the Feeds page.
       </p>
     </div>

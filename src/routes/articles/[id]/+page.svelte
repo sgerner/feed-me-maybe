@@ -54,6 +54,7 @@
   let articleContentEl = $state<HTMLDivElement | null>(null);
   let readerArticleEl = $state<HTMLElement | null>(null);
   let lightboxBackdropEl = $state<HTMLDivElement | null>(null);
+  let lightboxPreviouslyFocused: HTMLElement | null = null;
   let swipeActionsEnabled = $state(false);
   let readingProgress = $state(0);
   let fontScale = $state(1);
@@ -224,8 +225,12 @@
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
+    requestAnimationFrame(() => lightboxBackdropEl?.focus());
+
     return () => {
       document.body.style.overflow = previousOverflow;
+      lightboxPreviouslyFocused?.focus?.();
+      lightboxPreviouslyFocused = null;
     };
   });
 
@@ -287,6 +292,7 @@
   function openLightbox(index: number) {
     if (!articleImages.length) return;
     lightboxIndex = Math.max(0, Math.min(index, articleImages.length - 1));
+    lightboxPreviouslyFocused = document.activeElement as HTMLElement | null;
     lightboxOpen = true;
   }
 
@@ -327,7 +333,37 @@
 
     if (!lightboxOpen) return;
 
-    if (event.key === 'Escape') {
+    if (event.key === 'Tab' && lightboxBackdropEl) {
+      const focusableElements = Array.from(
+        lightboxBackdropEl.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        lightboxBackdropEl.focus();
+        return;
+      }
+
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (!lightboxBackdropEl.contains(activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (
+        event.shiftKey &&
+        (activeElement === first || activeElement === lightboxBackdropEl)
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    } else if (event.key === 'Escape') {
       event.preventDefault();
       closeLightbox();
     } else if (event.key === 'ArrowLeft') {
@@ -477,6 +513,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>{article.title} · Feed Me Maybe</title>
+</svelte:head>
+
 <svelte:window
   onkeydown={handleLightboxKeydown}
   onpointerdown={handleReaderWindowPointerDown}
@@ -504,7 +544,7 @@
             {mode === 'proxy' ? 'Fetching via Proxy...' : 'Loading Article...'}
           </p>
           {#if mode === 'iframe'}
-            <p class="max-w-xs text-center text-xs text-surface-400">
+            <p class="max-w-xs text-center text-xs text-surface-300">
               If the site remains blank, it may be blocking iframes. Try
               switching to <strong>Proxy</strong> mode in settings.
             </p>
@@ -563,7 +603,7 @@
           <div class="mb-6">
             <div
               class="flex flex-wrap items-center gap-2 text-xs"
-              style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+              style="color: var(--color-surface-300);"
             >
               <span
                 class="inline-flex items-center gap-1.5 px-2 py-0.5 font-medium"
@@ -705,10 +745,7 @@
                 {@html formatContent(article.summary)}
               </div>
             {:else}
-              <p
-                class="italic"
-                style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
-              >
+              <p class="italic" style="color: var(--color-surface-300);">
                 No content available.
               </p>
             {/if}
@@ -730,7 +767,7 @@
     <div
       class="fixed inset-0 z-[70] bg-black/95"
       role="dialog"
-      tabindex="0"
+      tabindex="-1"
       aria-modal="true"
       aria-label="Article image viewer"
       in:fade={{ duration: 160 }}

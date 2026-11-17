@@ -74,6 +74,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Saved Articles · Feed Me Maybe</title>
+</svelte:head>
+
 <div class="mx-auto max-w-7xl">
   <div class="mb-8">
     <p class="eyebrow text-primary-300">Saved articles</p>

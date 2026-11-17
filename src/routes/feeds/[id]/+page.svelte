@@ -1,5 +1,6 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
+  import PullToRefresh from '$lib/components/PullToRefresh.svelte';
   import ArticleList from '$lib/components/ArticleList.svelte';
   import { syncFeed } from '$lib/feeds';
   import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
@@ -65,19 +66,7 @@
   let openMode = $state('');
   let useProxy = $state(false);
 
-  let pullDistance = $state(0);
-  let isPulling = $state(false);
   let syncing = $state(false);
-  let touchStartY = 0;
-
-  function getScrollContainer(): HTMLElement | null {
-    return document.querySelector('main');
-  }
-
-  function isAtTop(): boolean {
-    const container = getScrollContainer();
-    return !container || container.scrollTop <= 0;
-  }
 
   function toggleHiddenContent() {
     const next = new URL(window.location.href);
@@ -121,8 +110,11 @@
   async function handleSync() {
     if (syncing) return;
     syncing = true;
-    await syncFeed(pageData.feedId);
-    syncing = false;
+    try {
+      await syncFeed(pageData.feedId);
+    } finally {
+      syncing = false;
+    }
   }
 
   async function saveSettings() {
@@ -218,77 +210,14 @@
     }
   }
 
-  function handleTouchStart(e: TouchEvent) {
-    touchStartY = e.changedTouches[0].screenY;
-    isPulling = false;
-    pullDistance = 0;
-  }
-
-  function handleTouchMove(e: TouchEvent) {
-    if (!isAtTop()) return;
-
-    const currentY = e.changedTouches[0].screenY;
-    const diff = currentY - touchStartY;
-    if (diff <= 0) {
-      pullDistance = 0;
-      isPulling = false;
-      return;
-    }
-
-    if (diff < 12 && !isPulling) return;
-
-    if (!isPulling) {
-      isPulling = true;
-    }
-
-    e.preventDefault();
-    pullDistance = Math.min(diff * 0.4, 80);
-  }
-
-  function handleTouchEnd() {
-    if (isPulling && pullDistance >= 60) {
-      handleSync();
-    }
-    pullDistance = 0;
-    isPulling = false;
-  }
-
   const settingsIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>`;
 </script>
 
-<div
-  class="mx-auto max-w-7xl"
-  role="presentation"
-  style="overscroll-behavior-y: contain; touch-action: pan-y;"
-  ontouchstart={handleTouchStart}
-  ontouchmove={handleTouchMove}
-  ontouchend={handleTouchEnd}
->
-  <!-- Pull to refresh indicator -->
-  <div
-    class="flex justify-center overflow-hidden transition-all duration-200"
-    style="height: {pullDistance}px; opacity: {pullDistance / 60};"
-  >
-    <div class="mt-4 flex items-center gap-2 text-primary-400">
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        class={pullDistance >= 60 ? 'rotate-180' : ''}
-        style="transition: transform 0.2s;"
-      >
-        <path d="M12 5v14M19 12l-7 7-7-7" />
-      </svg>
-      <span class="text-xs font-bold uppercase tracking-wider"
-        >{pullDistance >= 60 ? 'Release to sync' : 'Pull to sync'}</span
-      >
-    </div>
-  </div>
+<svelte:head>
+  <title>{feed.title || 'Feed'} · Feed Me Maybe</title>
+</svelte:head>
 
+<PullToRefresh onSync={handleSync} {syncing}>
   <div
     class="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between"
   >
@@ -299,7 +228,7 @@
         {#if meta}
           <div
             class="mt-1 flex flex-wrap items-center gap-2 text-xs"
-            style="color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);"
+            style="color: var(--color-surface-300);"
           >
             <span
               class="inline-flex items-center gap-1 px-1.5 py-0.5 font-medium"
@@ -509,10 +438,7 @@
             <span class="text-sm">Fetch through proxy</span>
           </label>
           {#if !pageData.proxyAvailable}
-            <p
-              class="text-xs"
-              style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
-            >
+            <p class="text-xs" style="color: var(--color-surface-300);">
               Set <code>PROXY_BASE_URL</code> to enable proxy fetching for this feed.
             </p>
           {/if}
@@ -567,4 +493,4 @@
       : undefined}
     emptyCtaHref={pageData.showHiddenContent ? null : undefined}
   />
-</div>
+</PullToRefresh>
