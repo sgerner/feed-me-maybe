@@ -1,3 +1,4 @@
+import { normalizeSourceUrl } from '$lib/server/source-url';
 import { getDb } from '$lib/server/db';
 
 const MIN_POLL_INTERVAL_MINS = 1;
@@ -68,27 +69,8 @@ function parsePollInterval(
 }
 
 export function normalizeFeedUrl(value: string): string {
-  if (!value) return '';
-  try {
-    const url = new URL(value.trim());
-    url.hash = '';
-    url.hostname = url.hostname.toLowerCase();
-    if (url.protocol === 'http:' && url.port === '80') url.port = '';
-    if (url.protocol === 'https:' && url.port === '443') url.port = '';
-    if (url.pathname.length > 1)
-      url.pathname = url.pathname.replace(/\/+$/, '');
-
-    const sortedParams = [...url.searchParams.entries()].sort(([a], [b]) =>
-      a.localeCompare(b),
-    );
-    url.search = '';
-    for (const [key, val] of sortedParams) url.searchParams.append(key, val);
-    return url.href;
-  } catch {
-    return value.trim();
-  }
+  return normalizeSourceUrl(value);
 }
-
 export function getGlobalPollIntervalMins(): number {
   try {
     const row = getDb()

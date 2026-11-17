@@ -1,3 +1,4 @@
+import { normalizeSourceUrl } from '$lib/server/source-url';
 import { getDb } from '$lib/server/db';
 import { fetchFeed } from '$lib/server/feed/fetcher';
 import {
@@ -36,40 +37,8 @@ interface IngestResult {
 }
 
 export function normalizeArticleUrl(value: string): string {
-  if (!value) return '';
-  try {
-    const url = new URL(value.trim());
-    url.hash = '';
-    url.hostname = url.hostname.toLowerCase();
-    if (url.protocol === 'http:' && url.port === '80') url.port = '';
-    if (url.protocol === 'https:' && url.port === '443') url.port = '';
-
-    for (const key of [...url.searchParams.keys()]) {
-      if (
-        /^utm_/i.test(key) ||
-        ['fbclid', 'gclid', 'dclid', 'msclkid', 'mc_cid', 'mc_eid'].includes(
-          key.toLowerCase(),
-        )
-      ) {
-        url.searchParams.delete(key);
-      }
-    }
-
-    const sortedParams = [...url.searchParams.entries()].sort(([a], [b]) =>
-      a.localeCompare(b),
-    );
-    url.search = '';
-    for (const [key, val] of sortedParams) url.searchParams.append(key, val);
-
-    if (url.pathname.length > 1) {
-      url.pathname = url.pathname.replace(/\/+$/, '');
-    }
-    return url.href;
-  } catch {
-    return value.trim();
-  }
+  return normalizeSourceUrl(value, true);
 }
-
 function normalizeGuid(value: string | undefined): string {
   return String(value || '').trim();
 }
@@ -361,8 +330,10 @@ export async function ingestFeed(
       guid: string | null;
       title: string | null;
       image_url: string | null;
-      content: string | null;
-      summary: string | null;
+      content_length_lower: number | null;
+      content_length_upper: number | null;
+      has_content: number;
+      has_summary: number;
       author: string | null;
       categories: string | null;
       external_url: string | null;
@@ -374,12 +345,24 @@ export async function ingestFeed(
     const existingRows = db
       .prepare(
         `
-          SELECT id, url, guid, title, image_url, content, summary, author,
-                 categories, ${supportsExternalUrl ? 'external_url' : "'' AS external_url"}
+          SELECT id, url, guid, title, image_url,
+                 length(content) AS content_length_lower,
+                 length(CAST(content AS BLOB)) AS content_length_upper,
+                 CASE WHEN content IS NOT NULL
+                            AND length(CAST(content AS BLOB)) > 0
+                      THEN 1 ELSE 0 END AS has_content,
+                 CASE WHEN summary IS NOT NULL
+                            AND length(CAST(summary AS BLOB)) > 0
+                      THEN 1 ELSE 0 END AS has_summary,
+                 author, categories,
+                 ${supportsExternalUrl ? 'external_url' : "'' AS external_url"}
           FROM articles WHERE feed_id = ?
         `,
       )
       .all(feedId) as ExistingArticle[];
+    const readExistingContent = db.prepare(
+      'SELECT content FROM articles WHERE id = ?',
+    );
     const existingByUrl = new Map<string, ExistingArticle>();
     const existingByGuid = new Map<string, ExistingArticle>();
     const existingById = new Map<string, ExistingArticle>();
@@ -464,12 +447,25 @@ export async function ingestFeed(
           needsUpdate = true;
         }
 
-        const currentLen = existing.content?.length || 0;
         const newLen = item.content?.length || 0;
-        const shouldUpgradeContent =
-          newLen > currentLen + 50 || (newLen > 0 && !existing.content);
+        let shouldUpgradeContent = false;
+        if (newLen > 0 && !existing.has_content) {
+          shouldUpgradeContent = true;
+        } else if (newLen > Number(existing.content_length_lower || 0) + 50) {
+          const upperLength = Number(existing.content_length_upper || 0);
+          if (newLen > upperLength + 50) {
+            shouldUpgradeContent = true;
+          } else {
+            // SQLite counts code points or bytes. Read the body only when
+            // those bounds disagree about the JavaScript UTF-16 threshold.
+            const exactRow = readExistingContent.get(existing.id) as
+              { content: string | null } | undefined;
+            const exactLength = exactRow?.content?.length || 0;
+            shouldUpgradeContent = newLen > exactLength + 50;
+          }
+        }
 
-        if (!existing.summary && item.summary && !shouldUpgradeContent) {
+        if (!existing.has_summary && item.summary && !shouldUpgradeContent) {
           updates.push('summary = ?');
           params.push(item.summary);
           needsUpdate = true;
@@ -576,8 +572,10 @@ export async function ingestFeed(
         guid: guid || null,
         title: item.title,
         image_url: item.imageUrl || null,
-        content: item.content || null,
-        summary: item.summary || null,
+        content_length_lower: item.content?.length || 0,
+        content_length_upper: item.content?.length || 0,
+        has_content: item.content ? 1 : 0,
+        has_summary: item.summary ? 1 : 0,
         author: item.author || null,
         categories: item.categories.length
           ? JSON.stringify(item.categories)

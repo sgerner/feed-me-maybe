@@ -451,6 +451,63 @@ const migrations: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 7,
+    name: 'background_job_lookup_indexes',
+    apply: (db) => {
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_active_type_status
+         ON jobs(type, status)
+         WHERE status IN ('queued', 'processing')`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_active_article_lookup
+         ON jobs(
+           type,
+           CASE WHEN json_valid(payload) = 1
+                THEN json_extract(payload, '$.articleId') END,
+           status,
+           created_at
+         )
+         WHERE status IN ('queued', 'processing')`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_active_feed_lookup
+         ON jobs(
+           type,
+           CASE WHEN json_valid(payload) = 1
+                THEN json_extract(payload, '$.feedId') END,
+           status,
+           created_at
+         )
+         WHERE status IN ('queued', 'processing')`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_queue_claim
+         ON jobs(status, scheduled_at, created_at)
+         WHERE status = 'queued'`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_queued_next_due
+         ON jobs(COALESCE(scheduled_at, created_at))
+         WHERE status = 'queued'`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_processing_lease
+         ON jobs(started_at)
+         WHERE status = 'processing' AND started_at IS NOT NULL`,
+      ).run();
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_jobs_feed_latest
+         ON jobs(
+           type,
+           CASE WHEN json_valid(payload) = 1
+                THEN json_extract(payload, '$.feedId') END,
+           created_at DESC
+         )`,
+      ).run();
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {

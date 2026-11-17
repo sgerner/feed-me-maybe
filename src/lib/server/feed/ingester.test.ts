@@ -164,4 +164,58 @@ describe('feed ingester identity and duplicate handling', () => {
       .get(article.id) as { count: number };
     expect(aiJobs.count).toBe(1);
   });
+
+  it('preserves the UTF-16 content upgrade threshold during deduplication', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, source_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-content-upgrade', 'https://example.com/rss', 'rss', now, now);
+
+    const item = {
+      guid: 'stable-guid',
+      url: 'https://example.com/story',
+      title: 'Story',
+      summary: 'Short summary',
+      categories: [],
+      publishedAt: new Date(now - 1_000),
+    };
+    const originalContent = '😀'.repeat(30);
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [{ ...item, content: originalContent }],
+    });
+    await ingestFeed({ feedId: 'feed-content-upgrade' });
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [{ ...item, content: 'a'.repeat(110) }],
+    });
+    await ingestFeed({ feedId: 'feed-content-upgrade' });
+    expect(
+      db
+        .prepare('SELECT content FROM articles WHERE feed_id = ?')
+        .get('feed-content-upgrade'),
+    ).toEqual({ content: originalContent });
+
+    const upgradedContent = 'a'.repeat(111);
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [{ ...item, content: upgradedContent, summary: 'Full summary' }],
+    });
+    const second = await ingestFeed({ feedId: 'feed-content-upgrade' });
+    const article = db
+      .prepare('SELECT content, summary FROM articles WHERE feed_id = ?')
+      .get('feed-content-upgrade') as {
+      content: string;
+      summary: string;
+    };
+
+    expect(second.articlesNew).toBe(0);
+    expect(article.content).toBe(upgradedContent);
+    expect(article.summary).toBe('Full summary');
+  });
 });

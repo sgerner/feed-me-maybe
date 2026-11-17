@@ -205,8 +205,7 @@ describe('feed article queries', () => {
 
   it('diversifies the cross-feed ranking after the top story', async () => {
     const { getDb } = await import('$lib/server/db');
-    const { buildGlobalArticleRankingQuery } =
-      await import('$lib/server/ranking');
+    const { queryGlobalArticleRanking } = await import('$lib/server/ranking');
     const db = getDb();
     const now = Date.now();
 
@@ -247,11 +246,9 @@ describe('feed article queries', () => {
     insertArticle('a-3', 'feed-a', 98);
     insertArticle('b-1', 'feed-b', 98);
 
-    const rows = db
-      .prepare(
-        `${buildGlobalArticleRankingQuery('a.hidden = 0')} LIMIT ? OFFSET ?`,
-      )
-      .all(4, 0) as Array<{ id: string }>;
+    const rows = queryGlobalArticleRanking(db, 'a.hidden = 0', [], 4) as Array<{
+      id: string;
+    }>;
 
     expect(rows.map((row) => row.id)).toEqual(['a-1', 'b-1', 'a-2', 'a-3']);
   });
