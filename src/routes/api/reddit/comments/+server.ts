@@ -68,6 +68,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     // If we get a 403, try old.reddit.com as it sometimes has different blocking rules
     if (response.status === 403) {
+      await response.body?.cancel();
       const oldRedditUrl = jsonUrl.replace('www.reddit.com', 'old.reddit.com');
       const secondAttempt = (
         await fetchSafe(
@@ -88,11 +89,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ).response;
       if (secondAttempt.ok) {
         response = secondAttempt;
+      } else {
+        await secondAttempt.body?.cancel();
       }
     }
 
     // If still 403, try with a browser User-Agent
     if (response.status === 403) {
+      await response.body?.cancel();
       const browserUA =
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
       const thirdAttempt = (
@@ -114,10 +118,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ).response;
       if (thirdAttempt.ok) {
         response = thirdAttempt;
+      } else {
+        await thirdAttempt.body?.cancel();
       }
     }
 
     if (!response.ok) {
+      await response.body?.cancel();
       recordAppError({
         source: 'api.reddit.comments',
         error: new Error(`Reddit returned HTTP ${response.status}`),

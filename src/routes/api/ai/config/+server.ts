@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { encrypt } from '$lib/server/ai/crypto';
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
+import { assertPublicNetworkUrl, SafeFetchError } from '$lib/server/network';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
@@ -32,6 +33,22 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     (customBaseUrl !== undefined && typeof customBaseUrl !== 'string')
   ) {
     return json({ error: 'Invalid AI configuration' }, { status: 400 });
+  }
+
+  let validatedBaseUrl: string | null = null;
+  if (typeof customBaseUrl === 'string' && customBaseUrl.trim()) {
+    try {
+      validatedBaseUrl = (await assertPublicNetworkUrl(customBaseUrl.trim()))
+        .href;
+    } catch (err) {
+      if (err instanceof SafeFetchError) {
+        return json(
+          { error: 'Custom base URL must resolve to a public HTTP(S) host' },
+          { status: 400 },
+        );
+      }
+      throw err;
+    }
   }
 
   const safeConfig = Object.fromEntries(
@@ -64,14 +81,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         String(modelId),
         encrypted,
         nonce,
-        customBaseUrl || null,
+        validatedBaseUrl,
         Date.now(),
         existing.id,
       );
     } else {
       db.prepare(
         'UPDATE provider_configs SET model_id = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
-      ).run(String(modelId), customBaseUrl || null, Date.now(), existing.id);
+      ).run(String(modelId), validatedBaseUrl, Date.now(), existing.id);
     }
   } else {
     const id = crypto.randomUUID();
@@ -83,7 +100,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       String(modelId),
       encrypted || '',
       nonce || '',
-      customBaseUrl || null,
+      validatedBaseUrl,
       Date.now(),
       Date.now(),
     );

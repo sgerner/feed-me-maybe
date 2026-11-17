@@ -111,6 +111,7 @@ export async function fetchFeed(
     }
 
     if (!response.ok) {
+      await response.body?.cancel();
       return {
         success: false,
         items: [],

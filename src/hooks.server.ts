@@ -17,8 +17,8 @@ import {
   CSRF_COOKIE_NAME,
   CSRF_MAX_AGE_SECONDS,
   createCsrfToken,
-  isJsonMutation,
-  isValidJsonMutationCsrf,
+  isCsrfProtectedMutation,
+  isValidMutationCsrf,
 } from '$lib/server/auth/csrf';
 
 if (!building) {
@@ -94,14 +94,14 @@ export const handle: Handle = async ({ event, resolve }) => {
     }
   }
 
-  // JSON mutations must originate from this app or carry the double-submit
+  // Mutations must originate from this app or carry the double-submit
   // token. Login is intentionally exempt because it creates the session.
   if (
     event.locals.sessionId &&
-    isJsonMutation(event.request) &&
+    isCsrfProtectedMutation(event.request) &&
     event.url.pathname !== '/api/login'
   ) {
-    if (!isValidJsonMutationCsrf(event.request, event.url.origin, csrfToken)) {
+    if (!isValidMutationCsrf(event.request, event.url.origin, csrfToken)) {
       return new Response(JSON.stringify({ error: 'CSRF validation failed' }), {
         status: 403,
         headers: {

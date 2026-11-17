@@ -2,6 +2,7 @@ import { getDb } from './db';
 import crypto from 'node:crypto';
 import { recordAppError } from './logging';
 import { decrypt, encrypt } from './ai/crypto';
+import { fetchSafe, validatePublicUrl } from './network';
 
 const ENCRYPTED_SECRET_PREFIX = 'v1:';
 
@@ -83,13 +84,18 @@ async function sendWebhook(hook: any, event: WebhookEvent) {
     headers['X-Feed-Me-Maybe-Signature'] = `sha256=${signature}`;
   }
 
-  const response = await fetch(hook.url, {
-    method: 'POST',
-    headers,
-    body,
-    redirect: 'error',
-  });
+  const { response } = await fetchSafe(
+    hook.url,
+    {
+      method: 'POST',
+      headers,
+      body,
+      signal: AbortSignal.timeout(10_000),
+    },
+    { maxRedirects: 0 },
+  );
 
+  await response.body?.cancel();
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
@@ -115,9 +121,18 @@ export function createWebhook(
   const db = getDb();
   const id = crypto.randomUUID();
   const now = Date.now();
+  const safeUrl = validatePublicUrl(url).href;
   db.prepare(
     'INSERT INTO webhooks (id, name, url, events, secret, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
-  ).run(id, name, url, JSON.stringify(events), protectSecret(secret), now, now);
+  ).run(
+    id,
+    name,
+    safeUrl,
+    JSON.stringify(events),
+    protectSecret(secret),
+    now,
+    now,
+  );
   return id;
 }
 
@@ -141,7 +156,7 @@ export function updateWebhook(
   }
   if (updates.url !== undefined) {
     sets.push('url = ?');
-    params.push(updates.url);
+    params.push(validatePublicUrl(updates.url).href);
   }
   if (updates.events !== undefined) {
     sets.push('events = ?');

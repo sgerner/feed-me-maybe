@@ -6,25 +6,25 @@ import {
   afterAll,
   beforeEach,
   afterEach,
+  vi,
 } from 'vitest';
 import {
   createWebhook,
   dispatchWebhookEvent,
   deleteWebhook,
   getWebhooks,
+  updateWebhook,
 } from './webhooks';
 import { recordInteraction } from './interactions';
 import { closeDb, getDb } from './db';
 import { initializeDatabase } from './db/migrate';
-import http from 'node:http';
 import { unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('Webhooks', () => {
-  let server: http.Server;
   let receivedRequest: any = null;
-  const PORT = 5555;
-  const WEBHOOK_URL = `http://localhost:${PORT}/webhook`;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const WEBHOOK_URL = 'https://1.1.1.1/webhook';
   const testDbPath = join(process.cwd(), 'data', 'test-webhooks.db');
   const originalDbUrl = process.env.DATABASE_URL;
 
@@ -38,35 +38,22 @@ describe('Webhooks', () => {
     initializeDatabase();
   });
 
-  beforeEach(async () => {
+  beforeEach(() => {
     closeDb();
-
-    // Start a local mock server
     receivedRequest = null;
-    server = http.createServer((req, res) => {
-      let body = '';
-      req.on('data', (chunk) => {
-        body += chunk;
-      });
-      req.on('end', () => {
-        try {
-          receivedRequest = {
-            headers: req.headers,
-            body: JSON.parse(body),
-          };
-        } catch {
-          receivedRequest = null;
-        }
-        res.writeHead(200);
-        res.end('OK');
-      });
+    fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      receivedRequest = {
+        url: String(input),
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)),
+      };
+      return new Response('OK', { status: 200 });
     });
-
-    await new Promise<void>((resolve) => server.listen(PORT, resolve));
+    vi.stubGlobal('fetch', fetchMock);
   });
 
   afterEach(() => {
-    server.close();
+    vi.unstubAllGlobals();
     closeDb();
   });
 
@@ -97,10 +84,13 @@ describe('Webhooks', () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     expect(receivedRequest).not.toBeNull();
-    expect(receivedRequest.headers['x-feed-me-maybe-event']).toBe(
+    expect(receivedRequest.url).toBe(WEBHOOK_URL);
+    expect(receivedRequest.headers.get('x-feed-me-maybe-event')).toBe(
       'article.saved',
     );
-    expect(receivedRequest.headers['x-feed-me-maybe-signature']).toBeDefined();
+    expect(
+      receivedRequest.headers.get('x-feed-me-maybe-signature'),
+    ).toBeDefined();
     expect(receivedRequest.body.type).toBe('article.saved');
     expect(receivedRequest.body.payload.article.title).toBe('Test');
 
@@ -127,6 +117,20 @@ describe('Webhooks', () => {
     deleteWebhook(hookId);
   });
 
+  it('rejects private webhook destinations on create and update', () => {
+    expect(() =>
+      createWebhook('Local Hook', 'http://127.0.0.1:5555/webhook', [
+        'article.saved',
+      ]),
+    ).toThrow(/private network/i);
+
+    const hookId = createWebhook('Public Hook', WEBHOOK_URL, ['article.saved']);
+    expect(() =>
+      updateWebhook(hookId, { url: 'http://localhost/webhook' }),
+    ).toThrow(/private network/i);
+    deleteWebhook(hookId);
+  });
+
   it('should not dispatch if event type is not subscribed', async () => {
     const hookId = createWebhook('Test Hook', WEBHOOK_URL, ['other.event']);
 
@@ -138,8 +142,9 @@ describe('Webhooks', () => {
 
     await dispatchWebhookEvent(event);
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 30));
     expect(receivedRequest).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
 
     deleteWebhook(hookId);
   });
@@ -172,7 +177,7 @@ describe('Webhooks', () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     expect(receivedRequest).not.toBeNull();
-    expect(receivedRequest.headers['x-feed-me-maybe-event']).toBe(
+    expect(receivedRequest.headers.get('x-feed-me-maybe-event')).toBe(
       'article.saved',
     );
     expect(receivedRequest.body.payload.article.id).toBe('test-article');
