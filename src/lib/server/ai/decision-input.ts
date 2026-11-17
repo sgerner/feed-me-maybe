@@ -147,7 +147,7 @@ function omitEmptyFields(value: unknown): void {
  * candidate facts; unlike the experimental variants, it does not clip or pack.
  */
 export function buildSafeDecisionInput(state: DecisionState): DecisionState {
-  const safe = cloneValue(state);
+  const safe = structuredClone(state);
   omitEmptyFields(safe);
 
   if (
@@ -249,18 +249,6 @@ const MINIMAL = {
   preferredSources: 3,
 } as const;
 
-function cloneValue<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => cloneValue(item)) as T;
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cloneValue(item)]),
-    ) as T;
-  }
-  return value;
-}
-
 function clippedText(value: unknown, maxLength: number): unknown {
   if (typeof value !== 'string') return value;
   const text = value.trim();
@@ -331,7 +319,7 @@ function compactList(
     .map((item) =>
       typeof item === 'string'
         ? clippedText(item, textLimit)
-        : cloneValue(item),
+        : structuredClone(item),
     );
 }
 
@@ -343,9 +331,9 @@ function compactPreferenceList(
   if (!Array.isArray(value)) return value;
   return (preserveAll ? value : value.slice(0, limit)).map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      return cloneValue(item);
+      return structuredClone(item);
     }
-    const preference = cloneValue(item as Record<string, unknown>);
+    const preference = structuredClone(item as Record<string, unknown>);
     if ('type' in preference)
       preference.type = clippedText(preference.type, 40);
     if ('value' in preference)
@@ -362,9 +350,9 @@ function compactSourceList(
   if (!Array.isArray(value)) return value;
   return (preserveAll ? value : value.slice(0, limit)).map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      return cloneValue(item);
+      return structuredClone(item);
     }
-    const source = cloneValue(item as Record<string, unknown>);
+    const source = structuredClone(item as Record<string, unknown>);
     if ('source' in source) source.source = clippedText(source.source, 100);
     return source;
   });
@@ -375,7 +363,7 @@ function makeVariant(
   limits: typeof COMPACT | typeof MINIMAL,
   minimal: boolean,
 ): DecisionState {
-  const result = cloneValue(state);
+  const result = structuredClone(state);
   const profile = result.reader_profile;
   const candidate = result.candidate;
 
@@ -455,7 +443,7 @@ export function buildDecisionInputVariants(
   state: DecisionState,
 ): DecisionInputVariants {
   return {
-    full: cloneValue(state),
+    full: structuredClone(state),
     compact: makeVariant(state, COMPACT, false),
     minimal: makeVariant(state, MINIMAL, true),
   };
@@ -473,7 +461,7 @@ function packTuples<T extends readonly string[]>(
   if (!Array.isArray(values)) return values;
   return values.map((value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return cloneValue(value);
+      return structuredClone(value);
     }
     const record = value as Record<string, unknown>;
     return fields.map((field) => record[field]);

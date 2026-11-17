@@ -1,3 +1,4 @@
+import { stripHtml } from '$lib/server/normalization';
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { getConfiguredAiClient } from '$lib/server/ai/runtime';
@@ -232,22 +233,6 @@ function cacheKey(windowDays: number): string {
   return windowDays === WEEKLY_DIGEST_WINDOW_DAYS
     ? WEEKLY_DIGEST_CACHE_KEY
     : `${WEEKLY_DIGEST_CACHE_KEY}:${windowDays}`;
-}
-
-function stripHtml(value: string): string {
-  return value
-    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&#038;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function toText(value: unknown): string {
