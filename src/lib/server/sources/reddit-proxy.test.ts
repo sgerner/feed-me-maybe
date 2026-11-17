@@ -2,6 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { buildProxyRequestUrl } from '$lib/proxy';
 import { normalizeRedditUrl, fetchRedditSource } from './reddit';
 
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi.fn().mockResolvedValue([{ address: '8.8.8.8', family: 4 }]),
+  },
+}));
+
 describe('Proxy support', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
