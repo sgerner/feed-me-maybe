@@ -18,18 +18,6 @@ export const PREFERENCE_INPUT_VARIANT_NAMES = [
 export type PreferenceInputVariantName =
   (typeof PREFERENCE_INPUT_VARIANT_NAMES)[number];
 
-function cloneValue<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => cloneValue(item)) as T;
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cloneValue(item)]),
-    ) as T;
-  }
-  return value;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -50,11 +38,11 @@ function transformRows(
   value: unknown,
   options: PreferenceInputTransformOptions,
 ): unknown {
-  if (!Array.isArray(value)) return cloneValue(value);
+  if (!Array.isArray(value)) return structuredClone(value);
 
   return value.map((row) => {
-    if (!isRecord(row)) return cloneValue(row);
-    const transformed = cloneValue(row);
+    if (!isRecord(row)) return structuredClone(row);
+    const transformed = structuredClone(row);
 
     if (
       options.stripTypePrefix &&
@@ -88,7 +76,7 @@ export function transformPreferenceInput(
   state: DecisionState,
   options: PreferenceInputTransformOptions,
 ): DecisionState {
-  const transformed = cloneValue(state);
+  const transformed = structuredClone(state);
   const profile = transformed.reader_profile;
 
   if ('positive_preferences' in profile) {

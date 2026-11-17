@@ -1,3 +1,4 @@
+import { stripHtml } from '$lib/server/normalization';
 import type { ArticleAnalysisInput } from './types';
 
 const SIGNAL_TAGS = [
@@ -26,22 +27,6 @@ const MAX_TITLE_CHARS = 240;
 const MAX_META_CHARS = 160;
 const MAX_SUMMARY_CHARS = 520;
 const MAX_CONTENT_CHARS = 1600;
-
-function stripHtml(value: string): string {
-  return value
-    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&#038;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function clipText(value: string, limit: number): string {
   const text = stripHtml(value);
