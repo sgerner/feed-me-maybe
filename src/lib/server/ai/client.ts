@@ -4,6 +4,7 @@ import {
   buildArticleAnalysisPrompt,
 } from './prompts';
 import { coerceText, normalizeTextArray } from '$lib/server/normalization';
+import { fetchSafe } from '$lib/server/network';
 
 interface AiClientConfig {
   baseUrl: string;
@@ -127,16 +128,20 @@ export function createAiClient(config: AiClientConfig) {
       requestBody.temperature = 0.1;
     }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        ...defaultHeaders,
+    const { response: res } = await fetchSafe(
+      endpoint,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...defaultHeaders,
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(30_000),
       },
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(30_000),
-    });
+      { maxRedirects: 0 },
+    );
 
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300).replace(/\s+/g, ' ');

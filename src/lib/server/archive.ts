@@ -68,7 +68,10 @@ async function fetchPage(
         allowedContentTypes: ['text/html', 'application/xhtml+xml'],
       },
     );
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
     const html = await readResponseText(response, MAX_HTML_RESPONSE_BYTES);
     return { url: finalUrl, html };
   } catch (err) {
@@ -441,7 +444,10 @@ async function tryJinaAi(
         allowedContentTypes: ['text/plain', 'text/markdown', 'text/html'],
       },
     );
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
     const text = await readResponseText(response, MAX_HTML_RESPONSE_BYTES);
     if (!text.trim()) return null;
 

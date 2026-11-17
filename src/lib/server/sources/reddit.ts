@@ -395,6 +395,7 @@ export async function fetchRedditSource(
     );
 
     if (response.status === 429) {
+      await response.body?.cancel();
       return {
         success: false,
         items: [],
@@ -405,6 +406,7 @@ export async function fetchRedditSource(
     }
 
     if (response.status === 403) {
+      await response.body?.cancel();
       return {
         success: false,
         items: [],
@@ -414,6 +416,7 @@ export async function fetchRedditSource(
     }
 
     if (response.status === 404) {
+      await response.body?.cancel();
       return {
         success: false,
         items: [],
@@ -423,6 +426,7 @@ export async function fetchRedditSource(
     }
 
     if (!response.ok) {
+      await response.body?.cancel();
       return {
         success: false,
         items: [],

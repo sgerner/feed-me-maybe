@@ -59,6 +59,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     );
 
     if (!response.ok) {
+      await response.body?.cancel();
       recordAppError({
         source: 'api.proxy',
         error: new Error(`Proxy access denied (${response.status})`),

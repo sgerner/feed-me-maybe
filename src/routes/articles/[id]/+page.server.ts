@@ -29,6 +29,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     throw error(404, 'Article not found');
   }
 
+  article.feed_site_url = safeFeedSiteUrl(article.feed_site_url);
+
   recordInteraction(params.id, 'open');
 
   if (url.searchParams.get('mode') === 'archive') {
@@ -50,3 +52,15 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     proxyBaseUrl: getConfiguredProxyBaseUrl() || null,
   };
 };
+
+function safeFeedSiteUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  try {
+    const parsed = new URL(value.trim());
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    if (parsed.username || parsed.password) return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}

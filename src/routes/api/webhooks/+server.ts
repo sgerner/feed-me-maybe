@@ -5,6 +5,7 @@ import {
   updateWebhook,
   deleteWebhook,
 } from '$lib/server/webhooks';
+import { SafeFetchError } from '$lib/server/network';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
@@ -24,6 +25,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     const id = createWebhook(name, url, events, secret);
     return json({ success: true, id });
   } catch (err: any) {
+    if (err instanceof SafeFetchError) {
+      return json({ error: err.message }, { status: 400 });
+    }
     return json({ error: err.message }, { status: 500 });
   }
 };
@@ -41,6 +45,9 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
     updateWebhook(id, updates);
     return json({ success: true });
   } catch (err: any) {
+    if (err instanceof SafeFetchError) {
+      return json({ error: err.message }, { status: 400 });
+    }
     return json({ error: err.message }, { status: 500 });
   }
 };

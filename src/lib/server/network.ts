@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { Agent } from 'undici';
 import { buildProxyRequestUrl } from '$lib/proxy';
 
 export const MAX_FEED_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -158,9 +159,26 @@ export function validatePublicUrl(input: string | URL): URL {
 export async function assertPublicNetworkUrl(
   input: string | URL,
 ): Promise<URL> {
+  return (await resolvePublicNetworkUrl(input)).url;
+}
+
+type ResolvedPublicNetworkUrl = {
+  url: URL;
+  addresses: Array<{ address: string; family: 4 | 6 }>;
+};
+
+async function resolvePublicNetworkUrl(
+  input: string | URL,
+): Promise<ResolvedPublicNetworkUrl> {
   const parsed = validatePublicUrl(input);
   const hostname = normalizeHostname(parsed.hostname);
-  if (net.isIP(hostname) !== 0) return parsed;
+  const ipFamily = net.isIP(hostname);
+  if (ipFamily !== 0) {
+    return {
+      url: parsed,
+      addresses: [{ address: hostname, family: ipFamily as 4 | 6 }],
+    };
+  }
 
   let addresses: Array<{ address: string }>;
   try {
@@ -177,7 +195,116 @@ export async function assertPublicNetworkUrl(
       'private_network',
     );
   }
-  return parsed;
+  return {
+    url: parsed,
+    addresses: addresses.map(({ address }) => ({
+      address,
+      family: net.isIP(address) as 4 | 6,
+    })),
+  };
+}
+
+export function createPinnedLookup(
+  resolved: string | Array<{ address: string; family: 4 | 6 }>,
+  family?: 4 | 6,
+) {
+  const addresses =
+    typeof resolved === 'string'
+      ? [{ address: resolved, family: family ?? (net.isIP(resolved) as 4 | 6) }]
+      : resolved;
+  const first = addresses[0];
+  if (!first) throw new Error('At least one resolved address is required');
+
+  return (
+    _hostname: string,
+    options: number | { all?: boolean },
+    callback: (...args: any[]) => void,
+  ) => {
+    if (typeof options === 'object' && options.all) {
+      callback(null, addresses);
+    } else {
+      callback(null, first.address, first.family);
+    }
+  };
+}
+
+async function closeAgent(agent: Agent): Promise<void> {
+  try {
+    await agent.close();
+  } catch {
+    await agent.destroy();
+  }
+}
+
+function responseWithAgentCleanup(response: Response, agent: Agent): Response {
+  if (!response.body) {
+    void closeAgent(agent);
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await closeAgent(agent);
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          await close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (error) {
+        controller.error(error);
+        await close();
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        await close();
+      }
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+async function fetchPinned(
+  url: URL,
+  init: RequestInit,
+  addresses: ResolvedPublicNetworkUrl['addresses'],
+): Promise<Response> {
+  if (addresses.length === 0) {
+    throw new SafeFetchError('Unable to resolve remote host', 'dns_failure');
+  }
+
+  const agent = new Agent({
+    connect: { lookup: createPinnedLookup(addresses) },
+    connections: 1,
+    pipelining: 0,
+  });
+  try {
+    const response = await fetch(url.href, {
+      ...init,
+      redirect: 'manual',
+      dispatcher: agent,
+    } as RequestInit);
+    return responseWithAgentCleanup(response, agent);
+  } catch (error) {
+    await closeAgent(agent);
+    throw error;
+  }
 }
 
 function mimeType(response: Response): string {
@@ -257,21 +384,26 @@ export async function fetchSafe(
   options: SafeFetchOptions = {},
 ): Promise<{ response: Response; finalUrl: string }> {
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  const target = await assertPublicNetworkUrl(targetUrl);
-  let requestUrl = options.proxyBaseUrl
-    ? buildProxyRequestUrl(
-        validatePublicUrl(options.proxyBaseUrl).href,
-        target.href,
+  const target = await resolvePublicNetworkUrl(targetUrl);
+  let request = options.proxyBaseUrl
+    ? await resolvePublicNetworkUrl(
+        buildProxyRequestUrl(
+          validatePublicUrl(options.proxyBaseUrl).href,
+          target.url.href,
+        ),
       )
-    : target.href;
+    : target;
+  let requestInit = init;
 
   for (let redirectCount = 0; ; redirectCount += 1) {
-    const response = await fetch(requestUrl, {
-      ...init,
-      redirect: 'manual',
-    });
+    const response = await fetchPinned(
+      request.url,
+      requestInit,
+      request.addresses,
+    );
 
     if (HTTP_REDIRECT_STATUSES.has(response.status)) {
+      await response.body?.cancel();
       if (redirectCount >= maxRedirects) {
         throw new SafeFetchError('Too many redirects', 'too_many_redirects');
       }
@@ -282,8 +414,17 @@ export async function fetchSafe(
           'unsafe_redirect',
         );
       }
-      const next = await assertPublicNetworkUrl(new URL(location, requestUrl));
-      requestUrl = next.href;
+      const nextRequest = await resolvePublicNetworkUrl(
+        new URL(location, request.url),
+      );
+      if (request.url.origin !== nextRequest.url.origin) {
+        const headers = new Headers(requestInit.headers);
+        headers.delete('authorization');
+        headers.delete('cookie');
+        headers.delete('proxy-authorization');
+        requestInit = { ...requestInit, headers };
+      }
+      request = nextRequest;
       continue;
     }
 
@@ -292,6 +433,7 @@ export async function fetchSafe(
       options.allowedContentTypes &&
       !hasAllowedContentType(response, options.allowedContentTypes)
     ) {
+      await response.body?.cancel();
       throw new SafeFetchError(
         'Remote response has an unsupported content type',
         'unsupported_content_type',
@@ -303,11 +445,12 @@ export async function fetchSafe(
       Number.isFinite(declaredLength) &&
       declaredLength > options.maxBytes
     ) {
+      await response.body?.cancel();
       throw new SafeFetchError(
         'Remote response is too large',
         'response_too_large',
       );
     }
-    return { response, finalUrl: requestUrl };
+    return { response, finalUrl: request.url.href };
   }
 }

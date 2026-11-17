@@ -27,7 +27,7 @@ function isSameOrigin(value: string | null, expectedOrigin: string): boolean {
 }
 
 /**
- * Validate cookie-authenticated JSON mutations using Fetch Metadata's Origin
+ * Validate cookie-authenticated mutations using Fetch Metadata's Origin
  * boundary, with a double-submit token fallback for native clients that do
  * not send Origin or Referer.
  *
@@ -37,7 +37,7 @@ function isSameOrigin(value: string | null, expectedOrigin: string): boolean {
  * cross-origin script would still need the server to opt into CORS. This
  * exception is deliberately exact and does not weaken ordinary JSON requests.
  */
-export function isValidJsonMutationCsrf(
+export function isValidMutationCsrf(
   request: Request,
   expectedOrigin: string,
   csrfCookie: string | undefined,
@@ -59,11 +59,6 @@ export function isValidJsonMutationCsrf(
   return isSameOrigin(request.headers.get('referer'), expectedOrigin);
 }
 
-export function isJsonMutation(request: Request): boolean {
-  return (
-    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) &&
-    (request.headers.get('content-type') || '')
-      .toLowerCase()
-      .includes('application/json')
-  );
+export function isCsrfProtectedMutation(request: Request): boolean {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method);
 }

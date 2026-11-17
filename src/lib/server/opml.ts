@@ -112,10 +112,11 @@ export function importOpml(xml: string): {
   for (const outline of outlines) {
     if (!outline.xmlUrl) continue;
     try {
-      new URL(outline.xmlUrl);
-      const storedUrl = isRedditUrl(outline.xmlUrl)
-        ? normalizeRedditUrl(outline.xmlUrl).normalizedUrl
-        : outline.xmlUrl;
+      const feedUrl = safeHttpUrl(outline.xmlUrl);
+      if (!feedUrl) throw new Error('Feed URL must use http or https');
+      const storedUrl = isRedditUrl(feedUrl)
+        ? normalizeRedditUrl(feedUrl).normalizedUrl
+        : feedUrl;
       const existing = db
         .prepare('SELECT id FROM feeds WHERE url = ?')
         .get(storedUrl);
@@ -128,7 +129,7 @@ export function importOpml(xml: string): {
         crypto.randomUUID(),
         storedUrl,
         outline.text || '',
-        outline.htmlUrl || '',
+        safeHttpUrl(outline.htmlUrl) || '',
         outline.category || '',
         now,
         now,
@@ -140,6 +141,18 @@ export function importOpml(xml: string): {
   }
 
   return { imported, errors };
+}
+
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 function escapeXml(s: string): string {
