@@ -20,6 +20,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm exec -- svelte-kit sync
       - run: npm run lint
       - run: npm run check
       - run: npm test
