@@ -140,10 +140,7 @@
         Reddit Comments
       </span>
       {#if !loading}
-        <span
-          class="text-sm"
-          style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
-        >
+        <span class="text-sm" style="color: var(--color-surface-300);">
           {comments.length} top-level
         </span>
       {/if}
@@ -158,7 +155,7 @@
       stroke-width="2.5"
       class="transition-transform duration-200"
       class:rotate-180={expanded}
-      style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+      style="color: var(--color-surface-300);"
     >
       <path d="m6 9 6 6 6-6" />
     </svg>
@@ -169,7 +166,7 @@
       {#if loading}
         <div
           class="flex items-center gap-2 py-4 text-sm"
-          style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+          style="color: var(--color-surface-300);"
         >
           <div
             class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
@@ -183,7 +180,7 @@
       {:else if flatComments.length === 0}
         <div
           class="py-3 text-sm italic"
-          style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+          style="color: var(--color-surface-300);"
         >
           No comments yet.
         </div>
@@ -205,14 +202,10 @@
               >
                 u/{comment.author}
               </span>
-              <span
-                style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
-              >
+              <span style="color: var(--color-surface-300);">
                 {comment.score} pts
               </span>
-              <span
-                style="color: color-mix(in oklch, var(--color-surface-200) 35%, transparent);"
-              >
+              <span style="color: var(--color-surface-300);">
                 {timeAgo(comment.createdAt)}
               </span>
             </div>

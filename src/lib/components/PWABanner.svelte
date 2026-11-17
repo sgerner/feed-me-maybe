@@ -92,7 +92,7 @@
           </div>
           <div>
             <h3 class="text-sm font-bold text-white">Install Feed Me Maybe</h3>
-            <p class="text-xs text-surface-400">
+            <p class="text-xs text-surface-300">
               Add to your home screen for the best experience.
             </p>
           </div>

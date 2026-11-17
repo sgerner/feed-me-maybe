@@ -47,7 +47,7 @@
 
 <div class="space-y-4">
   <div
-    class="flex flex-wrap items-center justify-between gap-2 text-xs text-surface-400"
+    class="flex flex-wrap items-center justify-between gap-2 text-xs text-surface-300"
   >
     <p>
       Current theme: <span class="font-semibold text-surface-200"
@@ -63,7 +63,6 @@
         <button
           type="button"
           data-theme={name}
-          aria-label={`Use ${label} theme`}
           aria-pressed={themeStore.current === name}
           class="group relative flex min-h-28 flex-col gap-3 p-3 text-left transition-all duration-300 glass-card glass-card-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-400"
           style={themeStore.current === name
@@ -76,7 +75,7 @@
               class="text-[10px] font-bold uppercase tracking-widest transition-colors {themeStore.current ===
               name
                 ? 'text-primary-400'
-                : 'text-surface-400 group-hover:text-surface-200'}"
+                : 'text-surface-300 group-hover:text-surface-200'}"
             >
               {label}
             </span>
@@ -147,7 +146,7 @@
     >
   </button>
   {#if showAllThemes}
-    <p class="text-xs text-surface-400">
+    <p class="text-xs text-surface-300">
       Every theme remains available here; selecting one applies it immediately.
     </p>
   {/if}

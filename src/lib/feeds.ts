@@ -57,11 +57,12 @@ export async function syncFeed(
     const res = await fetchWithCsrf(`/api/feeds/${feedId}/refresh`, {
       method: 'POST',
     });
-    if (res.ok && !silent) {
+    if (!res.ok) throw new Error('Feed sync request failed');
+    if (!silent) {
       addToast('Syncing feed...', 'success');
     }
-    return res.ok;
-  } catch (err) {
+    return true;
+  } catch {
     if (!silent) {
       addToast('Sync failed', 'error');
     }

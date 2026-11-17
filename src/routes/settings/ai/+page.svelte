@@ -114,6 +114,10 @@
   });
 </script>
 
+<svelte:head>
+  <title>AI Settings · Feed Me Maybe</title>
+</svelte:head>
+
 <h2 class="section-title text-lg font-bold">AI & Model Registry</h2>
 <p class="section-subtitle mb-6">
   Powered by <a

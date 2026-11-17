@@ -133,7 +133,7 @@
         >
           <div class="min-w-0">
             <div
-              class="mb-2 flex flex-wrap items-center gap-2 text-xs text-surface-400"
+              class="mb-2 flex flex-wrap items-center gap-2 text-xs text-surface-300"
             >
               <span
                 class="rounded-full bg-error-500/10 px-2 py-1 text-error-300"

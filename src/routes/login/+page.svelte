@@ -4,6 +4,10 @@
   let { form } = $props();
 </script>
 
+<svelte:head>
+  <title>Sign In · Feed Me Maybe</title>
+</svelte:head>
+
 <div class="flex min-h-full items-center justify-center p-4">
   <div class="w-full max-w-sm">
     <!-- App title -->
@@ -12,10 +16,7 @@
       <h1 class="gradient-text text-4xl font-extrabold tracking-tight">
         Feed Me <span class="italic">Maybe</span>
       </h1>
-      <p
-        class="mt-3 text-sm"
-        style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
-      >
+      <p class="mt-3 text-sm" style="color: var(--color-surface-300);">
         AI-powered RSS reader
       </p>
     </div>
@@ -88,7 +89,7 @@
     <!-- Footer note -->
     <p
       class="mt-6 text-center text-xs"
-      style="color: color-mix(in oklch, var(--color-surface-200) 35%, transparent);"
+      style="color: var(--color-surface-300);"
     >
       This is a private self-hosted application.
     </p>

@@ -64,6 +64,25 @@ body {
   outline-offset: 3px;
 }
 
+.skip-link {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  z-index: 200;
+  transform: translateY(calc(-100% - 1.5rem));
+  border-radius: 2px;
+  background: var(--color-surface-50);
+  padding: 0.75rem 1rem;
+  color: var(--color-surface-950);
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 :where(button, input, select, textarea):disabled {
   cursor: not-allowed;
 }
@@ -300,7 +319,7 @@ body {
     transform var(--fmm-duration-fast) var(--fmm-ease-standard),
     background-color var(--fmm-duration-fast) ease-out,
     color var(--fmm-duration-fast) ease-out;
-  color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);
+  color: var(--color-surface-300);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -351,7 +370,7 @@ body {
   gap: 0.75rem;
   border-radius: 2px;
   padding: 0.5rem 0.75rem;
-  color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);
+  color: var(--color-surface-300);
   font-size: 0.875rem;
   text-align: left;
   transition:
@@ -399,7 +418,7 @@ body {
   justify-content: center;
   border-radius: 999px;
   background: color-mix(in oklch, var(--color-surface-100) 5%, transparent);
-  color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);
+  color: var(--color-surface-300);
   transition: background-color var(--fmm-duration-fast) ease-out;
 }
 
@@ -413,7 +432,7 @@ body {
   align-items: center;
   gap: 0.5rem;
   padding: 0.25rem 0.75rem 0;
-  color: color-mix(in oklch, var(--color-surface-200) 48%, transparent);
+  color: var(--color-surface-300);
   font-size: 0.6875rem;
 }
 
@@ -451,7 +470,7 @@ body {
   background: color-mix(in oklch, var(--color-surface-100) 6%, transparent);
   border: 1px solid
     color-mix(in oklch, var(--color-surface-100) 5%, transparent);
-  color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);
+  color: var(--color-surface-300);
   transition:
     transform var(--fmm-duration-fast) var(--fmm-ease-standard),
     background-color var(--fmm-duration-fast) ease-out,
@@ -522,7 +541,7 @@ body {
   border: 0;
   border-radius: 2px;
   background: transparent;
-  color: color-mix(in oklch, var(--color-surface-200) 58%, transparent);
+  color: var(--color-surface-300);
   font-size: 0.6875rem;
   line-height: 1;
   text-decoration: none;
@@ -622,7 +641,7 @@ main {
 
 .section-subtitle {
   font-size: 0.875rem;
-  color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);
+  color: var(--color-surface-300);
   margin-top: 0.375rem;
 }
 
@@ -810,7 +829,7 @@ main::-webkit-scrollbar-thumb,
 }
 .prose-glass figcaption {
   font-size: 0.875rem;
-  color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);
+  color: var(--color-surface-300);
   margin-top: 0.75rem;
   text-align: center;
   line-height: 1.4;
@@ -859,7 +878,7 @@ main::-webkit-scrollbar-thumb,
   position: relative;
   padding-bottom: 0.5rem;
   font-size: 0.875rem;
-  color: color-mix(in oklch, var(--color-surface-200) 55%, transparent);
+  color: var(--color-surface-300);
   text-decoration: none;
   transition: color var(--fmm-duration-fast) ease-out;
 }

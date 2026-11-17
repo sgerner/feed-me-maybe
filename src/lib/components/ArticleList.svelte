@@ -7,6 +7,10 @@
   import { page as pageStore } from '$app/stores';
   import { fetchWithCsrf } from '$lib/client/csrf';
   import {
+    getSingleKeyShortcutsEnabled,
+    SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
+  } from '$lib/utils/keyboard-shortcuts';
+  import {
     cacheArticles,
     enqueueOfflineMutation,
     getCachedArticles,
@@ -310,6 +314,7 @@
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
+  let singleKeyShortcutsEnabled = true;
   let isBoostReview = $derived(feedbackMode === 'boost');
 
   type ScrollRestoreState = {
@@ -560,10 +565,14 @@
     if (
       target.tagName === 'INPUT' ||
       target.tagName === 'TEXTAREA' ||
-      target.isContentEditable
+      target.tagName === 'SELECT' ||
+      target.isContentEditable ||
+      target.closest('[aria-modal="true"]')
     ) {
       return;
     }
+
+    if (!singleKeyShortcutsEnabled) return;
 
     if (e.key === 'j' || e.key === 'J') {
       e.preventDefault();
@@ -705,6 +714,15 @@
   });
 
   onMount(() => {
+    const syncShortcutPreference = () => {
+      singleKeyShortcutsEnabled = getSingleKeyShortcutsEnabled();
+    };
+
+    syncShortcutPreference();
+    window.addEventListener(
+      SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
+      syncShortcutPreference,
+    );
     document.addEventListener('keydown', handleKeydown);
     const onDocumentPointerDown = (event: PointerEvent) => {
       const target = event.target as Element | null;
@@ -799,6 +817,10 @@
     void restoreScrollPosition();
 
     return () => {
+      window.removeEventListener(
+        SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
+        syncShortcutPreference,
+      );
       document.removeEventListener('keydown', handleKeydown);
       document.removeEventListener('pointerdown', onDocumentPointerDown);
       if (scrollContainerEl) {
@@ -1059,13 +1081,13 @@
               ? 'noopener noreferrer'
               : undefined}
             class="article-card-link relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm no-underline"
+            aria-labelledby="article-title-{article.id}"
             style="touch-action: pan-y;"
             onpointerdown={(e) => handlePointerDown(e, article.id)}
             onpointermove={(e) => handlePointerMove(e, article.id)}
             onpointerup={(e) => handlePointerUp(e, article.id)}
             onpointercancel={(e) => handlePointerCancel(e, article.id)}
             onclick={(e) => handleArticleLinkClick(e, article)}
-            aria-label={`Open article: ${article.title}`}
           >
             {#if article.image_url}
               <div class="absolute inset-0 z-0 bg-surface-950">
@@ -1086,7 +1108,7 @@
             <div class="relative z-10 flex flex-1 flex-col p-3 md:p-6">
               <div
                 class="mb-3 flex flex-wrap items-center gap-2 text-xs"
-                style="color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);"
+                style="color: var(--color-surface-300);"
               >
                 <span
                   class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
@@ -1112,6 +1134,7 @@
               </div>
 
               <h3
+                id="article-title-{article.id}"
                 class="article-card-title text-xl font-bold leading-tight transition-colors"
                 style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
               >
@@ -1121,7 +1144,7 @@
               {#if article.summary}
                 <div
                   class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
-                  style="color: color-mix(in oklch, var(--color-surface-200) 65%, transparent);"
+                  style="color: var(--color-surface-300);"
                 >
                   {@html formattedSummary}
                 </div>
@@ -1203,7 +1226,6 @@
                 {#if !isBoostReview && article.read}
                   <span
                     class="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-surface-300"
-                    aria-label="Article is read"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"

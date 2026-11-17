@@ -283,7 +283,7 @@
     <p class="section-subtitle max-w-2xl">
       Find stories by title, source, summary, or full article text.
     </p>
-    <details class="mt-3 max-w-2xl text-sm text-surface-400">
+    <details class="mt-3 max-w-2xl text-sm text-surface-300">
       <summary class="cursor-pointer text-primary-300">Search tips</summary>
       <p class="mt-2 leading-relaxed">
         Add filters such as
@@ -358,7 +358,7 @@
             class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {activeFilter ===
             filter.value
               ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
-              : 'border-white/10 bg-white/5 text-surface-400 hover:border-white/20 hover:text-surface-200'}"
+              : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
             role="tab"
             aria-selected={activeFilter === filter.value}
             onclick={() => applyFilter(filter.value)}>{filter.label}</button
@@ -387,7 +387,7 @@
     >
       <summary class="cursor-pointer text-sm font-semibold text-surface-100">
         Saved searches{#if savedSearches.length > 0}
-          <span class="ml-1 text-xs font-normal text-surface-400"
+          <span class="ml-1 text-xs font-normal text-surface-300"
             >({savedSearches.length})</span
           >{/if}
       </summary>

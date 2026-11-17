@@ -50,6 +50,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Memory &amp; Preferences · Feed Me Maybe</title>
+</svelte:head>
+
 <h2 class="section-title text-lg">Memory & Preferences</h2>
 <p class="section-subtitle">Learned preferences based on your interactions.</p>
 
@@ -75,7 +79,7 @@
 {#if preferences.length === 0}
   <div
     class="glass-card mt-8 p-8 text-center text-sm"
-    style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+    style="color: var(--color-surface-300);"
     in:fade={{ duration: 300 }}
   >
     <div
@@ -128,7 +132,7 @@
           </div>
           <button
             class="flex h-7 w-7 items-center justify-center text-xs transition-colors hover:bg-surface-100/10"
-            style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent); border-radius: 2px;"
+            style="color: var(--color-surface-300); border-radius: 2px;"
             aria-label="Delete preference"
             onclick={() => deletePref(p.id)}
           >
@@ -151,7 +155,7 @@
         </div>
         <div
           class="mt-2 flex items-center gap-3 text-xs"
-          style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
+          style="color: var(--color-surface-300);"
         >
           <div
             class="h-2 w-28 overflow-hidden"

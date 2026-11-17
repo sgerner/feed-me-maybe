@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invalidateAll } from '$app/navigation';
+  import { addToast } from '$lib/stores/toast.svelte';
   import { enhance } from '$app/forms';
   import ThemeChooser from '$lib/components/ThemeChooser.svelte';
   import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
@@ -49,30 +51,54 @@
     }
   }
 
-  async function importOpml() {
+  let importingOpml = $state(false);
+
+  function importOpml() {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.opml,.xml';
     input.onchange = async () => {
       const file = input.files?.[0];
-      if (!file) return;
-      const text = await file.text();
-      const res = await fetchWithCsrf('/api/opml/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opml: text }),
-      });
-      if (res.ok) {
-        const result = await res.json();
-        alert(
-          `Imported ${result.imported} feeds. ${result.errors?.length || 0} errors.`,
-        );
-        window.location.reload();
+      if (!file || importingOpml) return;
+      importingOpml = true;
+      try {
+        const text = await file.text();
+        const response = await fetchWithCsrf('/api/opml/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ opml: text }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          addToast(result.error || 'Could not import OPML.', 'error');
+          return;
+        }
+        const errors = result.errors?.length ?? 0;
+        const imported = result.imported
+          ? `Imported ${result.imported} feed${result.imported === 1 ? '' : 's'}.`
+          : 'No new feeds were imported.';
+        if (errors > 0) {
+          addToast(
+            `${imported} ${result.errors[0]}`,
+            result.imported ? 'warning' : 'error',
+          );
+        } else {
+          addToast(imported, result.imported ? 'success' : 'info');
+        }
+        if (result.imported > 0) await invalidateAll();
+      } catch {
+        addToast('Could not import OPML. Please try again.', 'error');
+      } finally {
+        importingOpml = false;
       }
     };
     input.click();
   }
 </script>
+
+<svelte:head>
+  <title>Settings · Feed Me Maybe</title>
+</svelte:head>
 
 <div class="space-y-5">
   <div class="mb-1">
@@ -94,7 +120,7 @@
       >
         Article ranking provider
       </h2>
-      <p class="mt-1 text-xs leading-5 text-surface-400">
+      <p class="mt-1 text-xs leading-5 text-surface-300">
         Choose which model produces personalized article scores. Changing the
         provider clears old model scores and queues articles for rescoring.
       </p>
@@ -131,7 +157,7 @@
     </div>
     <p
       id="ranking-provider-status"
-      class="mt-3 text-xs leading-5 text-surface-400"
+      class="mt-3 text-xs leading-5 text-surface-300"
       aria-live="polite"
     >
       {#if rankingProviderMessage}
@@ -160,11 +186,11 @@
         >
           Appearance
         </h2>
-        <p class="mt-1 text-xs text-surface-400">
+        <p class="mt-1 text-xs text-surface-300">
           Choose the color system for the app.
         </p>
       </div>
-      <span class="shrink-0 text-xs text-surface-400">22 themes</span>
+      <span class="shrink-0 text-xs text-surface-300">22 themes</span>
     </div>
     <ThemeChooser />
   </section>
@@ -178,7 +204,7 @@
       <h2 id="reading-heading" class="text-sm font-semibold text-surface-100">
         Reading
       </h2>
-      <p class="mt-1 text-xs text-surface-400">
+      <p class="mt-1 text-xs text-surface-300">
         Choose how articles open and leave the list.
       </p>
     </div>
@@ -248,11 +274,11 @@
         <span class="block text-sm font-semibold text-surface-100"
           >Sync and polling</span
         >
-        <span class="mt-1 block text-xs text-surface-400"
+        <span class="mt-1 block text-xs text-surface-300"
           >Every {data.pollInterval} minutes · adaptive polling on</span
         >
       </span>
-      <span class="text-lg text-surface-400" aria-hidden="true">+</span>
+      <span class="text-lg text-surface-300" aria-hidden="true">+</span>
     </summary>
     <div class="mt-5 border-t border-white/10 pt-5">
       <form
@@ -296,7 +322,7 @@
           Save
         </button>
       </form>
-      <p class="mt-3 text-xs leading-5 text-surface-400">
+      <p class="mt-3 text-xs leading-5 text-surface-300">
         Feeds are polled every {data.pollInterval} minutes. Feeds that have not changed
         in a while are polled less often to save bandwidth.
       </p>
@@ -311,11 +337,11 @@
         <span class="block text-sm font-semibold text-surface-100"
           >Data and privacy</span
         >
-        <span class="mt-1 block text-xs text-surface-400"
+        <span class="mt-1 block text-xs text-surface-300"
           >Import, export, and server privacy details</span
         >
       </span>
-      <span class="text-lg text-surface-400" aria-hidden="true">+</span>
+      <span class="text-lg text-surface-300" aria-hidden="true">+</span>
     </summary>
     <div class="mt-5 space-y-5 border-t border-white/10 pt-5">
       <section aria-labelledby="password-heading">
@@ -325,7 +351,7 @@
         >
           App password
         </h3>
-        <p class="mt-1 text-xs leading-5 text-surface-400">
+        <p class="mt-1 text-xs leading-5 text-surface-300">
           Password is configured via the APP_PASSWORD environment variable.
         </p>
       </section>
@@ -334,7 +360,7 @@
         <h3 id="privacy-heading" class="text-sm font-semibold text-surface-100">
           Privacy
         </h3>
-        <p class="mt-1 text-xs leading-5 text-surface-400">
+        <p class="mt-1 text-xs leading-5 text-surface-300">
           This app stores all data locally in SQLite. No data is sent to
           external services except the AI provider you configure and RSS/Atom
           feed fetches. Your reading habits remain private to your server.
@@ -345,7 +371,7 @@
         <h3 id="opml-heading" class="text-sm font-semibold text-surface-100">
           OPML import and export
         </h3>
-        <p class="mt-1 text-xs text-surface-400">
+        <p class="mt-1 text-xs text-surface-300">
           Move your feed list to or from another reader.
         </p>
         <div class="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -353,6 +379,7 @@
             type="button"
             class="action-btn min-h-11 px-3 py-2"
             onclick={importOpml}
+            disabled={importingOpml}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -367,7 +394,7 @@
                 points="17 8 12 3 7 8"
               /><line x1="12" y1="3" x2="12" y2="15" /></svg
             >
-            Import OPML
+            {importingOpml ? 'Importing…' : 'Import OPML'}
           </button>
           <a
             href="/api/opml/export"

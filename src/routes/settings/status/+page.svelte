@@ -44,6 +44,10 @@
   }>();
 </script>
 
+<svelte:head>
+  <title>System Status · Feed Me Maybe</title>
+</svelte:head>
+
 <h2 class="section-title text-lg">System Status</h2>
 <p class="section-subtitle">Overview of your RSS reader instance.</p>
 
@@ -52,7 +56,7 @@
     <p class="stat-value">{pageData.feedCount}</p>
     <p
       class="mt-1 text-xs font-medium"
-      style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+      style="color: var(--color-surface-300);"
     >
       Feeds
     </p>
@@ -61,7 +65,7 @@
     <p class="stat-value">{pageData.articleCount}</p>
     <p
       class="mt-1 text-xs font-medium"
-      style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+      style="color: var(--color-surface-300);"
     >
       Articles
     </p>
@@ -70,7 +74,7 @@
     <p class="stat-value">{pageData.jobCount}</p>
     <p
       class="mt-1 text-xs font-medium"
-      style="color: color-mix(in oklch, var(--color-surface-200) 50%, transparent);"
+      style="color: var(--color-surface-300);"
     >
       Pending Jobs
     </p>
@@ -187,8 +191,7 @@
         <span style="color: var(--color-surface-100);"
           >{new Date(job.created_at).toLocaleString()}</span
         >
-        <span
-          style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
+        <span style="color: var(--color-surface-300);"
           >{job.articles_found || 0} found, {job.articles_new || 0} new</span
         >
       </div>
@@ -232,15 +235,12 @@
             >{new Date(errorRow.created_at).toLocaleString()}</span
           >
           {#if errorRow.method}
-            <span
-              style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
+            <span style="color: var(--color-surface-300);"
               >{errorRow.method}</span
             >
           {/if}
           {#if errorRow.path}
-            <span
-              style="color: color-mix(in oklch, var(--color-surface-200) 45%, transparent);"
-              >{errorRow.path}</span
+            <span style="color: var(--color-surface-300);">{errorRow.path}</span
             >
           {/if}
         </div>
@@ -252,7 +252,7 @@
         {#if errorRow.details && Object.keys(errorRow.details).length > 0}
           <pre
             class="overflow-x-auto rounded-sm p-2 text-[11px]"
-            style="background: color-mix(in oklch, var(--color-surface-800) 30%, transparent); color: color-mix(in oklch, var(--color-surface-200) 70%, transparent);">{JSON.stringify(
+            style="background: color-mix(in oklch, var(--color-surface-800) 30%, transparent); color: var(--color-surface-300);">{JSON.stringify(
               errorRow.details,
               null,
               2,
