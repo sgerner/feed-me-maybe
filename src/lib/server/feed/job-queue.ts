@@ -150,19 +150,23 @@ function readActiveJob(
   key: string,
   value: string,
 ): JobRecord | null {
+  const payloadPath =
+    key === 'articleId' ? '$.articleId' : key === 'feedId' ? '$.feedId' : null;
+  if (!payloadPath) throw new Error(`Unsupported active job key: ${key}`);
+
   const row = getDb()
     .prepare(
       `
         SELECT * FROM jobs
         WHERE type = ?
           AND status IN ('queued', 'processing')
-          AND json_valid(payload) = 1
-          AND json_extract(payload, ?) = ?
+          AND CASE WHEN json_valid(payload) = 1
+                   THEN json_extract(payload, '${payloadPath}') END = ?
         ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, created_at ASC
         LIMIT 1
       `,
     )
-    .get(type, `$.${key}`, value) as RawJobRow | undefined;
+    .get(type, value) as RawJobRow | undefined;
   return row ? toJobRecord(row) : null;
 }
 
@@ -620,8 +624,9 @@ export function getLatestFeedFetchJob(feedId: string): JobRecord | null {
     .prepare(
       `
         SELECT * FROM jobs
-        WHERE type = ? AND json_valid(payload) = 1
-          AND json_extract(payload, '$.feedId') = ?
+        WHERE type = ?
+          AND CASE WHEN json_valid(payload) = 1
+                   THEN json_extract(payload, '$.feedId') END = ?
         ORDER BY created_at DESC
         LIMIT 1
       `,

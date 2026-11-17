@@ -1,3 +1,5 @@
+import type Database from 'better-sqlite3';
+
 /**
  * Ranking expressions shared by the reading list, inbox, feed view, and API.
  *
@@ -36,15 +38,15 @@ const ARTICLE_COLUMNS = `
 `;
 
 /**
- * Build the cross-feed query used by the main reading surfaces. The where
- * clause is assembled only from server-owned SQL fragments; values still go
- * through the caller's bound parameters.
+ * Keep the window query narrow. Article display fields are joined only after
+ * the page IDs have been ranked and selected, reducing the temporary rows
+ * SQLite sorts while preserving the existing ranking order.
  */
-export function buildGlobalArticleRankingQuery(whereClause: string): string {
+function buildGlobalArticleRankingQuery(whereClause: string): string {
   const score = rankingScoreExpression('a');
   return `
-    WITH ranked_articles AS (
-      SELECT ${ARTICLE_COLUMNS},
+    WITH ranked_article_ids AS (
+      SELECT a.id, a.feed_id, a.published_at, a.fetched_at,
              ${score} AS rank_score,
              ROW_NUMBER() OVER (
                PARTITION BY a.feed_id
@@ -55,15 +57,39 @@ export function buildGlobalArticleRankingQuery(whereClause: string): string {
       FROM articles a
       JOIN feeds f ON f.id = a.feed_id
       WHERE ${whereClause}
+    ),
+    page AS (
+      SELECT id, feed_id, published_at, fetched_at, rank_score, feed_rank
+      FROM ranked_article_ids
+      ORDER BY rank_score - MIN((feed_rank - 1) * 2.5, 15) DESC,
+               COALESCE(published_at, fetched_at) DESC,
+               id DESC
+      LIMIT ? OFFSET ?
     )
-    SELECT id, feed_id, url, title, author, summary, image_url, categories,
-           published_at, fetched_at, read, saved, hidden, thumbs_up, thumbs_down,
-           heuristic_score, combined_score, feed_title, feed_url, feed_open_mode
-    FROM ranked_articles
-    ORDER BY rank_score - MIN((feed_rank - 1) * 2.5, 15) DESC,
-             COALESCE(published_at, fetched_at) DESC,
-             id DESC
+    SELECT ${ARTICLE_COLUMNS}
+    FROM page p
+    JOIN articles a ON a.id = p.id
+    JOIN feeds f ON f.id = a.feed_id
+    ORDER BY p.rank_score - MIN((p.feed_rank - 1) * 2.5, 15) DESC,
+             COALESCE(p.published_at, p.fetched_at) DESC,
+             p.id DESC
   `;
+}
+
+/**
+ * Read a page from the globally ranked article list, projecting only rank
+ * inputs into the window and fetching display fields for selected rows.
+ */
+export function queryGlobalArticleRanking(
+  db: Database.Database,
+  whereClause: string,
+  whereParams: unknown[],
+  limit: number,
+  offset = 0,
+): unknown[] {
+  return db
+    .prepare(buildGlobalArticleRankingQuery(whereClause))
+    .all(...whereParams, limit, offset);
 }
 
 export const rankingOrderExpression = rankingScoreExpression;

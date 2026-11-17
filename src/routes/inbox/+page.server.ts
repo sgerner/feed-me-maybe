@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
-import { buildGlobalArticleRankingQuery } from '$lib/server/ranking';
+import { queryGlobalArticleRanking } from '$lib/server/ranking';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) throw error(401, 'Unauthorized');
@@ -13,11 +13,12 @@ export const load: PageServerLoad = async ({ locals }) => {
     )
     .get() as { count: number };
   const limit = 25;
-  const articles = db
-    .prepare(
-      `${buildGlobalArticleRankingQuery('a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0')} LIMIT ?`,
-    )
-    .all(limit);
+  const articles = queryGlobalArticleRanking(
+    db,
+    'a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0',
+    [],
+    limit,
+  );
 
   return {
     articles,

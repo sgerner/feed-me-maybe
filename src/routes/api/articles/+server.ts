@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
-import { buildGlobalArticleRankingQuery } from '$lib/server/ranking';
+import { queryGlobalArticleRanking } from '$lib/server/ranking';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId) {
@@ -27,10 +27,13 @@ export const GET: RequestHandler = async ({ locals, url }) => {
     whereClause += ' AND a.read = 0';
   }
 
-  const query = `${buildGlobalArticleRankingQuery(whereClause)} LIMIT ? OFFSET ?`;
-  params.push(limit, offset);
-
-  const articles = db.prepare(query).all(...params);
+  const articles = queryGlobalArticleRanking(
+    db,
+    whereClause,
+    params,
+    limit,
+    offset,
+  );
 
   return json({ articles });
 };

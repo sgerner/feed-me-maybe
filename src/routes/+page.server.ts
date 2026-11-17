@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
-import { buildGlobalArticleRankingQuery } from '$lib/server/ranking';
+import { queryGlobalArticleRanking } from '$lib/server/ranking';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   if (!locals.sessionId) {
@@ -19,11 +19,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const totalArticles = countResult.count;
   const totalPages = Math.ceil(totalArticles / limit);
 
-  const articles = db
-    .prepare(
-      `${buildGlobalArticleRankingQuery('a.hidden = 0')} LIMIT ? OFFSET ?`,
-    )
-    .all(limit, offset);
+  const articles = queryGlobalArticleRanking(
+    db,
+    'a.hidden = 0',
+    [],
+    limit,
+    offset,
+  );
 
   return {
     articles,
