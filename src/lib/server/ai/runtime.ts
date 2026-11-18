@@ -11,11 +11,25 @@ type ProviderConfigRow = {
   custom_base_url: string | null;
 };
 
-export async function getConfiguredAiClient() {
+export function isAiProcessingConfigured(): boolean {
+  return Boolean(getProviderConfig());
+}
+
+function getProviderConfig() {
   const db = getDb();
-  const config = db
-    .prepare('SELECT * FROM provider_configs WHERE enabled = 1 LIMIT 1')
+  const setting = db
+    .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
+    .get() as { value: string } | undefined;
+  if (setting?.value === 'false') return undefined;
+  return db
+    .prepare(
+      'SELECT * FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
+    )
     .get() as ProviderConfigRow | undefined;
+}
+
+export async function getConfiguredAiClient() {
+  const config = getProviderConfig();
 
   if (!config) return null;
 
@@ -33,7 +47,9 @@ export async function getConfiguredAiClient() {
     }
   })();
 
-  const providerInfo = await getProvider(config.provider_id);
+  const providerInfo = config.custom_base_url
+    ? undefined
+    : await getProvider(config.provider_id);
   const baseUrl = config.custom_base_url || providerInfo?.baseUrl || '';
 
   const apiKey = providerInfo?.requiredEnvVars?.length

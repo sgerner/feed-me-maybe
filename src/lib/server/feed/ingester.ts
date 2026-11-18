@@ -1,3 +1,4 @@
+import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
 import { normalizeSourceUrl } from '$lib/server/source-url';
 import { getDb } from '$lib/server/db';
 import { fetchFeed } from '$lib/server/feed/fetcher';
@@ -510,6 +511,16 @@ export async function ingestFeed(
         continue;
       }
 
+      // Use fetch time for invalid or future publisher timestamps.
+      const fetchedAt = Date.now();
+      const publishedAt = item.publishedAt?.getTime();
+      const storedPublishedAt =
+        publishedAt != null &&
+        Number.isFinite(publishedAt) &&
+        publishedAt <= fetchedAt
+          ? publishedAt
+          : null;
+
       // Insert new article
       const articleColumns = supportsExternalUrl
         ? 'id, feed_id, guid, url, title, author, summary, content, image_url, external_url, categories, published_at, fetched_at, created_at, updated_at'
@@ -527,10 +538,10 @@ export async function ingestFeed(
             item.imageUrl || '',
             item.externalUrl || '',
             JSON.stringify(item.categories),
-            item.publishedAt ? item.publishedAt.getTime() : null,
-            Date.now(),
-            Date.now(),
-            Date.now(),
+            storedPublishedAt,
+            fetchedAt,
+            fetchedAt,
+            fetchedAt,
           ]
         : [
             articleId,
@@ -543,10 +554,10 @@ export async function ingestFeed(
             item.content || '',
             item.imageUrl || '',
             JSON.stringify(item.categories),
-            item.publishedAt ? item.publishedAt.getTime() : null,
-            Date.now(),
-            Date.now(),
-            Date.now(),
+            storedPublishedAt,
+            fetchedAt,
+            fetchedAt,
+            fetchedAt,
           ];
       db.prepare(
         `INSERT INTO articles (${articleColumns}) VALUES (${articleValues.map(() => '?').join(', ')})`,
@@ -624,9 +635,10 @@ export async function ingestFeed(
 
     // AI work is durable now. The worker can retry it after provider errors or
     // a process restart instead of losing the fire-and-forget promise.
+    const queueAi = newArticleIds.length > 0 && isAiProcessingConfigured();
     for (const articleId of newArticleIds) {
       try {
-        enqueueAiProcess(articleId, { feedId });
+        if (queueAi) enqueueAiProcess(articleId, { feedId });
       } catch (err) {
         recordAppError({
           source: 'feed.ingester.ai.enqueue',

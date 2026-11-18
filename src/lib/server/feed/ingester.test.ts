@@ -162,7 +162,7 @@ describe('feed ingester identity and duplicate handling', () => {
         "SELECT COUNT(*) as count FROM jobs WHERE type = 'ai_process' AND json_extract(payload, '$.articleId') = ?",
       )
       .get(article.id) as { count: number };
-    expect(aiJobs.count).toBe(1);
+    expect(aiJobs.count).toBe(0);
   });
 
   it('preserves the UTF-16 content upgrade threshold during deduplication', async () => {
@@ -181,7 +181,7 @@ describe('feed ingester identity and duplicate handling', () => {
       title: 'Story',
       summary: 'Short summary',
       categories: [],
-      publishedAt: new Date(now - 1_000),
+      publishedAt: new Date(now + 86_400_000),
     };
     const originalContent = '😀'.repeat(30);
     vi.mocked(fetchFeed).mockResolvedValueOnce({
@@ -197,9 +197,9 @@ describe('feed ingester identity and duplicate handling', () => {
     await ingestFeed({ feedId: 'feed-content-upgrade' });
     expect(
       db
-        .prepare('SELECT content FROM articles WHERE feed_id = ?')
+        .prepare('SELECT content, published_at FROM articles WHERE feed_id = ?')
         .get('feed-content-upgrade'),
-    ).toEqual({ content: originalContent });
+    ).toEqual({ content: originalContent, published_at: null });
 
     const upgradedContent = 'a'.repeat(111);
     vi.mocked(fetchFeed).mockResolvedValueOnce({
