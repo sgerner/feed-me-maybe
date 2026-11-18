@@ -74,3 +74,31 @@ export function recordAppError(input: {
     });
   }
 }
+
+/** Trim diagnostics without touching reader history or ranking job tombstones. */
+export function pruneOperationalHistory(now: number): void {
+  const db = getDb();
+  const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+  db.transaction(() => {
+    db.prepare('DELETE FROM app_error_logs WHERE created_at < ?').run(cutoff);
+    db.prepare(
+      `DELETE FROM feed_fetch_logs
+       WHERE status NOT IN ('pending', 'fetching') AND created_at < ?
+         AND id NOT IN (
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY created_at DESC, id DESC) AS newest
+             FROM feed_fetch_logs
+           ) WHERE newest = 1
+           UNION
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (PARTITION BY feed_id ORDER BY completed_at DESC, id DESC) AS newest
+             FROM feed_fetch_logs WHERE status = 'success'
+           ) WHERE newest = 1
+         )`,
+    ).run(cutoff);
+    db.prepare(
+      `DELETE FROM jobs WHERE type IN ('feed_fetch', 'ai_process')
+         AND status IN ('completed', 'failed') AND completed_at < ?`,
+    ).run(cutoff);
+  }).immediate();
+}

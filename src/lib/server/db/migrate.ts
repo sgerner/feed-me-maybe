@@ -508,6 +508,28 @@ const migrations: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 8,
+    name: 'recovery_and_digest_article_indexes',
+    apply: (db) => {
+      db.exec(`
+        CREATE INDEX idx_articles_recovery_order
+          ON articles (COALESCE(hidden_at, rejected_at, fetched_at) DESC, id DESC)
+          WHERE hidden = 1 OR rejected = 1 OR thumbs_down = 1;
+        CREATE INDEX idx_articles_feed_recovery_order
+          ON articles (feed_id, COALESCE(hidden_at, rejected_at, fetched_at) DESC, id DESC)
+          WHERE hidden = 1 OR rejected = 1 OR thumbs_down = 1;
+        UPDATE articles SET published_at = NULL WHERE published_at > fetched_at;
+        CREATE INDEX idx_articles_effective_publication
+          ON articles (COALESCE(published_at, fetched_at));
+        CREATE INDEX idx_app_error_logs_created
+          ON app_error_logs (created_at);
+        CREATE INDEX idx_jobs_prunable_completed
+          ON jobs (completed_at)
+          WHERE type IN ('feed_fetch', 'ai_process') AND status IN ('completed', 'failed');
+      `);
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {

@@ -8,10 +8,10 @@ import {
   validateSession,
   getSessionCookieName,
 } from '$lib/server/auth/session';
-import { startPolling } from '$lib/server/poller';
+import { startPolling, stopPolling } from '$lib/server/poller';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
-import { getDb } from '$lib/server/db';
+import { closeDb, getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
 import {
   CSRF_COOKIE_NAME,
@@ -25,6 +25,11 @@ if (!building) {
   initializeDatabase();
   runPendingRankingRepair(rebuildArticleHeuristicScores);
   startPolling();
+  process.once('sveltekit:shutdown', () => {
+    stopPolling();
+    // Existing background requests may still need the database to finish.
+    process.once('beforeExit', closeDb);
+  });
 }
 
 /** Check if the user has completed onboarding */
