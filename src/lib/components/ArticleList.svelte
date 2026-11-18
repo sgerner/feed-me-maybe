@@ -572,31 +572,37 @@
       return;
     }
 
-    if (!singleKeyShortcutsEnabled) return;
+    if (
+      !singleKeyShortcutsEnabled ||
+      e.defaultPrevented ||
+      e.altKey ||
+      e.ctrlKey ||
+      e.metaKey
+    )
+      return;
 
-    if (e.key === 'j' || e.key === 'J') {
+    if (e.key === 'j' || e.key === 'J' || e.key === 'k' || e.key === 'K') {
       e.preventDefault();
-      focusedIndex = Math.min(focusedIndex + 1, articleIds.length - 1);
-      document
-        .getElementById(`article-${articleIds[focusedIndex]}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-    if (e.key === 'k' || e.key === 'K') {
-      e.preventDefault();
-      focusedIndex = Math.max(focusedIndex - 1, 0);
-      document
-        .getElementById(`article-${articleIds[focusedIndex]}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const direction = e.key.toLowerCase() === 'j' ? 1 : -1;
+      focusedIndex = Math.max(
+        0,
+        Math.min(focusedIndex + direction, articleIds.length - 1),
+      );
+      const card = document.getElementById(
+        `article-${articleIds[focusedIndex]}`,
+      );
+      card?.querySelector('a')?.focus({ preventScroll: true });
+      card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     if (e.key === 'o' || e.key === 'O') {
       e.preventDefault();
       if (articles[focusedIndex]) openArticle(articles[focusedIndex]);
     }
-    if (e.key === 'h') {
+    if (e.key.toLowerCase() === 'h') {
       e.preventDefault();
       if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'hide');
     }
-    if (e.key === 's') {
+    if (e.key.toLowerCase() === 's') {
       e.preventDefault();
       if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'save');
     }
@@ -675,7 +681,15 @@
         if (data.articles.length === 0) {
           hasMore = false;
         } else {
-          articles = [...articles, ...data.articles];
+          const seen = new Set(articles.map((article: Article) => article.id));
+          const nextArticles = (data.articles as Article[]).filter(
+            (article) => {
+              if (seen.has(article.id)) return false;
+              seen.add(article.id);
+              return true;
+            },
+          );
+          articles = [...articles, ...nextArticles];
           page += 1;
           if (data.articles.length < 25) hasMore = false;
         }
@@ -1083,6 +1097,11 @@
             class="article-card-link relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm no-underline"
             aria-labelledby="article-title-{article.id}"
             style="touch-action: pan-y;"
+            onkeydown={(event) => {
+              if (event.key !== ' ' || !singleKeyShortcutsEnabled) return;
+              event.preventDefault();
+              if (!event.repeat) void openArticle(article);
+            }}
             onpointerdown={(e) => handlePointerDown(e, article.id)}
             onpointermove={(e) => handlePointerMove(e, article.id)}
             onpointerup={(e) => handlePointerUp(e, article.id)}
