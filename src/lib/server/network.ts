@@ -384,18 +384,18 @@ export async function fetchSafe(
   options: SafeFetchOptions = {},
 ): Promise<{ response: Response; finalUrl: string }> {
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  const target = await resolvePublicNetworkUrl(targetUrl);
-  let request = options.proxyBaseUrl
-    ? await resolvePublicNetworkUrl(
-        buildProxyRequestUrl(
-          validatePublicUrl(options.proxyBaseUrl).href,
-          target.url.href,
-        ),
-      )
-    : target;
+  let target = await resolvePublicNetworkUrl(targetUrl);
+  const proxy = options.proxyBaseUrl
+    ? validatePublicUrl(options.proxyBaseUrl).href
+    : undefined;
   let requestInit = init;
 
   for (let redirectCount = 0; ; redirectCount += 1) {
+    const request = proxy
+      ? await resolvePublicNetworkUrl(
+          buildProxyRequestUrl(proxy, target.url.href),
+        )
+      : target;
     const response = await fetchPinned(
       request.url,
       requestInit,
@@ -414,17 +414,17 @@ export async function fetchSafe(
           'unsafe_redirect',
         );
       }
-      const nextRequest = await resolvePublicNetworkUrl(
-        new URL(location, request.url),
+      const nextTarget = await resolvePublicNetworkUrl(
+        new URL(location, target.url),
       );
-      if (request.url.origin !== nextRequest.url.origin) {
+      if (target.url.origin !== nextTarget.url.origin) {
         const headers = new Headers(requestInit.headers);
         headers.delete('authorization');
         headers.delete('cookie');
         headers.delete('proxy-authorization');
         requestInit = { ...requestInit, headers };
       }
-      request = nextRequest;
+      target = nextTarget;
       continue;
     }
 
@@ -451,6 +451,6 @@ export async function fetchSafe(
         'response_too_large',
       );
     }
-    return { response, finalUrl: request.url.href };
+    return { response, finalUrl: target.url.href };
   }
 }
