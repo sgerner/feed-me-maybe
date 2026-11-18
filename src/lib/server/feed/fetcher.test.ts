@@ -50,6 +50,45 @@ describe('Feed Fetcher', () => {
     expect(result.title).toBe('Proxy Feed');
   });
 
+  it('keeps redirect hops behind the proxy and resolves links against the feed', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: '/moved/feed.xml' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://publisher.example/story/feed.xml' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          '<rss version="2.0"><channel><title>Feed</title><item><title>Story</title><link>item</link></item></channel></rss>',
+          { headers: { 'content-type': 'application/rss+xml' } },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/rss', {
+      proxyBaseUrl: 'https://proxy.example.workers.dev',
+    });
+    const targets = fetchMock.mock.calls.map(([url]) => {
+      const proxy = new URL(url);
+      expect(proxy.hostname).toBe('proxy.example.workers.dev');
+      return proxy.searchParams.get('url');
+    });
+    expect(targets).toEqual([
+      'https://example.com/rss',
+      'https://example.com/moved/feed.xml',
+      'https://publisher.example/story/feed.xml',
+    ]);
+    expect(result.items[0]?.url).toBe('https://publisher.example/story/item');
+  });
+
   it('sanitizes imported feed content before returning it', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
