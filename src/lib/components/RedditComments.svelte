@@ -26,19 +26,7 @@
   let error = $state('');
   let expanded = $state(true);
 
-  function flatten(
-    list: Comment[],
-    out: (Comment & { depth: number })[] = [],
-    depth = 0,
-  ): (Comment & { depth: number })[] {
-    for (const c of list) {
-      out.push({ ...c, depth });
-      if (c.replies?.length) {
-        flatten(c.replies, out, depth + 1);
-      }
-    }
-    return out;
-  }
+  const commentsId = $props.id();
 
   function timeAgo(iso: string): string {
     const then = new Date(iso).getTime();
@@ -109,13 +97,14 @@
       loading = false;
     }
   });
-
-  const flatComments = $derived(flatten(comments));
 </script>
 
 <div class="mt-8">
   <button
     class="flex w-full items-center justify-between gap-2 text-left"
+    type="button"
+    aria-expanded={expanded}
+    aria-controls={commentsId}
     onclick={() => (expanded = !expanded)}
   >
     <div class="flex items-center gap-2">
@@ -161,63 +150,66 @@
     </svg>
   </button>
 
-  {#if expanded}
-    <div class="mt-3 space-y-3">
-      {#if loading}
+  <div id={commentsId} class="mt-3 space-y-3" hidden={!expanded}>
+    {#if loading}
+      <div
+        role="status"
+        class="flex items-center gap-2 py-4 text-sm"
+        style="color: var(--color-surface-300);"
+      >
         <div
-          class="flex items-center gap-2 py-4 text-sm"
-          style="color: var(--color-surface-300);"
-        >
-          <div
-            class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
-          ></div>
-          Loading comments...
-        </div>
-      {:else if error}
-        <div class="py-3 text-sm" style="color: var(--color-error-300);">
-          {error}
-        </div>
-      {:else if flatComments.length === 0}
-        <div
-          class="py-3 text-sm italic"
-          style="color: var(--color-surface-300);"
-        >
-          No comments yet.
-        </div>
-      {:else}
-        {#each flatComments as comment (comment.id)}
-          <div
-            class="rounded-sm py-2 px-3"
-            style="
-              margin-left: {comment.depth * 16}px;
-              {comment.depth > 0
-              ? 'border-left: 2px solid color-mix(in oklch, var(--color-primary-500) 20%, transparent);'
-              : 'background: color-mix(in oklch, var(--color-surface-800) 30%, transparent);'}
-            "
-          >
-            <div class="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
-              <span
-                class="font-semibold"
-                style="color: var(--color-primary-300);"
-              >
-                u/{comment.author}
-              </span>
-              <span style="color: var(--color-surface-300);">
-                {comment.score} pts
-              </span>
-              <span style="color: var(--color-surface-300);">
-                {timeAgo(comment.createdAt)}
-              </span>
-            </div>
-            <div
-              class="prose prose-sm max-w-none text-sm leading-relaxed"
-              style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
-            >
-              {@html formatContent(comment.body)}
-            </div>
-          </div>
-        {/each}
-      {/if}
-    </div>
-  {/if}
+          class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+        ></div>
+        Loading comments...
+      </div>
+    {:else if error}
+      <div
+        role="alert"
+        class="py-3 text-sm"
+        style="color: var(--color-error-300);"
+      >
+        {error}
+      </div>
+    {:else if comments.length === 0}
+      <div class="py-3 text-sm italic" style="color: var(--color-surface-300);">
+        No comments yet.
+      </div>
+    {:else}
+      {@render commentList(comments)}
+    {/if}
+  </div>
 </div>
+
+{#snippet commentList(items: Comment[], depth = 0)}
+  <ul class="space-y-2" class:ml-3={depth > 0} role="list">
+    {#each items as comment (comment.id)}
+      <li
+        class="rounded-sm px-3 py-2"
+        style={depth > 0
+          ? 'border-left: 2px solid color-mix(in oklch, var(--color-primary-500) 20%, transparent);'
+          : 'background: color-mix(in oklch, var(--color-surface-800) 30%, transparent);'}
+      >
+        <div class="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
+          <span class="font-semibold" style="color: var(--color-primary-300);">
+            u/{comment.author}
+          </span>
+          <span style="color: var(--color-surface-300);">
+            {comment.score} pts
+          </span>
+          <span style="color: var(--color-surface-300);">
+            {timeAgo(comment.createdAt)}
+          </span>
+        </div>
+        <div
+          class="prose prose-sm max-w-none text-sm leading-relaxed"
+          style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
+        >
+          {@html formatContent(comment.body)}
+        </div>
+        {#if comment.replies?.length}
+          {@render commentList(comment.replies, depth + 1)}
+        {/if}
+      </li>
+    {/each}
+  </ul>
+{/snippet}

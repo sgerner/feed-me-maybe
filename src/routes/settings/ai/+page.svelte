@@ -123,7 +123,7 @@
   Powered by <a
     href="https://models.dev"
     target="_blank"
-    class="text-primary-500 hover:underline">models.dev</a
+    class="text-primary-500 underline underline-offset-2">models.dev</a
   >. Search for any model to get started.
 </p>
 
@@ -362,7 +362,7 @@
             <a
               href={selectedProvider.docsUrl}
               target="_blank"
-              class="text-xs opacity-50 hover:opacity-100 flex items-center gap-1"
+              class="flex items-center gap-1 text-xs underline underline-offset-2"
             >
               View Documentation
               <svg

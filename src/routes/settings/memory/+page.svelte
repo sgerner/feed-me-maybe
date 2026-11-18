@@ -3,6 +3,8 @@
   import { fetchWithCsrf } from '$lib/client/csrf';
   let { data: pageData } = $props();
   let msg = $state('');
+  let pending = $state(false);
+  let failed = $state(false);
   let preferences = $state<
     Array<{
       id: string;
@@ -25,28 +27,40 @@
     }>;
   });
 
-  async function deletePref(id: string) {
-    await fetchWithCsrf(`/api/settings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: `delete_pref_${id}`, value: 'true' }),
-    });
-    window.location.reload();
+  async function updateTraining(key: string, id?: string) {
+    if (pending) return;
+    pending = true;
+    msg = '';
+    failed = false;
+    try {
+      const response = await fetchWithCsrf('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value: 'true' }),
+      });
+      if (!response.ok) throw new Error('Preference update failed');
+      preferences = id
+        ? preferences.filter((preference) => preference.id !== id)
+        : [];
+      msg = id ? 'Preference removed.' : 'Training data reset.';
+    } catch {
+      failed = true;
+      msg = id
+        ? 'Could not remove preference.'
+        : 'Could not reset training data.';
+    } finally {
+      pending = false;
+    }
   }
 
-  async function resetTraining() {
+  function resetTraining() {
     if (
-      !confirm(
+      confirm(
         'Reset all training data? This will clear all interactions and preferences.',
       )
-    )
-      return;
-    await fetchWithCsrf('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'reset_training', value: 'true' }),
-    });
-    msg = 'Training data reset requested.';
+    ) {
+      void updateTraining('reset_training');
+    }
   }
 </script>
 
@@ -60,18 +74,12 @@
 {#if msg}
   <div
     class="mt-5 flex items-center gap-2 px-3 py-2 text-sm"
-    style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); color: var(--color-success-300); border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent); border-radius: 2px;"
+    role={failed ? 'alert' : 'status'}
+    style="background: color-mix(in oklch, var(--color-success-500) 10%, transparent); color: {failed
+      ? 'var(--color-error-300)'
+      : 'var(--color-success-300)'}; border: 1px solid color-mix(in oklch, var(--color-success-500) 20%, transparent); border-radius: 2px;"
     in:fly={{ y: 6, duration: 220 }}
   >
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"><path d="M20 6 9 17l-5-5" /></svg
-    >
     {msg}
   </div>
 {/if}
@@ -134,7 +142,8 @@
             class="flex h-7 w-7 items-center justify-center text-xs transition-colors hover:bg-surface-100/10"
             style="color: var(--color-surface-300); border-radius: 2px;"
             aria-label="Delete preference"
-            onclick={() => deletePref(p.id)}
+            onclick={() => updateTraining(`delete_pref_${p.id}`, p.id)}
+            disabled={pending}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -180,6 +189,7 @@
   class="action-btn mt-6 px-4 py-2 text-error-300"
   style="border-color: color-mix(in oklch, var(--color-error-500) 15%, transparent);"
   onclick={resetTraining}
+  disabled={pending}
 >
   <svg
     xmlns="http://www.w3.org/2000/svg"
