@@ -563,20 +563,6 @@ export function initializeDatabase(): void {
   }
   try {
     db.prepare(
-      "ALTER TABLE articles ADD COLUMN external_url TEXT DEFAULT ''",
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
-  try {
-    db.prepare(
-      'ALTER TABLE articles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0',
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
-  try {
-    db.prepare(
       'ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0',
     ).run();
   } catch {
@@ -600,6 +586,20 @@ export function initializeDatabase(): void {
   db.prepare(
     "CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT '', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', author TEXT DEFAULT '', summary TEXT DEFAULT '', content TEXT DEFAULT '', image_url TEXT DEFAULT '', categories TEXT DEFAULT '', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
+  try {
+    db.prepare(
+      "ALTER TABLE articles ADD COLUMN external_url TEXT DEFAULT ''",
+    ).run();
+  } catch {
+    /* Existing databases already have this column. */
+  }
+  try {
+    db.prepare(
+      'ALTER TABLE articles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0',
+    ).run();
+  } catch {
+    /* Existing databases already have this column. */
+  }
   db.prepare(
     "CREATE TABLE IF NOT EXISTS article_ai_metadata (id TEXT PRIMARY KEY, article_id TEXT NOT NULL UNIQUE REFERENCES articles(id) ON DELETE CASCADE, summary TEXT DEFAULT '', topics TEXT DEFAULT '[]', entities TEXT DEFAULT '[]', content_type TEXT DEFAULT '', ai_relevance_score REAL DEFAULT 0, novelty_score REAL DEFAULT 0, quality_score REAL DEFAULT 0, likely_user_interest TEXT DEFAULT '', signals TEXT DEFAULT '[]', explanation TEXT DEFAULT '', analysis_status TEXT NOT NULL DEFAULT 'pending', analysis_error TEXT NOT NULL DEFAULT '', processed_at INTEGER, created_at INTEGER NOT NULL)",
   ).run();
