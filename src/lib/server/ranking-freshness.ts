@@ -276,10 +276,30 @@ export function refreshRankingAfterFeedback(input: {
     now,
   );
   const refreshTargets = db.transaction(() => {
-    for (const articleId of targetIds) {
-      markArticleForRankingRefresh(articleId, revision, now);
-      refreshTargetImmediately(articleId, revision);
-    }
+    db.prepare(
+      `INSERT INTO ranking_refresh_queue
+         (article_id, requested_revision, heuristic_revision, not_before, created_at)
+       SELECT id, ?, NULL, MAX(?, COALESCE(ranking_refreshed_at, 0) + ?), ?
+       FROM articles WHERE id IN (SELECT value FROM json_each(?))
+       ON CONFLICT(article_id) DO UPDATE SET
+         requested_revision = MAX(ranking_refresh_queue.requested_revision, excluded.requested_revision),
+         not_before = MAX(ranking_refresh_queue.not_before, excluded.not_before)`,
+    ).run(
+      revision,
+      now,
+      RANKING_REFRESH_RATE_LIMIT_MS,
+      now,
+      JSON.stringify(targetIds),
+    );
+    db.prepare(
+      `UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '', combined_score = NULL
+       WHERE id IN (SELECT value FROM json_each(?))`,
+    ).run(JSON.stringify(targetIds));
+    for (const articleId of targetIds) updateHeuristicScore(articleId);
+    db.prepare(
+      `UPDATE ranking_refresh_queue SET heuristic_revision = ?
+       WHERE requested_revision = ? AND article_id IN (SELECT value FROM json_each(?))`,
+    ).run(revision, revision, JSON.stringify(targetIds));
   });
   refreshTargets.immediate();
 
