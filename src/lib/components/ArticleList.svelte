@@ -19,7 +19,14 @@
   } from '$lib/offline';
 
   type InteractionType =
-    'open' | 'read' | 'hide' | 'save' | 'thumbs_up' | 'thumbs_down' | 'boost';
+    | 'open'
+    | 'read'
+    | 'hide'
+    | 'save'
+    | 'unsave'
+    | 'thumbs_up'
+    | 'thumbs_down'
+    | 'boost';
   type ReactionType = 'thumbs_up' | 'thumbs_down' | 'boost';
   const MAX_VISIBLE_ARTICLE_IDS = 30;
   const VISIBLE_ARTICLE_RECENCY_MS = 10 * 60 * 1000;
@@ -49,6 +56,7 @@
     feedId = null,
     loadMoreSearchParams = {},
     showInfiniteScroll = true,
+    savedOnly = false,
     feedbackMode = 'standard',
     emptyTitle = 'No articles yet',
     emptyMessage = 'Import some RSS feeds to get started.',
@@ -60,6 +68,7 @@
     feedId?: string | null;
     loadMoreSearchParams?: Record<string, string>;
     showInfiniteScroll?: boolean;
+    savedOnly?: boolean;
     feedbackMode?: 'standard' | 'boost';
     emptyTitle?: string;
     emptyMessage?: string;
@@ -74,6 +83,7 @@
   const INTERACTION_LABELS: Partial<Record<InteractionType, string>> = {
     hide: 'Hidden',
     save: 'Saved',
+    unsave: 'Removed from Saved',
     thumbs_up: 'Liked',
     thumbs_down: 'Disliked and hidden',
     boost: 'Boosted and restored',
@@ -87,6 +97,7 @@
       case 'read':
       case 'hide':
       case 'save':
+      case 'unsave':
       case 'thumbs_down':
         return type;
       default:
@@ -129,7 +140,7 @@
   async function refreshIfReturningFromArticle(): Promise<void> {
     if (returnRefreshPromise) return returnRefreshPromise;
 
-    let needsRefresh = false;
+    let needsRefresh: boolean;
     try {
       needsRefresh =
         sessionStorage.getItem(RETURNING_FROM_ARTICLE_KEY) === 'true';
@@ -166,7 +177,7 @@
     const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
     const hideOnOpen = Boolean($pageStore.data.globalSettings?.hideOnOpen);
     const mode = article.feed_open_mode || globalMode;
-    const shouldMarkOpened = mode === 'tab' || hideOnOpen;
+    const shouldMarkOpened = !savedOnly && (mode === 'tab' || hideOnOpen);
     const articleIndex = shouldMarkOpened
       ? articles.findIndex((a: Article) => a.id === article.id)
       : -1;
@@ -411,7 +422,12 @@
   // Keep the most recently rendered library available for a fast, private
   // offline reopen. The cache module bounds and account-scopes the records.
   $effect(() => {
-    if (typeof window === 'undefined' || !$pageStore.data.sessionId) return;
+    if (
+      typeof window === 'undefined' ||
+      !$pageStore.data.sessionId ||
+      savedOnly
+    )
+      return;
     void cacheArticles(offlineScope(), articles.slice(0, 150)).catch(
       (error) => {
         console.debug('Offline article cache unavailable', error);
@@ -448,7 +464,9 @@
     return label;
   }
 
-  async function interact(articleId: string, type: InteractionType) {
+  async function interact(articleId: string, requestedType: InteractionType) {
+    const type =
+      savedOnly && requestedType === 'save' ? 'unsave' : requestedType;
     if (pendingArticleIds[articleId]) return;
 
     const isReaction =
@@ -459,9 +477,9 @@
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
     const shouldRemove =
-      type === 'hide' ||
-      type === 'thumbs_down' ||
-      type === 'boost' ||
+      type === 'unsave' ||
+      (!savedOnly &&
+        (type === 'hide' || type === 'thumbs_down' || type === 'boost')) ||
       (type === 'read' && $pageStore.url.pathname === '/inbox');
     const previousRead = previousArticle?.read;
     const previousReaction = previousArticle
@@ -512,17 +530,75 @@
         return;
       }
 
-      const res = await fetchWithCsrf('/api/interactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          articleId,
-          type,
-          ...(visibleArticleIds ? { visibleArticleIds } : {}),
-        }),
-      });
+      const stateAction =
+        type === 'thumbs_down'
+          ? 'reject'
+          : type === 'read' || type === 'hide'
+            ? type
+            : null;
+      const res = await fetchWithCsrf(
+        stateAction ? '/api/article-state' : '/api/interactions',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            articleId,
+            ...(stateAction ? { action: stateAction } : { type }),
+            ...(visibleArticleIds ? { visibleArticleIds } : {}),
+          }),
+        },
+      );
       if (res.ok) {
-        addToast(INTERACTION_LABELS[type] || type, 'success');
+        const message = INTERACTION_LABELS[type] || type;
+        if (stateAction && previousArticle) {
+          const result = (await res.json()) as {
+            operationId: string;
+            changes: Array<{ changed: boolean }>;
+          };
+          if (result.changes.some((change) => change.changed)) {
+            addToast(message, 'success', 6000, {
+              label: 'Undo',
+              run: async () => {
+                try {
+                  const response = await fetchWithCsrf(
+                    '/api/article-state/undo',
+                    {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ operationId: result.operationId }),
+                    },
+                  );
+                  if (!response.ok) throw new Error('Undo failed');
+                  const undo = (await response.json()) as {
+                    restoredArticleIds: string[];
+                    conflicts: string[];
+                  };
+                  if (undo.conflicts.length) {
+                    addToast('Article changed since this action', 'warning');
+                  } else if (undo.restoredArticleIds.includes(articleId)) {
+                    const currentIndex = articles.findIndex(
+                      (item: Article) => item.id === articleId,
+                    );
+                    const next = [...articles];
+                    if (currentIndex >= 0) next[currentIndex] = previousArticle;
+                    else
+                      next.splice(
+                        Math.min(articleIndex, next.length),
+                        0,
+                        previousArticle,
+                      );
+                    articles = next;
+                    addToast('Action undone', 'success');
+                  }
+                } catch {
+                  addToast('Could not undo this action', 'error');
+                }
+              },
+            });
+            return;
+          }
+        }
+        addToast(message, 'success');
       } else {
         throw new Error('Request failed');
       }
@@ -766,7 +842,7 @@
     scrollContainerEl = document.querySelector('main');
 
     if (navigator.onLine === false && articles.length === 0) {
-      void getCachedArticles(offlineScope(), { limit: 150 })
+      void getCachedArticles(offlineScope(), { limit: 150, savedOnly })
         .then((cached) => {
           if (articles.length === 0 && cached.length > 0) {
             articles = cached;
@@ -1164,13 +1240,13 @@
                 </span>
               </div>
 
-              <h3
+              <h2
                 id="article-title-{article.id}"
                 class="article-card-title text-xl font-bold leading-tight transition-colors"
                 style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
               >
                 {article.title}
-              </h3>
+              </h2>
 
               {#if article.summary}
                 <div
@@ -1231,14 +1307,18 @@
                     : '!inline-flex'} !bg-surface-900/50 lg:backdrop-blur-sm {article.saved
                     ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
                     : ''}"
-                  disabled={isPending || Boolean(article.saved)}
+                  disabled={isPending || (!savedOnly && Boolean(article.saved))}
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
                     e.stopPropagation();
                     interact(article.id, 'save');
                   }}
-                  title={article.saved ? 'Already saved' : 'Save (s)'}
+                  title={savedOnly
+                    ? 'Remove from Saved (s)'
+                    : article.saved
+                      ? 'Already saved'
+                      : 'Save (s)'}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -1252,7 +1332,7 @@
                       d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
                     /></svg
                   >
-                  {article.saved ? 'Saved' : 'Save'}
+                  {savedOnly ? 'Unsave' : article.saved ? 'Saved' : 'Save'}
                 </button>
                 {#if !isBoostReview && article.read}
                   <span

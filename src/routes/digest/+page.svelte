@@ -292,10 +292,11 @@
       }
       errorMessage = formatError(err);
     } finally {
-      if (currentRequest !== requestId) return;
-      loading = false;
-      refreshing = false;
-      hasLoaded = true;
+      if (currentRequest === requestId) {
+        loading = false;
+        refreshing = false;
+        hasLoaded = true;
+      }
     }
   }
 

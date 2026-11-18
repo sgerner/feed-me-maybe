@@ -1,6 +1,14 @@
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
-import { refreshRankingAfterFeedback } from '$lib/server/ranking-freshness';
+import {
+  refreshRankingAfterFeedback,
+  refreshRankingAfterProfileMutation,
+} from '$lib/server/ranking-freshness';
+import {
+  updateHeuristicScore,
+  updatePreferenceMemoryFromInteraction,
+} from '$lib/server/preferences';
+import { dispatchWebhookEvent } from '$lib/server/webhooks';
 
 export const ARTICLE_STATE_ACTIONS = [
   'read',
@@ -489,9 +497,61 @@ export function applyArticleState(
         });
       }
     }
+    if (
+      input.action === 'read' ||
+      input.action === 'save' ||
+      input.action === 'hide'
+    ) {
+      const insertInteraction = db.prepare(
+        "INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, '{}')",
+      );
+      for (const change of output) {
+        if (!change.changed) continue;
+        insertInteraction.run(
+          crypto.randomUUID(),
+          change.articleId,
+          input.action,
+          now,
+        );
+        updatePreferenceMemoryFromInteraction(change.articleId, input.action);
+        refreshRankingAfterProfileMutation(change.articleId);
+      }
+    } else if (
+      input.action === 'unread' ||
+      input.action === 'unsave' ||
+      input.action === 'unhide'
+    ) {
+      const insertInteraction = db.prepare(
+        "INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, '{}')",
+      );
+      for (const change of output) {
+        if (!change.changed) continue;
+        insertInteraction.run(
+          crypto.randomUUID(),
+          change.articleId,
+          input.action,
+          now,
+        );
+        updateHeuristicScore(change.articleId);
+      }
+    }
     return output;
   })();
 
+  if (input.action === 'read' || input.action === 'save') {
+    const selectArticle = db.prepare('SELECT * FROM articles WHERE id = ?');
+    for (const change of changes) {
+      if (!change.changed) continue;
+      const article = selectArticle.get(change.articleId);
+      if (article) {
+        dispatchWebhookEvent({
+          type: input.action === 'read' ? 'article.read' : 'article.saved',
+          timestamp: now,
+          payload: { article },
+        });
+      }
+    }
+  }
   return { operationId, idempotencyKey, idempotent: false, changes };
 }
 
@@ -553,7 +613,11 @@ export function undoArticleState(
       const before = parseState(row.before_state);
       const after = parseState(row.after_state);
       const current = getState(row.article_id);
-      if (!sameState(current, after)) continue;
+      if (
+        current.stateVersion !== after.stateVersion ||
+        !sameState(current, after)
+      )
+        continue;
       restore.run(
         before.read ? 1 : 0,
         before.readAt,
@@ -569,6 +633,7 @@ export function undoArticleState(
         row.article_id,
       );
       markUndone.run(Date.now(), row.id);
+      refreshRankingAfterProfileMutation(row.article_id);
       restored.push(row.article_id);
     }
     return restored;

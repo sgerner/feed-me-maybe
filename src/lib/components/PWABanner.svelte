@@ -14,8 +14,7 @@
     // Check if already in standalone mode
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
-      // @ts-ignore
-      window.navigator.standalone ||
+      (window.navigator as Navigator & { standalone?: boolean }).standalone ||
       document.referrer.includes('android-app://');
 
     if (isStandalone) return;
