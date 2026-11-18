@@ -91,6 +91,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     const result = applyArticleState({
       articleIds: articleIds(body),
       action: actionFromBody(body),
+      visibleArticleIds: body.visibleArticleIds,
       idempotencyKey: typeof key === 'string' ? key : undefined,
     });
     return json(result);

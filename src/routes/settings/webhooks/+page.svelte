@@ -320,9 +320,9 @@
 
       <div class="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
         <div class="space-y-2">
-          <h4 class="text-sm font-bold uppercase tracking-wider opacity-40">
+          <h3 class="text-sm font-bold uppercase tracking-wider opacity-40">
             Available Events
-          </h4>
+          </h3>
           <ul class="m-0 list-none p-0 text-sm space-y-1 opacity-70">
             <li><code>article.saved</code> — When an article is bookmarked</li>
             <li>
@@ -333,9 +333,9 @@
           </ul>
         </div>
         <div class="space-y-2">
-          <h4 class="text-sm font-bold uppercase tracking-wider opacity-40">
+          <h3 class="text-sm font-bold uppercase tracking-wider opacity-40">
             Request Headers
-          </h4>
+          </h3>
           <ul class="m-0 list-none p-0 text-sm space-y-1 opacity-70">
             <li><code>X-Feed-Me-Maybe-Event</code> — Event Type</li>
             <li><code>X-Feed-Me-Maybe-Delivery</code> — UUID</li>
@@ -345,9 +345,9 @@
       </div>
 
       <div class="mt-6 space-y-2">
-        <h4 class="text-sm font-bold uppercase tracking-wider opacity-40">
+        <h3 class="text-sm font-bold uppercase tracking-wider opacity-40">
           Payload Example
-        </h4>
+        </h3>
         <pre
           class="m-0 overflow-auto rounded bg-black/30 p-2 text-sm text-primary-200"><code
             >{`{

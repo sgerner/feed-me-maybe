@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
+import type { OfflineArticle } from '$lib/offline/types';
 import { getDb } from '$lib/server/db';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -8,13 +9,13 @@ export const load: PageServerLoad = async ({ locals }) => {
   const articles = db
     .prepare(
       `
-    SELECT a.id, a.title, a.url, a.summary, a.image_url, a.published_at, a.saved,
+    SELECT a.id, a.title, a.url, a.summary, a.image_url, a.published_at, a.fetched_at, a.saved, a.read, a.hidden, a.thumbs_up, a.thumbs_down,
            f.title as feed_title, f.open_mode as feed_open_mode
     FROM articles a JOIN feeds f ON f.id = a.feed_id
     WHERE a.saved = 1
     ORDER BY a.published_at DESC
   `,
     )
-    .all();
+    .all() as OfflineArticle[];
   return { articles };
 };

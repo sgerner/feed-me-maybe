@@ -37,6 +37,8 @@
   <title>All Articles · Feed Me Maybe</title>
 </svelte:head>
 
+<h1 class="sr-only">All Articles</h1>
+
 <PullToRefresh onSync={handleSync} {syncing} mobileOnly>
   <ArticleList bind:articles totalPages={pageData.totalPages} />
 </PullToRefresh>
