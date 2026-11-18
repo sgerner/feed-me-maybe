@@ -39,6 +39,12 @@ describe('Database initialization', () => {
 
     const { getDb } = await import('./index');
     const db = getDb();
+    expect(db.pragma('table_info(articles)')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'external_url' }),
+      ]),
+    );
+
     // Verify sessions table exists
     const sessionsResult = db
       .prepare(
