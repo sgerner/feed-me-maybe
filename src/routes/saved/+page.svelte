@@ -1,8 +1,17 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import { fetchWithCsrf } from '$lib/client/csrf';
-  import { cacheSavedArticles } from '$lib/offline';
-  import { getCachedSavedArticles } from '$lib/offline';
+  import { getContext } from 'svelte';
+  import { page } from '$app/state';
+  import {
+    cacheSavedArticles,
+    enqueueOfflineMutation,
+    getCachedSavedArticles,
+    type OfflineArticle,
+  } from '$lib/offline';
+  const openCachedArticle =
+    getContext<(article: OfflineArticle) => Promise<void>>('openCachedArticle');
+  const scope = $derived(String(page.data.userId || 'admin'));
   import { fly, fade } from 'svelte/transition';
   type SavedArticle = {
     id: string;
@@ -18,16 +27,14 @@
   $effect(() => {
     articles = pageData.articles;
     if (typeof window !== 'undefined') {
-      void cacheSavedArticles('admin', pageData.articles).catch(
-        () => undefined,
-      );
+      void cacheSavedArticles(scope, pageData.articles).catch(() => undefined);
     }
   });
 
   $effect(() => {
     if (typeof window === 'undefined' || navigator.onLine !== false) return;
     if (articles.length > 0) return;
-    void getCachedSavedArticles('admin', 100)
+    void getCachedSavedArticles(scope, 100)
       .then((cached) => {
         if (articles.length === 0 && cached.length > 0) articles = cached;
       })
@@ -50,6 +57,12 @@
     pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
 
     try {
+      if (navigator.onLine === false) {
+        await enqueueOfflineMutation(scope, { articleId, type: 'unsave' });
+        addToast('Action queued — will sync when you’re online', 'info');
+        return;
+      }
+
       const res = await fetchWithCsrf('/api/interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -121,6 +134,19 @@
             >
             <a
               href="/articles/{article.id}"
+              onclick={(event) => {
+                if (
+                  navigator.onLine !== false ||
+                  !openCachedArticle ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                void openCachedArticle(article);
+              }}
               class="block font-semibold no-underline transition-colors hover:text-primary-400"
               style="color: var(--color-surface-50);">{article.title}</a
             >

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
   import { formatContent } from '$lib/utils/format';
-  import { onMount, tick } from 'svelte';
+  import { getContext, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { afterNavigate, goto, invalidateAll } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
@@ -15,6 +15,7 @@
     enqueueOfflineMutation,
     getCachedArticles,
     type OfflineMutationType,
+    type OfflineArticle,
   } from '$lib/offline';
 
   type InteractionType =
@@ -65,6 +66,9 @@
     emptyCtaHref?: string | null;
     emptyCtaLabel?: string;
   }>();
+
+  const openCachedArticle =
+    getContext<(article: OfflineArticle) => Promise<void>>('openCachedArticle');
 
   const RETURNING_FROM_ARTICLE_KEY = 'feed-me-maybe:returning-from-article';
   const INTERACTION_LABELS: Partial<Record<InteractionType, string>> = {
@@ -153,6 +157,11 @@
   }
 
   async function openArticle(article: Article) {
+    if (navigator.onLine === false && openCachedArticle) {
+      await openCachedArticle(article);
+      return;
+    }
+
     // Determine mode: feed override or global default
     const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
     const hideOnOpen = Boolean($pageStore.data.globalSettings?.hideOnOpen);
@@ -211,6 +220,7 @@
       }, 1200);
     } else {
       markNeedsRefreshOnReturn();
+      isRestoringScroll = true;
       // The app shell keeps the <main> element mounted between routes, so
       // SvelteKit's document-level scroll handling does not reset this
       // container for us. Reset it before the reader route renders.
@@ -219,7 +229,11 @@
         scrollContainerEl.scrollLeft = 0;
       }
       await tick();
-      goto(`/articles/${article.id}?mode=${mode}`);
+      try {
+        await goto(`/articles/${article.id}?mode=${mode}`);
+      } finally {
+        isRestoringScroll = false;
+      }
     }
   }
 
@@ -347,7 +361,7 @@
   }
 
   function writeScrollRestoreState(): void {
-    if (!scrollContainerEl) return;
+    if (!scrollContainerEl || isRestoringScroll) return;
     try {
       const state: ScrollRestoreState = {
         scrollTop: scrollContainerEl.scrollTop,
@@ -567,7 +581,7 @@
       target.tagName === 'TEXTAREA' ||
       target.tagName === 'SELECT' ||
       target.isContentEditable ||
-      target.closest('[aria-modal="true"]')
+      target.closest('[aria-modal="true"], dialog[open]')
     ) {
       return;
     }
@@ -667,6 +681,7 @@
   async function loadMore() {
     if (loadingMore || !hasMore) return;
     loadingMore = true;
+    let advanced = false;
     try {
       const url = new URL('/api/articles', window.location.origin);
       url.searchParams.set('page', (page + 1).toString());
@@ -691,6 +706,7 @@
           );
           articles = [...articles, ...nextArticles];
           page += 1;
+          advanced = true;
           if (data.articles.length < 25) hasMore = false;
         }
       } else {
@@ -700,7 +716,7 @@
       console.error(err);
     } finally {
       loadingMore = false;
-      if (!isRestoringScroll && hasMore && isNearBottom()) {
+      if (advanced && !isRestoringScroll && hasMore && isNearBottom()) {
         window.requestAnimationFrame(() => maybeLoadMore());
       }
     }
@@ -802,22 +818,18 @@
     if (sentinelEl) observer.observe(sentinelEl);
 
     const restoreScrollPosition = async () => {
-      // Revalidate before restoring the list. Otherwise the stale page data
-      // from browser history can overwrite the optimistic list state while
-      // the old scroll snapshot is being reconstructed.
-      await refreshIfReturningFromArticle();
-      await tick();
-
+      // Read the snapshot before revalidation or a scroll event can overwrite it.
       const restoreState = readScrollRestoreState();
-      if (!restoreState || !scrollContainerEl) {
-        maybeLoadMore();
-        return;
-      }
-
       isRestoringScroll = true;
       try {
+        await refreshIfReturningFromArticle();
+        await tick();
+        if (!restoreState || !scrollContainerEl) return;
+
         while (page < restoreState.page && hasMore) {
+          const previousPage = page;
           await loadMore();
+          if (page === previousPage) break;
         }
         await tick();
         scrollContainerEl.scrollTop = restoreState.scrollTop;

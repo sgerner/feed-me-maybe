@@ -55,7 +55,6 @@
   let readerArticleEl = $state<HTMLElement | null>(null);
   let lightboxBackdropEl = $state<HTMLDivElement | null>(null);
   let lightboxPreviouslyFocused: HTMLElement | null = null;
-  let swipeActionsEnabled = $state(false);
   let readingProgress = $state(0);
   let fontScale = $state(1);
   let isSpeaking = $state(false);
@@ -210,13 +209,6 @@
         if (main) main.style.overflow = '';
       };
     }
-  });
-
-  $effect(() => {
-    const touchLikeDevice =
-      window.matchMedia('(pointer: coarse)').matches ||
-      window.matchMedia('(max-width: 1024px)').matches;
-    swipeActionsEnabled = !touchLikeDevice;
   });
 
   $effect(() => {
@@ -424,7 +416,8 @@
             ? 'unhide'
             : type;
 
-      if (navigator.onLine === false) {
+      const offline = navigator.onLine === false;
+      if (offline) {
         const queuedType = offlineMutationType(actualType);
         if (!queuedType) throw new Error('This action needs a connection');
         await enqueueOfflineMutation(offlineScope(), {
@@ -448,7 +441,7 @@
         if (!res.ok) throw new Error();
       }
 
-      {
+      if (!offline) {
         const labels: Record<string, string> = {
           hide: 'Hidden',
           unhide: 'Restored',
@@ -458,14 +451,9 @@
           thumbs_down: 'Disliked and hidden',
         };
         addToast(labels[actualType] || type, 'success');
-
-        if (shouldDismiss) {
-          // If hidden, go back after a delay
-          setTimeout(() => {
-            window.history.back();
-          }, 800);
-        }
       }
+
+      if (shouldDismiss) setTimeout(() => window.history.back(), 800);
     } catch {
       // Revert on failure
       liked = prevLiked;
@@ -491,14 +479,19 @@
   const SWIPE_LONG_LEFT_THRESHOLD = 140;
 
   function handlePointerDown(e: PointerEvent) {
-    if (!swipeActionsEnabled) return;
-    if (!e.isPrimary) return;
+    if (
+      isEmbeddedMode ||
+      e.pointerType === 'mouse' ||
+      !e.isPrimary ||
+      (e.target instanceof Element &&
+        e.target.closest('a, button, input, select, textarea'))
+    )
+      return;
     touchStartX = e.clientX;
     touchStartY = e.clientY;
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!swipeActionsEnabled) return;
     if (!e.isPrimary || touchStartX === null || touchStartY === null) return;
     const dx = e.clientX - touchStartX;
     const dy = e.clientY - touchStartY;
@@ -526,10 +519,14 @@
   class={isEmbeddedMode
     ? 'absolute inset-0 z-0 bg-surface-950'
     : 'mx-auto max-w-4xl'}
-  style:touch-action={swipeActionsEnabled ? 'pan-y' : 'auto'}
+  style:touch-action={isEmbeddedMode ? 'auto' : 'pan-y pinch-zoom'}
   role="presentation"
   onpointerdown={handlePointerDown}
   onpointerup={handlePointerUp}
+  onpointercancel={() => {
+    touchStartX = null;
+    touchStartY = null;
+  }}
 >
   {#if isEmbeddedMode}
     <div class="relative h-full w-full overflow-hidden" in:fade>
