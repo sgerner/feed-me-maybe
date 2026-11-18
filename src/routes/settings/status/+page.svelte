@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
+  import { syncFeed } from '$lib/feeds';
   type RecentJob = {
     status: string;
     created_at: number;
@@ -39,9 +40,26 @@
       articleCount?: number;
       jobCount?: number;
       recentJobs?: RecentJob[];
+      failingFeeds?: Array<{
+        id: string;
+        title: string;
+        last_error: string;
+        error_count: number;
+      }>;
       recentErrors?: RecentError[];
     };
   }>();
+
+  let refreshing = $state<string | null>(null);
+  async function retryFeed(id: string) {
+    if (refreshing) return;
+    refreshing = id;
+    try {
+      await syncFeed(id);
+    } finally {
+      refreshing = null;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -80,6 +98,34 @@
     </p>
   </div>
 </div>
+
+{#if pageData.failingFeeds?.length}
+  <h3 class="mb-3 mt-8 text-sm font-semibold">Failing feeds</h3>
+  <ul class="glass-card divide-y divide-white/10 px-3">
+    {#each pageData.failingFeeds as feed (feed.id)}
+      <li class="flex items-center justify-between gap-3 py-3 text-sm">
+        <div class="min-w-0 break-words">
+          <a class="underline" href="/feeds/{feed.id}"
+            >{feed.title || 'Untitled feed'}</a
+          >
+          <p class="text-error-300">
+            {feed.error_count} failed {feed.error_count === 1
+              ? 'attempt'
+              : 'attempts'}{feed.last_error ? ` · ${feed.last_error}` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn preset-filled-surface-200-800"
+          disabled={refreshing !== null}
+          onclick={() => retryFeed(feed.id)}
+        >
+          {refreshing === feed.id ? 'Queuing…' : 'Retry'}
+        </button>
+      </li>
+    {/each}
+  </ul>
+{/if}
 
 {#if pageData.jev}
   <h3 class="mb-3 mt-8 text-sm font-semibold">Article Ranking</h3>

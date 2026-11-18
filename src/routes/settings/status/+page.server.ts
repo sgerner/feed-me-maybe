@@ -74,6 +74,18 @@ export const load: PageServerLoad = async ({ locals }) => {
       error_message: string | null;
     }>,
   };
+  const failingFeeds = db
+    .prepare(
+      `SELECT id, title, last_error, error_count
+     FROM feeds WHERE enabled = 1 AND error_count > 0
+     ORDER BY error_count DESC, id LIMIT 25`,
+    )
+    .all() as Array<{
+    id: string;
+    title: string;
+    last_error: string;
+    error_count: number;
+  }>;
   const recentJobs = db
     .prepare('SELECT * FROM feed_fetch_logs ORDER BY created_at DESC LIMIT 10')
     .all();
@@ -86,5 +98,13 @@ export const load: PageServerLoad = async ({ locals }) => {
     details: parseDetails(row.details),
   }));
 
-  return { feedCount, articleCount, jobCount, recentJobs, recentErrors, jev };
+  return {
+    feedCount,
+    articleCount,
+    jobCount,
+    recentJobs,
+    recentErrors,
+    jev,
+    failingFeeds,
+  };
 };
