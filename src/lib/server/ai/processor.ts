@@ -1,8 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
-import { createAiClient } from '$lib/server/ai/client';
-import { getProvider } from '$lib/server/ai/models-dev';
-import { decrypt } from './crypto';
+import { getConfiguredAiClient, isAiProcessingConfigured } from './runtime';
+import type { ArticleScore } from './types';
 import { parseJsonTextArray } from '$lib/server/normalization';
 import { refreshCombinedScore } from '$lib/server/scoring';
 import { recordAppError } from '$lib/server/logging';
@@ -94,10 +93,7 @@ function hasMeaningfulAnalysis(analysis: Record<string, any>): boolean {
 export async function processArticle(articleId: string): Promise<void> {
   const db = getDb();
 
-  const config = db
-    .prepare('SELECT * FROM provider_configs WHERE enabled = 1 LIMIT 1')
-    .get() as Record<string, any> | undefined;
-  if (!config) return;
+  if (!isAiProcessingConfigured()) return;
 
   const article = db
     .prepare(
@@ -110,56 +106,17 @@ export async function processArticle(articleId: string): Promise<void> {
     .get(articleId) as ArticleAnalysisRow | undefined;
   if (!article) return;
 
-  const decryptedConfigRaw = decrypt(
-    config.api_key_encrypted || '',
-    config.api_key_nonce || '',
-  );
-  if (!decryptedConfigRaw) {
-    markAnalysisFailed(
-      articleId,
-      'skipped',
-      'AI provider API key is not configured',
-    );
-    return;
-  }
-
-  const decryptedConfig: Record<string, string> = (() => {
-    try {
-      return JSON.parse(decryptedConfigRaw) as Record<string, string>;
-    } catch {
-      // Fallback for old single-key configs
-      return { apiKey: decryptedConfigRaw };
-    }
-  })();
-
-  const providerInfo = await getProvider(config.provider_id);
-  const baseUrl = config.custom_base_url || providerInfo?.baseUrl || '';
-
-  // Try to find an API key. Prefer the first required one, or any key if none specified.
-  const apiKey = providerInfo?.requiredEnvVars?.length
-    ? decryptedConfig[providerInfo.requiredEnvVars[0]] ||
-      Object.values(decryptedConfig)[0] ||
-      ''
-    : decryptedConfig.apiKey || Object.values(decryptedConfig)[0] || '';
-
-  if (!apiKey || !baseUrl) {
-    markAnalysisFailed(
-      articleId,
-      'skipped',
-      'AI provider configuration is incomplete',
-    );
-    return;
-  }
-
-  const client = createAiClient({
-    baseUrl,
-    apiKey,
-    model: config.model_id,
-    providerId: config.provider_id,
-  });
-
-  let analysis: Awaited<ReturnType<typeof client.analyzeArticle>>;
+  let analysis: Partial<ArticleScore>;
   try {
+    const client = await getConfiguredAiClient();
+    if (!client) {
+      markAnalysisFailed(
+        articleId,
+        'skipped',
+        'AI provider configuration is incomplete',
+      );
+      return;
+    }
     analysis = await client.analyzeArticle({
       title: article.title,
       summary: article.summary || '',

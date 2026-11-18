@@ -10,14 +10,21 @@ async function fetchModelsDev() {
     return cache.data;
   }
 
-  const response = await fetch(MODELS_DEV_URL);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch models.dev: ${response.statusText}`);
-  }
+  try {
+    const response = await fetch(MODELS_DEV_URL, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch models.dev: ${response.statusText}`);
+    }
 
-  const data = await response.json();
-  cache = { data, timestamp: Date.now() };
-  return data;
+    const data = await response.json();
+    cache = { data, timestamp: Date.now() };
+    return data;
+  } catch (error) {
+    if (cache) return cache.data;
+    throw error;
+  }
 }
 
 export async function getProviders(): Promise<AiProvider[]> {

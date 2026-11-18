@@ -73,42 +73,48 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     nonce = result.nonce;
   }
 
-  if (existing) {
-    if (encrypted && nonce) {
+  db.transaction(() => {
+    if (existing) {
+      if (encrypted && nonce) {
+        db.prepare(
+          'UPDATE provider_configs SET model_id = ?, api_key_encrypted = ?, api_key_nonce = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
+        ).run(
+          String(modelId),
+          encrypted,
+          nonce,
+          validatedBaseUrl,
+          Date.now(),
+          existing.id,
+        );
+      } else {
+        db.prepare(
+          'UPDATE provider_configs SET model_id = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
+        ).run(String(modelId), validatedBaseUrl, Date.now(), existing.id);
+      }
+    } else {
+      const id = crypto.randomUUID();
       db.prepare(
-        'UPDATE provider_configs SET model_id = ?, api_key_encrypted = ?, api_key_nonce = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
+        'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, custom_base_url, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
       ).run(
+        id,
+        providerIdValue,
         String(modelId),
-        encrypted,
-        nonce,
+        encrypted || '',
+        nonce || '',
         validatedBaseUrl,
         Date.now(),
-        existing.id,
+        Date.now(),
       );
-    } else {
-      db.prepare(
-        'UPDATE provider_configs SET model_id = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
-      ).run(String(modelId), validatedBaseUrl, Date.now(), existing.id);
     }
-  } else {
-    const id = crypto.randomUUID();
-    db.prepare(
-      'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, custom_base_url, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
-    ).run(
-      id,
-      providerIdValue,
-      String(modelId),
-      encrypted || '',
-      nonce || '',
-      validatedBaseUrl,
-      Date.now(),
-      Date.now(),
-    );
-  }
 
-  db.prepare(
-    "INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_enabled', 'true', ?) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = ?",
-  ).run(Date.now(), Date.now());
+    db.prepare('UPDATE provider_configs SET enabled = (provider_id = ?)').run(
+      providerIdValue,
+    );
+
+    db.prepare(
+      "INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_enabled', 'true', ?) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = ?",
+    ).run(Date.now(), Date.now());
+  })();
 
   return json({ success: true });
 };
