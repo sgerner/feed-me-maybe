@@ -87,6 +87,23 @@ function normalizeAnalysis(raw: unknown): Partial<ArticleScore> {
   };
 }
 
+export class AiRateLimitError extends Error {
+  constructor(
+    message: string,
+    readonly retryAt: number | null,
+  ) {
+    super(message);
+  }
+}
+
+function retryAtFromHeader(value: string | null): number | null {
+  if (!value) return null;
+  const time = /^\d+$/.test(value)
+    ? Date.now() + Number(value) * 1000
+    : Date.parse(value);
+  return Number.isSafeInteger(time) && time > 0 ? time : null;
+}
+
 export function createAiClient(config: AiClientConfig) {
   const {
     baseUrl,
@@ -145,9 +162,14 @@ export function createAiClient(config: AiClientConfig) {
 
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300).replace(/\s+/g, ' ');
-      throw new Error(
-        `AI provider returned HTTP ${res.status}${detail ? `: ${detail}` : ''}`,
-      );
+      const message = `AI provider returned HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+      if (res.status === 429) {
+        throw new AiRateLimitError(
+          message,
+          retryAtFromHeader(res.headers.get('retry-after')),
+        );
+      }
+      throw new Error(message);
     }
 
     const data = (await res.json()) as {
@@ -195,6 +217,18 @@ export function createAiClient(config: AiClientConfig) {
     try {
       return JSON.parse(candidate);
     } catch {
+      // Repair only trailing commas, leaving quoted strings untouched.
+      const repaired = candidate.replace(
+        /"(?:[^"\\]|\\.)*"|,\s*(?=[}\]])/g,
+        (match) => (match.startsWith(',') ? '' : match),
+      );
+      if (repaired !== candidate) {
+        try {
+          return JSON.parse(repaired);
+        } catch {
+          // Reject completions with any other syntax errors.
+        }
+      }
       throw new Error('AI provider returned invalid JSON');
     }
   }

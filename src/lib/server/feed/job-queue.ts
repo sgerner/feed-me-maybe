@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { AiRateLimitError } from '$lib/server/ai/client';
 import { getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
 import { isRankingProviderConfigured } from '$lib/server/ai/jev';
@@ -8,6 +9,7 @@ export const AI_PROCESS_JOB_TYPE = 'ai_process';
 export const JEV_PROCESS_JOB_TYPE = 'jev_process';
 
 export const DEFAULT_FEED_FETCH_MAX_ATTEMPTS = 4;
+const MAX_CONCURRENT_FEED_FETCHES = 3;
 export const DEFAULT_AI_PROCESS_MAX_ATTEMPTS = 3;
 export const DEFAULT_JEV_PROCESS_MAX_ATTEMPTS = 4;
 export const DEFAULT_JEV_QUEUE_CAPACITY = 4;
@@ -662,7 +664,7 @@ export function getNextQueuedJobAt(): number | null {
 
 function claimNextJob(
   now: number,
-  options: { allowJev?: boolean } = {},
+  options: { allowJev?: boolean; allowFeed?: boolean } = {},
 ): JobRecord | null {
   const db = getDb();
   const claimTx = db.transaction(() => {
@@ -673,6 +675,7 @@ function claimNextJob(
           WHERE status = 'queued'
             AND (scheduled_at IS NULL OR scheduled_at <= ?)
             AND attempts < max_attempts
+            AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
             AND (type != ? OR NOT EXISTS (
               SELECT 1 FROM ranking_refresh_queue q
@@ -694,6 +697,8 @@ function claimNextJob(
         now,
         options.allowJev === false ? 0 : 1,
         JEV_PROCESS_JOB_TYPE,
+        options.allowFeed === false ? 0 : 1,
+        FEED_FETCH_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         now,
         JEV_PROCESS_JOB_TYPE,
@@ -757,7 +762,14 @@ function failOrRetryJob(
     return 'failed';
   }
 
-  const scheduledAt = now + getRetryDelayMs(job.attempts);
+  const cause = error instanceof Error ? error.cause : undefined;
+  const rateLimit = error instanceof AiRateLimitError ? error : cause;
+  const retryAt =
+    rateLimit instanceof AiRateLimitError ? rateLimit.retryAt : null;
+  const scheduledAt = Math.max(
+    now + getRetryDelayMs(job.attempts),
+    retryAt ?? 0,
+  );
   db.prepare(
     `
       UPDATE jobs
@@ -844,17 +856,7 @@ async function runDueJobsInternal(
   };
   let jevExecutions = 0;
 
-  for (let index = 0; index < maxJobs; index += 1) {
-    await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
-    const rankingProviderConfigured = isRankingProviderConfigured();
-    const job = claimNextJob(Date.now(), {
-      allowJev:
-        rankingProviderConfigured && jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
-    });
-    if (!job) break;
-    result.processed += 1;
-    if (job.type === JEV_PROCESS_JOB_TYPE) jevExecutions += 1;
-
+  async function processJob(job: JobRecord) {
     try {
       const output = await executeJob(job);
       completeJob(job, output, Date.now());
@@ -875,11 +877,49 @@ async function runDueJobsInternal(
     }
   }
 
+  const feedJobs = new Set<Promise<void>>();
+  const startedFeedJobs: Promise<void>[] = [];
+  let feedResults: PromiseSettledResult<void>[];
+  try {
+    while (result.processed < maxJobs) {
+      await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
+      const job = claimNextJob(Date.now(), {
+        allowFeed: feedJobs.size < MAX_CONCURRENT_FEED_FETCHES,
+        allowJev:
+          isRankingProviderConfigured() &&
+          jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
+      });
+      if (!job) {
+        if (!feedJobs.size) break;
+        await Promise.race(feedJobs);
+        continue;
+      }
+      result.processed += 1;
+      if (job.type === JEV_PROCESS_JOB_TYPE) jevExecutions += 1;
+
+      if (job.type === FEED_FETCH_JOB_TYPE) {
+        const running = processJob(job);
+        startedFeedJobs.push(running);
+        feedJobs.add(running);
+        void running.then(
+          () => feedJobs.delete(running),
+          () => feedJobs.delete(running),
+        );
+      } else {
+        await processJob(job);
+      }
+    }
+  } finally {
+    feedResults = await Promise.allSettled(startedFeedJobs);
+  }
+  const failed = feedResults.find((entry) => entry.status === 'rejected');
+  if (failed) throw failed.reason;
+
   return result;
 }
 
 /**
- * Runs due jobs one at a time. The process-local promise prevents duplicate
+ * Runs a bounded set of feed requests alongside one scoring job. The process-local promise prevents duplicate
  * workers from competing when several requests or poller ticks arrive at
  * once; the SQLite claim transaction protects separate processes/instances.
  */

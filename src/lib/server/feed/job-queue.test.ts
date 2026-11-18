@@ -93,6 +93,31 @@ describe('feed job queue', () => {
     expect(JSON.parse(row.payload).force).toBe(1);
   });
 
+  it('runs a bounded set of feed fetches concurrently', async () => {
+    const { enqueueFeedFetch, runDueJobs } = await import('./job-queue');
+    const ingester = await import('./ingester');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ingest = vi
+      .spyOn(ingester, 'ingestFeed')
+      .mockImplementation(async () => {
+        await gate;
+        return { success: true, articlesFound: 0, articlesNew: 0 };
+      });
+    for (const id of ['one', 'two', 'three', 'four']) enqueueFeedFetch(id);
+    const result = runDueJobs({ maxJobs: 4 });
+    try {
+      await vi.waitFor(() => expect(ingest).toHaveBeenCalledTimes(3));
+    } finally {
+      release();
+      await result;
+      ingest.mockRestore();
+    }
+    expect(await result).toMatchObject({ processed: 4, completed: 4 });
+  });
+
   it('recovers abandoned processing jobs and fetch logs', async () => {
     const { FEED_FETCH_LEASE_MS, recoverAbandonedJobs } =
       await import('./job-queue');
