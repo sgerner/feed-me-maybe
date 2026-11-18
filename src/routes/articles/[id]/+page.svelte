@@ -1061,31 +1061,6 @@
           </button>
         </div>
 
-        <button
-          type="button"
-          class="action-btn hidden h-9 px-3 rounded-full !inline-flex {saved
-            ? '!text-success-400 !bg-success-500/10 !border-success-500/30'
-            : ''}"
-          disabled={Boolean(pendingAction)}
-          onclick={() => interact('save')}
-          title="Save Article"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill={saved ? 'currentColor' : 'none'}
-            stroke="currentColor"
-            stroke-width="2"
-            ><path
-              d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
-            /></svg
-          >
-          <span class="ml-1.5 hidden sm:inline">{saved ? 'Saved' : 'Save'}</span
-          >
-        </button>
-
         {#if isReaderMode}
           <div
             class="flex items-center gap-0.5 border-r border-white/10 pr-1.5"
@@ -1133,33 +1108,6 @@
             <span class="ml-1.5 hidden sm:inline"
               >{isSpeaking ? 'Stop' : 'Listen'}</span
             >
-          </button>
-
-          <button
-            type="button"
-            class="action-btn hidden h-9 px-3 rounded-full"
-            onclick={() => void shareArticle()}
-            title="Share article"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              ><circle cx="18" cy="5" r="3" /><circle
-                cx="6"
-                cy="12"
-                r="3"
-              /><circle cx="18" cy="19" r="3" /><path
-                d="m8.6 13.5 6.8 4"
-              /><path d="m15.4 6.5-6.8 4" /></svg
-            >
-            <span class="ml-1.5 hidden sm:inline">Share</span>
           </button>
         {/if}
 
