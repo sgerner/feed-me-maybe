@@ -105,6 +105,30 @@ describe('article state foundation', () => {
     expect(getArticleState('state-b')?.hidden).toBe(false);
   });
 
+  it('undoes a hide when a compatibility trigger fills an existing saved timestamp', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { applyArticleState, getArticleState, undoArticleState } =
+      await import('./article-state');
+    const db = getDb();
+    db.prepare("UPDATE articles SET saved = 1 WHERE id = 'state-a'").run();
+    db.prepare(
+      "UPDATE articles SET saved_at = NULL WHERE id = 'state-a'",
+    ).run();
+    const change = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'hide',
+    });
+
+    expect(change.changes[0].after).toEqual(getArticleState('state-a'));
+    expect(
+      undoArticleState({ operationId: change.operationId }).restoredArticleIds,
+    ).toEqual(['state-a']);
+    expect(getArticleState('state-a')).toMatchObject({
+      saved: true,
+      hidden: false,
+    });
+  });
+
   it('does not overwrite a later state change during undo', async () => {
     const { applyArticleState, getArticleState, undoArticleState } =
       await import('./article-state');

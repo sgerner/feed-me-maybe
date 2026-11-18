@@ -438,22 +438,23 @@ export function applyArticleState(
 
     for (const articleId of articleIds) {
       const before = getState(articleId);
-      const after = stateAfterAction(before, input.action, now, input.patch);
-      after.stateVersion = before.stateVersion + 1;
+      const next = stateAfterAction(before, input.action, now, input.patch);
       update.run(
-        after.read ? 1 : 0,
-        after.readAt,
-        after.saved ? 1 : 0,
-        after.savedAt,
-        after.hidden ? 1 : 0,
-        after.hiddenAt,
-        after.thumbsUp ? 1 : 0,
-        after.thumbsDown ? 1 : 0,
-        after.rejected ? 1 : 0,
-        after.rejectedAt,
+        next.read ? 1 : 0,
+        next.readAt,
+        next.saved ? 1 : 0,
+        next.savedAt,
+        next.hidden ? 1 : 0,
+        next.hiddenAt,
+        next.thumbsUp ? 1 : 0,
+        next.thumbsDown ? 1 : 0,
+        next.rejected ? 1 : 0,
+        next.rejectedAt,
         now,
         articleId,
       );
+      // Compatibility triggers can fill missing timestamps on older rows.
+      const after = getState(articleId);
       insertHistory.run(
         crypto.randomUUID(),
         operationId,
