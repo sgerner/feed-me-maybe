@@ -88,12 +88,14 @@ export function getEffectivePollIntervalMins(
   feedInterval: number | null | undefined,
   fetchCountSinceChange: number | null | undefined,
   globalInterval = getGlobalPollIntervalMins(),
+  errorCount = 0,
 ): number {
   let interval = parsePollInterval(feedInterval, globalInterval);
   const quietFetches = Math.max(0, Number(fetchCountSinceChange || 0));
   if (quietFetches > 10) interval *= 2;
   if (quietFetches > 50) interval *= 2;
-  return Math.min(MAX_POLL_INTERVAL_MINS, interval);
+  const failureMultiplier = 2 ** Math.min(6, Math.max(0, errorCount));
+  return Math.min(MAX_POLL_INTERVAL_MINS, interval * failureMultiplier);
 }
 
 function getActiveFeedJob(feedId: string): FeedHealth['activeJob'] {
@@ -152,6 +154,7 @@ export function getFeedHealth(
     feed.poll_interval_mins,
     feed.fetch_count_since_change,
     globalInterval,
+    feed.error_count ?? 0,
   );
   const staleAfterMins = Math.min(
     MAX_POLL_INTERVAL_MINS * 2,

@@ -379,9 +379,16 @@ describe('feed job queue', () => {
     expect(enqueueJevBackfill({ now: now + 1 })).toBe(0);
 
     const jobs = db
-      .prepare('SELECT COUNT(*) AS count FROM jobs WHERE type = ?')
-      .get(JEV_PROCESS_JOB_TYPE) as { count: number };
-    expect(jobs.count).toBe(4);
+      .prepare(
+        "SELECT json_extract(payload, '$.articleId') AS id FROM jobs WHERE type = ? ORDER BY id",
+      )
+      .all(JEV_PROCESS_JOB_TYPE);
+    expect(jobs).toEqual([
+      { id: 'jev-bound-3' },
+      { id: 'jev-bound-4' },
+      { id: 'jev-bound-5' },
+      { id: 'jev-bound-6' },
+    ]);
   });
 
   it('recovers expired Jev leases and fails jobs that exhausted their attempts', async () => {

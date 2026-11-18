@@ -105,6 +105,7 @@ describe('feed management', () => {
     expect(getEffectivePollIntervalMins(null, 0, 15)).toBe(15);
     expect(getEffectivePollIntervalMins(5, 11, 15)).toBe(10);
     expect(getEffectivePollIntervalMins(5, 51, 15)).toBe(20);
+    expect(getEffectivePollIntervalMins(null, 0, 15, 2)).toBe(60);
   });
 
   it('reports healthy, stale, and error feed states with next due time', async () => {

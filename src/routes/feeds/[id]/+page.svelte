@@ -33,6 +33,8 @@
     title?: string | null;
     category?: string | null;
     enabled?: boolean;
+    error_count: number;
+    last_error?: string | null;
     open_mode?: string | null;
     use_proxy?: boolean | number | null;
     source_type?: string | null;
@@ -52,7 +54,7 @@
   }>();
 
   let articles = $state<FeedArticle[]>([]);
-  let feed = $state<FeedData>({});
+  let feed = $state<FeedData>({ error_count: 0 });
   let showSettings = $state(false);
   let saving = $state(false);
   let deleting = $state(false);
@@ -276,9 +278,25 @@
           </span>
         {/if}
       </div>
+      {#if feed.error_count > 0}
+        <p class="mt-3 break-words text-sm text-error-300">
+          {feed.error_count} failed {feed.error_count === 1
+            ? 'attempt'
+            : 'attempts'}
+          {#if feed.last_error}<span class="block">{feed.last_error}</span>{/if}
+        </p>
+      {/if}
     </div>
 
     <div class="flex flex-wrap items-center gap-2 md:justify-end">
+      <button
+        type="button"
+        class="btn preset-filled-surface-200-800 h-10 px-3"
+        onclick={handleSync}
+        disabled={syncing}
+      >
+        {syncing ? 'Refreshing…' : 'Refresh feed'}
+      </button>
       <button
         class="btn flex h-10 w-10 items-center justify-center p-0 md:h-auto md:w-auto md:px-4 md:py-2 md:gap-2"
         class:preset-filled-primary-500={pageData.showHiddenContent}
