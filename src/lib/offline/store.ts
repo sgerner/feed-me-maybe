@@ -155,7 +155,16 @@ export async function cacheArticles(
     const merged = new Map(existing.map((article) => [article.key, article]));
     for (const article of articles) {
       if (article.id) {
-        const withLocalIntent = applyPendingIntent(scope, article, pending);
+        const previous = merged.get(scopedKey(scope, article.id));
+        const withLocalIntent = applyPendingIntent(
+          scope,
+          {
+            ...previous,
+            ...article,
+            content: article.content ?? previous?.content,
+          },
+          pending,
+        );
         merged.set(
           scopedKey(scope, article.id),
           makeCachedArticle(scope, withLocalIntent),
@@ -184,15 +193,21 @@ export async function cacheSavedArticles(
     const retained = existing.filter(
       (article) => article.saved !== true || incomingIds.has(article.id),
     );
+    const merged = new Map(retained.map((article) => [article.key, article]));
     const incoming = articles.map((article) => {
+      const previous = merged.get(scopedKey(scope, article.id));
       const withLocalIntent = applyPendingIntent(
         scope,
-        { ...article, saved: true },
+        {
+          ...previous,
+          ...article,
+          content: article.content ?? previous?.content,
+          saved: true,
+        },
         pending,
       );
       return makeCachedArticle(scope, withLocalIntent);
     });
-    const merged = new Map(retained.map((article) => [article.key, article]));
     for (const article of incoming) merged.set(article.key, article);
     const kept = trimArticles([...merged.values()], normalizeLimits(limits));
     const keptKeys = new Set(kept.map((article) => article.key));

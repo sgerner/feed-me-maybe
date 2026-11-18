@@ -1,13 +1,10 @@
 <script lang="ts">
   import '../app.css';
   import { setContext } from 'svelte';
+  import { renderContent } from '$lib/utils/format';
   import { page } from '$app/stores';
   import { navigating } from '$app/state';
-  import {
-    addToast,
-    subscribeToasts,
-    type Toast,
-  } from '$lib/stores/toast.svelte';
+  import { addToast, getToasts } from '$lib/stores/toast.svelte';
   import { fade, fly } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import PWABanner from '$lib/components/PWABanner.svelte';
@@ -21,6 +18,8 @@
     activateOfflineUser,
     clearOfflinePrivateData,
     getOfflineSyncStatus,
+    getCachedArticles,
+    type OfflineArticle,
     installOfflineSync,
   } from '$lib/offline';
 
@@ -37,9 +36,28 @@
   let newFeedUrl = $state('');
   let addFeedDialogEl = $state<HTMLDivElement | null>(null);
   let addFeedPreviouslyFocused: HTMLElement | null = null;
-  let toasts = $state<Toast[]>([]);
+  const toasts = getToasts();
   let stopOfflineSync: (() => void) | null = null;
   let { children, data } = $props();
+
+  let cachedReader = $state<HTMLDialogElement>();
+  let cachedArticle = $state<OfflineArticle | null>(null);
+
+  setContext('openCachedArticle', async (article: OfflineArticle) => {
+    if (!data.sessionId || !cachedReader) return;
+    cachedArticle = article;
+    cachedReader.showModal();
+    const scope = String(data.userId || 'admin');
+    const cached = await getCachedArticles(scope).catch(() => []);
+    if (
+      cachedReader?.open &&
+      cachedArticle?.id === article.id &&
+      data.sessionId
+    ) {
+      cachedArticle =
+        cached.find((entry) => entry.id === article.id) ?? article;
+    }
+  });
 
   setContext('openAddFeed', () => (showAddFeedModal = true));
 
@@ -372,14 +390,6 @@
     if (path.startsWith('/recovery') || path.startsWith('/settings')) {
       secondaryOpen = true;
     }
-  });
-
-  $effect(() => {
-    const unsubscribe = subscribeToasts((value) => {
-      toasts = value;
-    });
-
-    return unsubscribe;
   });
 
   // Real-time updates via SSE
@@ -877,6 +887,24 @@
     </main>
   </div>
 
+  {#if offlineState !== 'online'}
+    <div
+      class="bg-surface-900 px-3 py-1 text-center text-xs text-surface-200 md:hidden"
+      role="status"
+    >
+      {#if offlineState === 'blocked'}
+        Sync needs attention
+      {:else if offlineState === 'syncing'}
+        Syncing…
+      {:else}
+        {offlineState === 'offline'
+          ? 'Offline'
+          : 'Online'}{#if queuedActions > 0}
+          · {queuedActions} queued{/if}
+      {/if}
+    </div>
+  {/if}
+
   <nav class="mobile-core-nav md:hidden" aria-label="Primary">
     {#each mobileCoreItems as item (item.href)}
       <a
@@ -945,6 +973,32 @@
       {/if}
     </div>
   {/if}
+
+  <dialog
+    bind:this={cachedReader}
+    aria-labelledby="offline-article-title"
+    class="fixed inset-0 m-auto max-h-[90dvh] w-[min(45rem,calc(100%-2rem))] overflow-auto rounded-md bg-surface-900 p-5 text-surface-100 backdrop:bg-black/70 md:p-8"
+    onclose={() => (cachedArticle = null)}
+  >
+    <form method="dialog" class="mb-4 flex items-center justify-between gap-3">
+      <span class="text-sm text-surface-300">Offline article</span>
+      <button type="submit" class="btn preset-filled-surface-200-800"
+        >Close</button
+      >
+    </form>
+    {#if cachedArticle}
+      <h1 id="offline-article-title" class="mb-4 text-2xl font-semibold">
+        {cachedArticle.title}
+      </h1>
+      {#if cachedArticle.content || cachedArticle.summary}
+        <div class="prose prose-invert max-w-none">
+          {@html renderContent(cachedArticle.content || cachedArticle.summary)}
+        </div>
+      {:else}
+        <p>This article’s text is unavailable offline.</p>
+      {/if}
+    {/if}
+  </dialog>
 
   <!-- Toast container -->
   <div
