@@ -74,7 +74,7 @@ function getPollableFeeds() {
   return getDb()
     .prepare(
       `
-        SELECT id, last_fetch_at, poll_interval_mins, fetch_count_since_change
+        SELECT id, last_fetch_at, poll_interval_mins, fetch_count_since_change, error_count
         FROM feeds
         WHERE enabled = 1
       `,
@@ -84,6 +84,7 @@ function getPollableFeeds() {
     last_fetch_at: number | null;
     poll_interval_mins: number | null;
     fetch_count_since_change: number | null;
+    error_count: number | null;
   }>;
 }
 
@@ -97,6 +98,7 @@ async function runPollCycle(now: number): Promise<PollCycleResult> {
       feed.poll_interval_mins,
       feed.fetch_count_since_change,
       globalIntervalMins,
+      feed.error_count ?? 0,
     );
     const lastFetch = feed.last_fetch_at || 0;
     if (now - lastFetch < intervalMins * 60 * 1000) continue;

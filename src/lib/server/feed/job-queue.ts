@@ -581,7 +581,7 @@ export function enqueueJevBackfill(
                     END = 1
                )
            )
-         ORDER BY a.fetched_at ASC, a.id ASC
+         ORDER BY a.fetched_at DESC, a.id DESC
          LIMIT ?`,
       )
       .all(batchSize) as Array<{
