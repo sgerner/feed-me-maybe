@@ -85,20 +85,28 @@ This keeps 30 days of backups and removes older ones automatically.
 
 ## Restore Procedure
 
+Stop every process using the destination database and keep it stopped until
+the restore completes. Keep a separate copy of the current database and any
+matching WAL file before replacing them. A WAL is part of its original
+database snapshot and must never be reused with a standalone backup.
+
 ### From File Copy
 
 ```bash
 # Stop the container
 docker stop feed-me-maybe
 
-# Remove the current database (optional — overwrite instead)
-docker run --rm -v feed-me-maybe-data:/data alpine rm -f /data/feed-me-maybe.db*
-
 # Copy the backup into the volume
 docker run --rm \
   -v feed-me-maybe-data:/data \
-  -v $(pwd)/backups/feed-me-maybe-20250101:/source:ro \
-  alpine cp -r /source/* /data/
+  -v "$(pwd)/backups/feed-me-maybe-20250101:/source:ro" \
+  alpine sh -ec 'test -s /source/feed-me-maybe.db
+    cp /source/feed-me-maybe.db /data/feed-me-maybe.db.restore
+    rm -f /data/feed-me-maybe.db-wal /data/feed-me-maybe.db-shm
+    mv /data/feed-me-maybe.db.restore /data/feed-me-maybe.db
+    if [ -f /source/feed-me-maybe.db-wal ]; then
+      cp /source/feed-me-maybe.db-wal /data/feed-me-maybe.db-wal
+    fi'
 
 # Start the container
 docker start feed-me-maybe
@@ -110,11 +118,14 @@ docker start feed-me-maybe
 # Stop the container
 docker stop feed-me-maybe
 
-# Copy the backup file into the container
-docker cp feed-me-maybe-20250101.db feed-me-maybe:/data/feed-me-maybe.db
-
-# Remove any stale WAL/SHM files
-docker exec feed-me-maybe rm -f /data/feed-me-maybe.db-wal /data/feed-me-maybe.db-shm
+# Restore using a helper container while the application stays stopped.
+docker run --rm \
+  -v feed-me-maybe-data:/data \
+  -v "$(pwd)/feed-me-maybe-20250101.db:/backup.db:ro" \
+  alpine sh -ec 'test -s /backup.db
+    cp /backup.db /data/feed-me-maybe.db.restore
+    rm -f /data/feed-me-maybe.db-wal /data/feed-me-maybe.db-shm
+    mv /data/feed-me-maybe.db.restore /data/feed-me-maybe.db'
 
 # Start the container
 docker start feed-me-maybe
@@ -158,3 +169,8 @@ docker exec feed-me-maybe sqlite3 /data/feed-me-maybe.db \
 3. **Store backups off-host** — copy to a separate machine or cloud storage
 4. **Encrypt backups** — the database contains your feed URLs and reading history
 5. **Keep multiple generations** — retain at least 7 days of daily backups
+
+The poller retains 30 days of app errors, finished feed fetch logs, and
+finished feed and article-enrichment jobs. Each feed keeps its latest
+fetch log and latest successful fetch for diagnostics. Reader history,
+active jobs, and ranking jobs are excluded from this cleanup.

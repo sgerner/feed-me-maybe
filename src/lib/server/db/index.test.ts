@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { unlinkSync, existsSync, mkdirSync } from 'fs';
+import { unlinkSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { join } from 'path';
 describe('Database initialization', () => {
   const testDbPath = join(process.cwd(), 'data', 'test-feed-me-maybe.db');
@@ -80,5 +82,60 @@ describe('Database initialization', () => {
 
     expect(row).toBeDefined();
     expect(row.value).toBe('test_value');
+  });
+
+  it('preserves reader state in a live SQLite backup and reapplies migrations safely', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'feed-db-backup-'));
+    try {
+      const { getDb } = await import('./index');
+      const { initializeDatabase } = await import('./migrate');
+      const db = getDb();
+      const now = Date.now();
+      db.prepare(
+        'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ).run('backup-feed', 'https://example.com/rss', now, now);
+      db.prepare(
+        'INSERT INTO articles (id, feed_id, url, read, saved, fetched_at, created_at, updated_at) VALUES (?, ?, ?, 1, 1, ?, ?, ?)',
+      ).run(
+        'backup-article',
+        'backup-feed',
+        'https://example.com/story',
+        now,
+        now,
+        now,
+      );
+
+      const versions = db
+        .prepare('SELECT version FROM schema_migrations ORDER BY version')
+        .pluck()
+        .all();
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      initializeDatabase();
+      expect(
+        db
+          .prepare('SELECT version FROM schema_migrations ORDER BY version')
+          .pluck()
+          .all(),
+      ).toEqual(versions);
+
+      const backupPath = join(directory, 'backup.db');
+      await db.backup(backupPath);
+      const restored = new Database(backupPath, { readonly: true });
+      try {
+        expect(restored.pragma('integrity_check', { simple: true })).toBe('ok');
+        expect(
+          restored
+            .prepare('SELECT read, saved FROM articles WHERE id = ?')
+            .get('backup-article'),
+        ).toEqual({
+          read: 1,
+          saved: 1,
+        });
+      } finally {
+        restored.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

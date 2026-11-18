@@ -12,13 +12,14 @@ import {
   getEffectivePollIntervalMins,
   getGlobalPollIntervalMins,
 } from '$lib/server/feed-management';
-import { recordAppError } from '$lib/server/logging';
+import { pruneOperationalHistory, recordAppError } from '$lib/server/logging';
 
 const INITIAL_POLL_DELAY_MS = 1_000;
 const DEFAULT_JOB_BATCH_SIZE = 24;
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let pollStarted = false;
+let nextHistoryPruneAt = 0;
 let pollCycle: Promise<PollCycleResult> | null = null;
 
 export type PollCycleResult = {
@@ -89,6 +90,14 @@ function getPollableFeeds() {
 }
 
 async function runPollCycle(now: number): Promise<PollCycleResult> {
+  if (now >= nextHistoryPruneAt) {
+    nextHistoryPruneAt = now + 24 * 60 * 60 * 1000;
+    try {
+      pruneOperationalHistory(now);
+    } catch (error) {
+      recordAppError({ source: 'poller.history-retention', error });
+    }
+  }
   const globalIntervalMins = getGlobalPollIntervalMins();
   const feeds = getPollableFeeds();
   const dueJobs: JobRecord[] = [];
