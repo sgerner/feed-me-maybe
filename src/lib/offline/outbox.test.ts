@@ -161,6 +161,42 @@ describe('offline mutation outbox', () => {
     );
   });
 
+  it('replays a reader restore through the versioned interaction contract', () => {
+    const request = buildInteractionRequest(
+      mutation(1, 'article-1', 'restore'),
+    );
+
+    expect(request.body).toBe(
+      JSON.stringify({ articleId: 'article-1', type: 'restore' }),
+    );
+    expect(request.headers).toMatchObject({
+      'X-Offline-Protocol': 'v1',
+      'X-Offline-Idempotency-Key': 'idempotency-1',
+    });
+  });
+
+  it('retains the HTTP status for blocked and conflict actions', async () => {
+    const unauthorized = await replayMutationBatch(
+      [mutation(1, 'article-1', 'read')],
+      async () => ({ ok: false, status: 401, error: 'Unauthorized' }),
+      { now: 10 },
+    );
+    const conflict = await replayMutationBatch(
+      [mutation(2, 'article-2', 'hide')],
+      async () => ({ ok: false, status: 409, error: 'Conflict' }),
+      { now: 10 },
+    );
+
+    expect(unauthorized.updated[0]).toMatchObject({
+      state: 'blocked',
+      blockedStatus: 401,
+    });
+    expect(conflict.updated[0]).toMatchObject({
+      state: 'conflict',
+      blockedStatus: 409,
+    });
+  });
+
   it('recovers a worker-interrupted processing lease on the next replay', async () => {
     const result = await replayMutationBatch(
       [

@@ -356,6 +356,53 @@ export async function cacheOfflineSnapshot(
   }
 }
 
+function isOfflineArticle(value: unknown): value is OfflineArticle {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const article = value as Partial<OfflineArticle>;
+  return (
+    typeof article.id === 'string' &&
+    typeof article.url === 'string' &&
+    typeof article.title === 'string'
+  );
+}
+
+/** Refresh bounded private article bodies from an authenticated, no-store API. */
+export async function refreshOfflineArticleBodies(
+  userScope: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return false;
+  }
+
+  const response = await fetchImpl('/api/offline/articles', {
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!response.ok) return false;
+
+  const payload: unknown = await response.json();
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false;
+  }
+  const snapshot = payload as {
+    articles?: unknown;
+    savedArticles?: unknown;
+  };
+  if (
+    !Array.isArray(snapshot.articles) ||
+    !Array.isArray(snapshot.savedArticles)
+  ) {
+    return false;
+  }
+
+  await cacheOfflineSnapshot(userScope, {
+    articles: snapshot.articles.filter(isOfflineArticle),
+    savedArticles: snapshot.savedArticles.filter(isOfflineArticle),
+  });
+  return true;
+}
+
 export async function applyMutationToCachedArticle(
   userScope: string,
   articleId: string,

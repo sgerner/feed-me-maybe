@@ -55,6 +55,7 @@ function buildHeaders(): HeadersInit {
 async function fetchPage(
   url: string,
   timeoutMs = 15000,
+  proxyBaseUrl?: string,
 ): Promise<{ url: string; html: string } | null> {
   try {
     const { response, finalUrl } = await fetchSafe(
@@ -64,6 +65,7 @@ async function fetchPage(
         signal: AbortSignal.timeout(timeoutMs),
       },
       {
+        proxyBaseUrl,
         maxBytes: MAX_HTML_RESPONSE_BYTES,
         allowedContentTypes: ['text/html', 'application/xhtml+xml'],
       },
@@ -293,6 +295,17 @@ function extractWithReadability(
   } catch {
     return null;
   }
+}
+
+export async function fetchPublisherArticle(
+  url: string,
+  proxyBaseUrl?: string,
+) {
+  const page = await fetchPage(url, 12000, proxyBaseUrl);
+  if (!page) return null;
+  const parsed = extractWithReadability(page.html, page.url);
+  if (!parsed || isGarbageContent(parsed.content)) return null;
+  return parsed;
 }
 
 function extractWithFallback(

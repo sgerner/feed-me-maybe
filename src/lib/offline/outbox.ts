@@ -18,7 +18,11 @@ import {
   type OfflineReplayResult,
   type OfflineSyncStatus,
 } from './types';
-import { activateOfflineUser, applyMutationToCachedArticle } from './store';
+import {
+  activateOfflineUser,
+  applyMutationToCachedArticle,
+  refreshOfflineArticleBodies,
+} from './store';
 
 export interface ReplayResponse {
   ok: boolean;
@@ -106,12 +110,14 @@ function withFailure(
   mutation: OfflineMutation,
   state: OfflineMutationState,
   error: string,
+  status: number,
 ): OfflineMutation {
   return {
     ...mutation,
     state,
     processingAt: undefined,
     lastError: error,
+    blockedStatus: status,
   };
 }
 
@@ -172,7 +178,10 @@ export async function replayMutationBatch(
     lastError = error;
 
     if (response.status === 409 || response.status === 412) {
-      byId.set(mutation.id, withFailure(mutation, 'conflict', error));
+      byId.set(
+        mutation.id,
+        withFailure(mutation, 'conflict', error, response.status),
+      );
       conflicts += 1;
       continue;
     }
@@ -192,7 +201,10 @@ export async function replayMutationBatch(
       break;
     }
 
-    byId.set(mutation.id, withFailure(mutation, 'blocked', error));
+    byId.set(
+      mutation.id,
+      withFailure(mutation, 'blocked', error, response.status),
+    );
     blocked += 1;
 
     // Authentication failures affect the whole queue. Do not send more
@@ -239,8 +251,30 @@ export function requeueBlockedMutations(
           state: 'pending',
           processingAt: undefined,
           lastError: undefined,
+          blockedStatus: undefined,
         }
       : mutation,
+  );
+}
+
+async function retryUnauthorizedMutations(userScope: string): Promise<void> {
+  const mutations = await getOfflineMutations(userScope);
+  const unauthorized = mutations.filter(
+    (mutation) =>
+      mutation.state === 'blocked' && mutation.blockedStatus === 401,
+  );
+  if (unauthorized.length === 0) return;
+  await putRecords(
+    'outbox',
+    unauthorized.map((mutation) => ({
+      ...mutation,
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+      state: 'pending',
+      processingAt: undefined,
+      lastError: undefined,
+      blockedStatus: undefined,
+    })),
   );
 }
 
@@ -358,6 +392,7 @@ export async function enqueueOfflineMutation(
     await replaceRecords('outbox', next, removed);
     await putMetaValue(`outbox-sequence:${scope}`, nextSequence);
     await applyMutationToCachedArticle(scope, articleId, input.type);
+    void requestOfflineBackgroundSync(scope);
     return mutation;
   });
 }
@@ -510,13 +545,78 @@ export function installOfflineSync(
 ): () => void {
   if (typeof window === 'undefined') return () => undefined;
 
-  const replay = () => {
-    if (navigator.onLine === false) return;
-    void replayOfflineMutations(userScope).then((result) => {
-      options.onReplay?.(result);
+  let replaying = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSnapshotRefreshAt = 0;
+  let snapshotRefresh: Promise<boolean> | undefined;
+
+  const refreshSnapshot = (force = false) => {
+    if (navigator.onLine === false || snapshotRefresh) return;
+    const now = Date.now();
+    if (!force && now - lastSnapshotRefreshAt < 5 * 60 * 1_000) return;
+    lastSnapshotRefreshAt = now;
+    snapshotRefresh = refreshOfflineArticleBodies(userScope).catch(() => false);
+    void snapshotRefresh.finally(() => {
+      snapshotRefresh = undefined;
     });
   };
-  const handleOnline = () => replay();
+
+  const clearRetryTimer = () => {
+    if (retryTimer !== undefined) clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
+
+  const scheduleRetry = (result: OfflineReplayResult) => {
+    clearRetryTimer();
+    if (
+      !result.nextAttemptAt ||
+      navigator.onLine === false ||
+      document.visibilityState === 'hidden'
+    ) {
+      return;
+    }
+    retryTimer = setTimeout(
+      replay,
+      Math.max(0, result.nextAttemptAt - Date.now()),
+    );
+  };
+
+  const replay = () => {
+    if (
+      replaying ||
+      navigator.onLine === false ||
+      document.visibilityState === 'hidden'
+    ) {
+      return;
+    }
+    replaying = true;
+    clearRetryTimer();
+    void (async () => {
+      try {
+        await retryUnauthorizedMutations(userScope);
+        const result = await replayOfflineMutations(userScope);
+        options.onReplay?.(result);
+        scheduleRetry(result);
+      } finally {
+        replaying = false;
+      }
+    })().catch(() => {
+      replaying = false;
+    });
+  };
+  const handleOnline = () => {
+    clearRetryTimer();
+    refreshSnapshot(true);
+    replay();
+  };
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') {
+      clearRetryTimer();
+      return;
+    }
+    refreshSnapshot();
+    replay();
+  };
   const handleWorkerMessage = (event: MessageEvent<unknown>) => {
     const message = event.data as {
       type?: string;
@@ -540,12 +640,16 @@ export function installOfflineSync(
   };
 
   window.addEventListener('online', handleOnline);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   navigator.serviceWorker?.addEventListener('message', handleWorkerMessage);
+  refreshSnapshot(true);
   replay();
   void requestOfflineBackgroundSync(userScope);
 
   return () => {
     window.removeEventListener('online', handleOnline);
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    clearRetryTimer();
     navigator.serviceWorker?.removeEventListener(
       'message',
       handleWorkerMessage,

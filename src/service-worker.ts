@@ -3,7 +3,11 @@
 import { clientsClaim, setCacheNameDetails, skipWaiting } from 'workbox-core';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { ExpirationPlugin } from 'workbox-expiration';
-import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
+import {
+  cleanupOutdatedCaches,
+  matchPrecache,
+  precacheAndRoute,
+} from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { CacheFirst } from 'workbox-strategies';
 import { getMetaValue } from './lib/offline/db';
@@ -12,13 +16,32 @@ import { replayOfflineMutations } from './lib/offline/outbox';
 declare let self: ServiceWorkerGlobalScope & typeof globalThis;
 
 const OFFLINE_SYNC_TAG = 'feed-me-maybe-outbox-v1';
-const PRIVATE_CACHE_PREFIX = 'feed-me-maybe-';
+const PRIVATE_CACHE_NAMES = ['feed-me-maybe-article-images-v1'];
 
 setCacheNameDetails({ prefix: 'feed-me-maybe' });
 skipWaiting();
 clientsClaim();
 precacheAndRoute(self.__WB_MANIFEST);
 cleanupOutdatedCaches();
+
+// Keep authenticated SSR navigations network-only. If the request fails at
+// the network layer, show the static shell that reads the signed-in user's
+// bounded article snapshot from IndexedDB. HTTP responses such as 401 remain
+// untouched and no navigation response is written to Cache Storage.
+registerRoute(
+  ({ request, url }) =>
+    request.mode === 'navigate' && url.origin === self.location.origin,
+  async ({ request }) => {
+    try {
+      return await fetch(request);
+    } catch {
+      // SvelteKit's PWA manifest normalizes static HTML assets to extensionless
+      // URLs, so offline.html is precached under /offline.
+      return (await matchPrecache('/offline')) ?? Response.error();
+    }
+  },
+  'GET',
+);
 
 // Keep the existing bounded external-image cache. Article JSON/content is
 // stored in the authenticated client's IndexedDB library instead of a Cache
@@ -61,7 +84,7 @@ async function clearPrivateCaches(): Promise<void> {
   const cacheNames = await caches.keys();
   await Promise.all(
     cacheNames
-      .filter((name) => name.startsWith(PRIVATE_CACHE_PREFIX))
+      .filter((name) => PRIVATE_CACHE_NAMES.includes(name))
       .map((name) => caches.delete(name)),
   );
 }

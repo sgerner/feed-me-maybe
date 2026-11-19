@@ -50,5 +50,7 @@ export function applyMutationToArticle(
         thumbs_up: false,
         hidden: true,
       };
+    case 'restore':
+      return { ...article, thumbs_down: false, hidden: false };
   }
 }
