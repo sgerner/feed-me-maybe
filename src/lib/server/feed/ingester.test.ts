@@ -17,7 +17,7 @@ vi.mock('$lib/server/preferences', () => ({
   applyPreferenceModelToArticle: vi.fn(),
 }));
 vi.mock('$lib/server/webhooks', () => ({
-  dispatchWebhookEvent: vi.fn(),
+  dispatchWebhookEvent: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('$lib/server/realtime', () => ({
   broadcast: vi.fn(),
@@ -47,6 +47,74 @@ describe('feed ingester identity and duplicate handling', () => {
     db.prepare('DELETE FROM feeds').run();
     const { fetchFeed } = await import('./fetcher');
     vi.mocked(fetchFeed).mockReset();
+  });
+
+  it('does not commit a new ETag when article ingestion rolls back', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('$lib/server/db');
+    const { dispatchWebhookEvent } = await import('$lib/server/webhooks');
+    vi.mocked(dispatchWebhookEvent).mockClear();
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, etag, last_modified_header, source_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'feed-etag-rollback',
+      'https://example.com/etag.xml',
+      'old-etag',
+      'old-modified',
+      'rss',
+      now,
+      now,
+    );
+    db.prepare(
+      "CREATE TRIGGER fail_etag_ingest BEFORE INSERT ON articles WHEN NEW.guid = 'etag-second' BEGIN SELECT RAISE(ABORT, 'simulated article failure'); END",
+    ).run();
+
+    const response = {
+      success: true,
+      etag: 'new-etag',
+      lastModified: 'new-modified',
+      items: [
+        {
+          guid: 'etag-guid',
+          url: 'https://example.com/etag-story',
+          title: 'ETag Story',
+          categories: [],
+        },
+        {
+          guid: 'etag-second',
+          url: 'https://example.com/etag-second',
+          title: 'Second article',
+          categories: [],
+        },
+      ],
+    };
+    vi.mocked(fetchFeed).mockResolvedValueOnce(response);
+
+    try {
+      const failed = await ingestFeed({ feedId: 'feed-etag-rollback' });
+      expect(failed.success).toBe(false);
+      expect(dispatchWebhookEvent).not.toHaveBeenCalled();
+      expect(
+        db
+          .prepare('SELECT etag, last_modified_header FROM feeds WHERE id = ?')
+          .get('feed-etag-rollback'),
+      ).toEqual({ etag: 'old-etag', last_modified_header: 'old-modified' });
+    } finally {
+      db.prepare('DROP TRIGGER fail_etag_ingest').run();
+    }
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce(response);
+    const succeeded = await ingestFeed({ feedId: 'feed-etag-rollback' });
+    expect(succeeded.success).toBe(true);
+    expect(dispatchWebhookEvent).toHaveBeenCalledTimes(2);
+    expect(
+      db
+        .prepare('SELECT etag, last_modified_header FROM feeds WHERE id = ?')
+        .get('feed-etag-rollback'),
+    ).toEqual({ etag: 'new-etag', last_modified_header: 'new-modified' });
   });
 
   afterAll(async () => {
