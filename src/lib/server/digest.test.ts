@@ -19,8 +19,9 @@ describe('weekly digest', () => {
     const { getDb } = await import('$lib/server/db');
     const db = getDb();
     db.prepare(
-      "DELETE FROM app_settings WHERE key = 'weekly_digest_cache'",
+      "DELETE FROM app_settings WHERE key LIKE 'weekly_digest_cache%' OR key IN ('calm_daily_briefing_history', 'ai_enabled')",
     ).run();
+    db.prepare('DELETE FROM provider_configs').run();
     db.prepare('DELETE FROM user_interactions').run();
     db.prepare('DELETE FROM article_ai_metadata').run();
     db.prepare('DELETE FROM articles').run();
@@ -127,12 +128,124 @@ describe('weekly digest', () => {
     expect(first.themes.length).toBeGreaterThan(0);
     expect(first.summary).toBeTruthy();
 
-    const second = await getWeeklyDigestArticles(now);
+    const second = await getWeeklyDigestArticles(now + 1_000);
     expect(second.cacheHit).toBe(true);
+    expect(first.aiGenerated).toBe(false);
+    expect(second.aiGenerated).toBe(false);
     expect(second.headline).toBe(first.headline);
     expect(second.topStories.map((story) => story.article.id)).toEqual(
       first.topStories.map((story) => story.article.id),
     );
+
+    const cached = db
+      .prepare(
+        "SELECT value FROM app_settings WHERE key = 'weekly_digest_cache'",
+      )
+      .get() as { value: string };
+    expect(JSON.parse(cached.value).source).toBe('fallback');
+
+    db.prepare('UPDATE articles SET categories = ? WHERE id = ?').run(
+      '["updated"]',
+      'recent-high',
+    );
+    const changed = await getWeeklyDigestArticles(now + 1_000);
+    expect(changed.cacheHit).toBe(false);
+  });
+
+  it('keeps epoch milliseconds from overpowering digest relevance scores', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getWeeklyDigestArticles } = await import('./digest');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'feed-score',
+      'https://example.com/score.xml',
+      'Score Feed',
+      now,
+      now,
+    );
+
+    const insert = db.prepare(
+      `INSERT INTO articles
+         (id, feed_id, url, title, summary, published_at, fetched_at,
+          heuristic_score, combined_score, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run(
+      'older-high-score',
+      'feed-score',
+      'https://example.com/older-high-score',
+      'An older high value report',
+      'A detailed report with clear findings.',
+      now - 5 * 24 * 60 * 60 * 1000,
+      now,
+      90,
+      90,
+      now,
+      now,
+    );
+    insert.run(
+      'newer-low-score',
+      'feed-score',
+      'https://example.com/newer-low-score',
+      'A new low value update',
+      'A short update without much detail.',
+      now,
+      now,
+      20,
+      20,
+      now,
+      now,
+    );
+
+    const result = await getWeeklyDigestArticles({
+      now,
+      windowDays: 7,
+      forceRefresh: true,
+    });
+
+    expect(result.briefing.topSignal[0]?.article.id).toBe('older-high-score');
+  });
+
+  it('rejects malformed or ungrounded AI briefing output', async () => {
+    const { normalizeCalmBriefingResponse } = await import('./digest');
+    const response = {
+      headline: 'Calm update',
+      summary: 'A short grounded summary.',
+      takeaways: ['A source-grounded takeaway.'],
+      themes: [
+        {
+          name: 'Policy Update',
+          summary: 'Two articles describe the policy update.',
+          articleIds: ['outside-1', 'outside-2'],
+        },
+      ],
+      topSignal: [{ articleId: 'outside-1', reason: 'Not in the prompt.' }],
+      worthYourTime: [],
+      whatChanged: [],
+      uncertainty: [],
+    };
+
+    expect(normalizeCalmBriefingResponse(response, new Set(['inside']))).toBe(
+      null,
+    );
+    expect(
+      normalizeCalmBriefingResponse(
+        { ...response, summary: { text: 'Object shaped output' } },
+        new Set(['inside']),
+      ),
+    ).toBeNull();
+    expect(
+      normalizeCalmBriefingResponse(
+        {
+          ...response,
+          topSignal: [{ articleId: 'inside', reason: 'A listed article.' }],
+        },
+        new Set(['inside']),
+      ),
+    ).toMatchObject({ topStories: [{ articleId: 'inside' }] });
   });
 
   it('includes read articles hidden on open, but excludes thumbs-down and unread-hidden articles', async () => {
@@ -433,6 +546,7 @@ describe('weekly digest', () => {
     const result = normalizeCalmBriefingResponse({
       headline: 'A measured update',
       summary: 'Two developments are worth a look.',
+      takeaways: ['Two reported developments are moving forward.'],
       topSignal: [
         {
           articleId: 'a1',

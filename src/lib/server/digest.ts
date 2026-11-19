@@ -5,6 +5,7 @@ import { getConfiguredAiClient } from '$lib/server/ai/runtime';
 import {
   WEEKLY_DIGEST_SYSTEM_PROMPT,
   buildWeeklyDigestPrompt,
+  WEEKLY_DIGEST_PROMPT_MAX_ARTICLES,
   type WeeklyDigestArticleContext,
 } from '$lib/server/ai/digest-prompts';
 import type { FeedArticleRow } from '$lib/server/feed/articles';
@@ -15,6 +16,7 @@ export const WEEKLY_DIGEST_WINDOW_DAYS = 7;
 export const CALM_BRIEFING_MIN_DAYS = 1;
 export const CALM_BRIEFING_MAX_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FALLBACK_CACHE_RETRY_MS = 5 * 60 * 1000;
 const WEEKLY_DIGEST_CACHE_KEY = 'weekly_digest_cache';
 const CALM_BRIEFING_HISTORY_KEY = 'calm_daily_briefing_history';
 const CALM_BRIEFING_HISTORY_LIMIT = 12;
@@ -150,6 +152,7 @@ export type WeeklyDigestStats = {
   generatedAt: number;
   cacheHit: boolean;
   aiEnabled: boolean;
+  aiGenerated: boolean;
   windowDays: number;
 };
 
@@ -176,6 +179,7 @@ type DigestCachePayload = {
   generatedAt: number;
   windowDays: number;
   raw: WeeklyDigestRaw;
+  source?: 'ai' | 'fallback';
 };
 
 function buildFeedArticleSelect(): string {
@@ -190,13 +194,17 @@ function buildFeedArticleSelect(): string {
   `;
 }
 
-function scoreArticle(article: FeedArticleRow): number {
+function scoreArticle(article: FeedArticleRow, now = Date.now()): number {
   const combined =
     article.combined_score && article.combined_score > 0
       ? article.combined_score
       : (article.heuristic_score ?? 0);
   const published = article.published_at ?? article.fetched_at ?? 0;
-  return combined * 1000 + published;
+  const ageDays = Math.max(0, (now - published) / DAY_MS);
+  const recentBoost =
+    ageDays <= 1 ? 8 : ageDays <= 3 ? 4 : ageDays <= 7 ? 2 : 0;
+  const agePenalty = Math.min(ageDays / 45, 10);
+  return combined + recentBoost - agePenalty;
 }
 
 function getArticleTime(article: FeedArticleRow): number {
@@ -434,34 +442,70 @@ function formatWindowLabel(timestamp: number): string {
 
 function hashArticles(
   articles: FeedArticleRow[],
-  windowStart: number,
   windowDays: number,
+  windowStartLabel: string,
+  windowEndLabel: string,
+  aiConfigSignature: string,
 ): string {
-  const payload = articles
-    .map((article) =>
-      [
-        article.id,
-        article.feed_id,
-        article.title,
-        article.summary,
-        article.read,
-        article.saved,
-        article.hidden,
-        (article as DigestArticleRow).rejected ?? '',
-        article.thumbs_up,
-        article.thumbs_down,
-        article.published_at ?? '',
-        article.fetched_at ?? '',
-        article.heuristic_score ?? '',
-        article.combined_score ?? '',
-      ].join('|'),
-    )
-    .join('||');
-
   return crypto
     .createHash('sha256')
-    .update(`${windowStart}:${windowDays}::${payload}`)
+    .update(
+      JSON.stringify({
+        windowDays,
+        windowStartLabel,
+        windowEndLabel,
+        aiConfigSignature,
+        articles: articles.map((article) => ({
+          id: article.id,
+          feedId: article.feed_id,
+          url: article.url,
+          title: article.title,
+          summary: article.summary,
+          categories: article.categories,
+          feedTitle: article.feed_title,
+          read: article.read,
+          saved: article.saved,
+          hidden: article.hidden,
+          publishedAt: article.published_at ?? '',
+          fetchedAt: article.fetched_at ?? '',
+          heuristicScore: article.heuristic_score ?? '',
+          combinedScore: article.combined_score ?? '',
+        })),
+      }),
+    )
     .digest('hex');
+}
+
+function getAiCacheState(db: ReturnType<typeof getDb>): {
+  enabled: boolean;
+  signature: string;
+} {
+  const setting = db
+    .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
+    .get() as { value: string } | undefined;
+  const config = db
+    .prepare(
+      'SELECT provider_id, model_id, custom_base_url, updated_at FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
+    )
+    .get() as
+    | {
+        provider_id: string;
+        model_id: string;
+        custom_base_url: string | null;
+        updated_at: number;
+      }
+    | undefined;
+
+  return {
+    enabled: setting?.value !== 'false' && Boolean(config),
+    signature: JSON.stringify({
+      setting: setting?.value ?? '',
+      provider: config?.provider_id ?? '',
+      model: config?.model_id ?? '',
+      baseUrl: config?.custom_base_url ?? '',
+      updatedAt: config?.updated_at ?? 0,
+    }),
+  };
 }
 
 function loadCache(
@@ -541,15 +585,37 @@ function normalizeStoryStatus(value: unknown): 'new' | 'ongoing' | undefined {
   return status === 'new' || status === 'ongoing' ? status : undefined;
 }
 
-function normalizeStoryList(value: unknown): WeeklyDigestRawStory[] {
+function normalizeStoryList(
+  value: unknown,
+  allowedArticleIds?: ReadonlySet<string>,
+): WeeklyDigestRawStory[] {
   if (!Array.isArray(value)) return [];
   return value
     .map((story) => {
       if (!story || typeof story !== 'object') return null;
       const item = story as Record<string, unknown>;
-      const articleId = toText(item.articleId);
-      if (!articleId) return null;
+      if (typeof item.articleId !== 'string' || typeof item.reason !== 'string')
+        return null;
+      const articleId = item.articleId.trim();
+      if (
+        !articleId ||
+        (allowedArticleIds && !allowedArticleIds.has(articleId))
+      ) {
+        return null;
+      }
+      if (
+        item.status !== undefined &&
+        item.status !== 'new' &&
+        item.status !== 'ongoing'
+      ) {
+        return null;
+      }
       const status = normalizeStoryStatus(item.status);
+      if (
+        item.uncertainty !== undefined &&
+        typeof item.uncertainty !== 'string'
+      )
+        return null;
       return {
         articleId,
         reason: clipText(item.reason, 220),
@@ -565,54 +631,97 @@ function normalizeStoryList(value: unknown): WeeklyDigestRawStory[] {
 
 export function normalizeCalmBriefingResponse(
   raw: unknown,
+  allowedArticleIds?: ReadonlySet<string>,
 ): WeeklyDigestRaw | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
+  if (
+    typeof data.headline !== 'string' ||
+    typeof data.summary !== 'string' ||
+    !Array.isArray(data.themes) ||
+    !Array.isArray(data.takeaways)
+  ) {
+    return null;
+  }
+  if (
+    !Array.isArray(data.topSignal ?? data.topStories) ||
+    !Array.isArray(data.worthYourTime ?? data.missedStories) ||
+    !Array.isArray(data.whatChanged) ||
+    !Array.isArray(data.uncertainty)
+  ) {
+    return null;
+  }
   const themes = Array.isArray(data.themes)
     ? data.themes
         .map((theme) => {
-          if (!theme || typeof theme !== 'object') return null;
+          if (!theme || typeof theme !== 'object' || Array.isArray(theme)) {
+            return null;
+          }
           const item = theme as Record<string, unknown>;
+          if (
+            typeof item.name !== 'string' ||
+            typeof item.summary !== 'string' ||
+            !Array.isArray(item.articleIds) ||
+            item.articleIds.some((id) => typeof id !== 'string')
+          ) {
+            return null;
+          }
           const name = clipText(item.name, 80);
           if (!isValidThemeText(name)) return null;
+          const articleIds = item.articleIds
+            .map((id) => id.trim())
+            .filter(
+              (id) => id && (!allowedArticleIds || allowedArticleIds.has(id)),
+            )
+            .filter((id, index, ids) => ids.indexOf(id) === index)
+            .slice(0, 4);
+          if (articleIds.length < 2) return null;
           return {
             name,
             summary: clipText(item.summary, 220),
-            articleIds: Array.isArray(item.articleIds)
-              ? item.articleIds
-                  .map((id) => toText(id))
-                  .filter(Boolean)
-                  .slice(0, 4)
-              : [],
+            articleIds,
           };
         })
         .filter(Boolean)
     : [];
 
-  const topSignal = normalizeStoryList(data.topSignal);
-  const worthYourTime = normalizeStoryList(data.worthYourTime);
-  const whatChanged = normalizeStoryList(data.whatChanged);
+  const topSignal = normalizeStoryList(data.topSignal, allowedArticleIds);
+  const worthYourTime = normalizeStoryList(
+    data.worthYourTime,
+    allowedArticleIds,
+  );
+  const whatChanged = normalizeStoryList(data.whatChanged, allowedArticleIds);
   const topStories =
-    topSignal.length > 0 ? topSignal : normalizeStoryList(data.topStories);
+    topSignal.length > 0
+      ? topSignal
+      : normalizeStoryList(data.topStories, allowedArticleIds);
   const missedStories =
     worthYourTime.length > 0
       ? worthYourTime.slice(0, 2)
-      : normalizeStoryList(data.missedStories).slice(0, 2);
+      : normalizeStoryList(data.missedStories, allowedArticleIds).slice(0, 2);
   const uncertainty = Array.isArray(data.uncertainty)
     ? data.uncertainty
+        .filter((item): item is string => typeof item === 'string')
         .map((item) => clipText(item, 220))
         .filter(Boolean)
         .slice(0, 3)
     : [];
+  const takeaways = data.takeaways
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => clipText(item, 180))
+    .filter(Boolean)
+    .slice(0, 5);
+  const hasUsableSelection =
+    topStories.length > 0 ||
+    missedStories.length > 0 ||
+    whatChanged.length > 0 ||
+    themes.length > 0;
+  if (!hasUsableSelection) return null;
 
   return {
-    headline:
-      clipText(data.headline || 'Weekly Digest', 100) || 'Weekly Digest',
-    summary: clipText(data.summary || '', 500),
-    takeaways: resolveTakeaways(
-      data.takeaways,
-      themes as WeeklyDigestRawTheme[],
-    ),
+    headline: clipText(data.headline, 100) || 'Weekly Digest',
+    summary: clipText(data.summary, 500),
+    takeaways: resolveTakeaways(takeaways, themes as WeeklyDigestRawTheme[]),
     themes: themes as WeeklyDigestRawTheme[],
     topStories: topStories as WeeklyDigestRawStory[],
     missedStories: missedStories as WeeklyDigestRawStory[],
@@ -1013,23 +1122,33 @@ async function buildWeeklyDigestRaw(
   windowDays: number,
   clusters: DigestCluster[],
   digestClient: Awaited<ReturnType<typeof getConfiguredAiClient>>,
-): Promise<WeeklyDigestRaw> {
+): Promise<{ raw: WeeklyDigestRaw; source: 'ai' | 'fallback' }> {
   const clusterMap = clusterLookup(clusters);
-  // The full eligible corpus is intentionally sent to the briefing prompt. The
-  // UI may be ranked, but an article being read or hidden must not silently
-  // remove it from the daily briefing's reasoning context.
-  const corpus = articles.map((article) =>
+  // The AI receives a bounded, ranked sample; all eligible articles still
+  // remain in the result and in deterministic fallback selection.
+  const promptArticles = pickDigestSelection(articles).slice(
+    0,
+    WEEKLY_DIGEST_PROMPT_MAX_ARTICLES,
+  );
+  const corpus = promptArticles.map((article) =>
     buildArticleContext(article, clusterMap),
   );
   const windowStartLabel = formatWindowLabel(now - windowDays * DAY_MS);
   const windowEndLabel = formatWindowLabel(now);
 
-  if (digestClient) {
+  if (digestClient && corpus.length > 0) {
     try {
       const prompt = buildWeeklyDigestPrompt(
         windowStartLabel,
         windowEndLabel,
         corpus,
+        articles.length,
+      );
+      const promptedArticleIds = new Set(
+        prompt
+          .split('\n')
+          .filter((line) => line.startsWith('- ID: '))
+          .map((line) => line.slice(6).split(' | ', 1)[0]),
       );
       const response = await digestClient.completeChat(
         WEEKLY_DIGEST_SYSTEM_PROMPT,
@@ -1040,8 +1159,9 @@ async function buildWeeklyDigestRaw(
       if (response) {
         const parsed = normalizeCalmBriefingResponse(
           extractDigestJson(response),
+          promptedArticleIds,
         );
-        if (parsed) return parsed;
+        if (parsed) return { raw: parsed, source: 'ai' };
       }
     } catch (error) {
       console.warn(
@@ -1051,7 +1171,10 @@ async function buildWeeklyDigestRaw(
     }
   }
 
-  return buildDeterministicBriefing(articles, now, clusters, windowDays);
+  return {
+    raw: buildDeterministicBriefing(articles, now, clusters, windowDays),
+    source: 'fallback',
+  };
 }
 
 export function buildDeterministicBriefing(
@@ -1321,6 +1444,7 @@ function buildDigestResult(
   cacheHit: boolean,
   generatedAt: number,
   aiEnabled: boolean,
+  aiGenerated: boolean,
   inclusionCounts: DigestInclusionCounts,
   clusters: DigestCluster[],
   history: DigestHistoryEntry[],
@@ -1371,6 +1495,7 @@ function buildDigestResult(
     generatedAt,
     cacheHit,
     aiEnabled,
+    aiGenerated,
     windowDays,
     headline: raw.headline || briefing.headline,
     summary: raw.summary || briefing.summary,
@@ -1416,13 +1541,25 @@ export async function getWeeklyDigestArticles(
     allArticles,
     representatives.length,
   );
-  const signature = hashArticles(allArticles, windowStart, windowDays);
-  const cached = forceRefresh ? null : loadCache(db, cacheKey(windowDays));
-  const aiEnabled = Boolean(
-    db
-      .prepare('SELECT 1 FROM provider_configs WHERE enabled = 1 LIMIT 1')
-      .get(),
+  const aiState = getAiCacheState(db);
+  const signature = hashArticles(
+    allArticles,
+    windowDays,
+    formatWindowLabel(windowStart),
+    formatWindowLabel(windowEnd),
+    aiState.signature,
   );
+  const cacheEntry = forceRefresh ? null : loadCache(db, cacheKey(windowDays));
+  const matchingCache = cacheEntry?.signature === signature ? cacheEntry : null;
+  const cachedFallbackIsFresh = Boolean(
+    matchingCache?.source === 'fallback' &&
+    now - matchingCache.generatedAt < FALLBACK_CACHE_RETRY_MS,
+  );
+  const cached =
+    matchingCache &&
+    (matchingCache.source === 'ai' || !aiState.enabled || cachedFallbackIsFresh)
+      ? matchingCache
+      : null;
   const history = loadHistory(db);
 
   if (cached?.signature === signature) {
@@ -1435,15 +1572,16 @@ export async function getWeeklyDigestArticles(
       windowDays,
       true,
       cached.generatedAt,
-      aiEnabled,
+      aiState.enabled,
+      cached.source === 'ai',
       inclusionCounts,
       clusters,
       history,
     );
   }
 
-  const digestClient = aiEnabled ? await getConfiguredAiClient() : null;
-  const raw = await buildWeeklyDigestRaw(
+  const digestClient = aiState.enabled ? await getConfiguredAiClient() : null;
+  const { raw, source } = await buildWeeklyDigestRaw(
     allArticles,
     now,
     windowDays,
@@ -1455,6 +1593,7 @@ export async function getWeeklyDigestArticles(
     generatedAt: now,
     windowDays,
     raw,
+    source,
   });
   const nextHistory = saveHistory(db, {
     generatedAt: now,
@@ -1474,7 +1613,8 @@ export async function getWeeklyDigestArticles(
     windowDays,
     false,
     now,
-    aiEnabled,
+    aiState.enabled,
+    source === 'ai',
     inclusionCounts,
     clusters,
     nextHistory,
