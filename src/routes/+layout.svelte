@@ -1,12 +1,12 @@
 <script lang="ts">
   import '../app.css';
-  import { setContext } from 'svelte';
+  import { onMount, setContext, tick } from 'svelte';
   import { renderContent } from '$lib/utils/format';
   import { page } from '$app/stores';
   import { navigating } from '$app/state';
-  import { addToast, getToasts } from '$lib/stores/toast.svelte';
+  import { addToast, getToasts, removeToast } from '$lib/stores/toast.svelte';
   import { fade, fly } from 'svelte/transition';
-  import { invalidateAll } from '$app/navigation';
+  import { afterNavigate, invalidateAll } from '$app/navigation';
   import PWABanner from '$lib/components/PWABanner.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
@@ -25,6 +25,11 @@
   } from '$lib/offline';
 
   let sidebarOpen = $state(false);
+  let isMobileViewport = $state(false);
+  let sidebarEl = $state<HTMLElement | null>(null);
+  let mainContentEl = $state<HTMLElement | null>(null);
+  let mobileMoreButtonEl = $state<HTMLButtonElement | null>(null);
+  let sidebarOpener: HTMLElement | null = null;
   let showShortcuts = $state(false);
   let syncing = $state(false);
   let offlineState = $state<
@@ -35,14 +40,97 @@
   let addingFeed = $state(false);
   let showAddFeedModal = $state(false);
   let newFeedUrl = $state('');
+  let newFeedCategory = $state('');
+  let newFeedError = $state('');
+  let newFeedUrlInvalid = $state(false);
   let addFeedDialogEl = $state<HTMLDivElement | null>(null);
   let addFeedPreviouslyFocused: HTMLElement | null = null;
   const toasts = getToasts();
+  const sidebarFeedGroups = $derived.by(() => {
+    const groups = new Map<string, typeof data.feeds>();
+    for (const feed of data.feeds || []) {
+      const group = feed.category?.trim() || '';
+      const entries = groups.get(group) || [];
+      entries.push(feed);
+      groups.set(group, entries);
+    }
+    return [...groups].sort(([left], [right]) => left.localeCompare(right));
+  });
   let stopOfflineSync: (() => void) | null = null;
   let { children, data } = $props();
 
   let cachedReader = $state<HTMLDialogElement>();
   let cachedArticle = $state<OfflineArticle | null>(null);
+
+  onMount(() => {
+    const media = window.matchMedia('(max-width: 767px)');
+    const updateViewport = () => {
+      isMobileViewport = media.matches;
+      if (!media.matches) sidebarOpen = false;
+    };
+    updateViewport();
+    media.addEventListener('change', updateViewport);
+    return () => media.removeEventListener('change', updateViewport);
+  });
+
+  $effect(() => {
+    if (!isMobileViewport || !sidebarOpen || showAddFeedModal || showShortcuts)
+      return;
+
+    const sidebar = sidebarEl;
+    if (!sidebar) return;
+    const getFocusableElements = () =>
+      Array.from(
+        sidebar.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), summary, input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+
+    void tick().then(() => {
+      if (sidebarOpen && isMobileViewport) getFocusableElements()[0]?.focus();
+    });
+
+    const handleSidebarKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSidebar(true);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusableElements = getFocusableElements();
+      if (!focusableElements.length) {
+        event.preventDefault();
+        sidebar.focus();
+        return;
+      }
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      const active = document.activeElement;
+      if (!sidebar.contains(active)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleSidebarKeydown);
+    return () => document.removeEventListener('keydown', handleSidebarKeydown);
+  });
+
+  afterNavigate(() => {
+    if (!sidebarOpen || !isMobileViewport) {
+      sidebarOpen = false;
+      return;
+    }
+    sidebarOpen = false;
+    void tick().then(() => mainContentEl?.focus());
+  });
 
   setContext('openCachedArticle', async (article: OfflineArticle) => {
     if (!data.sessionId || !cachedReader) return;
@@ -60,7 +148,18 @@
     }
   });
 
-  setContext('openAddFeed', () => (showAddFeedModal = true));
+  function openAddFeedModal() {
+    addFeedPreviouslyFocused =
+      isMobileViewport && sidebarOpen
+        ? mobileMoreButtonEl
+        : (document.activeElement as HTMLElement | null);
+    if (isMobileViewport && sidebarOpen) closeSidebar(false);
+    newFeedError = '';
+    newFeedUrlInvalid = false;
+    showAddFeedModal = true;
+  }
+
+  setContext('openAddFeed', openAddFeedModal);
 
   function applyOfflineStatus(pendingCount: number, blocked = false) {
     queuedActions = pendingCount;
@@ -171,14 +270,20 @@
     if (!newFeedUrl.trim() || addingFeed) return;
 
     addingFeed = true;
+    newFeedError = '';
+    newFeedUrlInvalid = false;
     try {
       const res = await fetchWithCsrf('/api/feeds', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: newFeedUrl.trim() }),
+        body: JSON.stringify({
+          url: newFeedUrl.trim(),
+          category: newFeedCategory.trim(),
+        }),
       });
       if (res.ok) {
         newFeedUrl = '';
+        newFeedCategory = '';
         showAddFeedModal = false;
         const { addToast } = await import('$lib/stores/toast.svelte');
         addToast('Feed added successfully', 'success');
@@ -186,12 +291,11 @@
         await invalidateAll();
       } else {
         const errData = await res.json();
-        const { addToast } = await import('$lib/stores/toast.svelte');
-        addToast(errData.error || 'Failed to add feed', 'error');
+        newFeedError = errData.error || 'Failed to add feed';
+        newFeedUrlInvalid = errData.field === 'url';
       }
     } catch {
-      const { addToast } = await import('$lib/stores/toast.svelte');
-      addToast('Failed to add feed', 'error');
+      newFeedError = 'Failed to add feed. Check your connection and try again.';
     } finally {
       addingFeed = false;
     }
@@ -270,7 +374,9 @@
   $effect(() => {
     if (!showAddFeedModal) return;
 
-    addFeedPreviouslyFocused = document.activeElement as HTMLElement | null;
+    if (!addFeedPreviouslyFocused) {
+      addFeedPreviouslyFocused = document.activeElement as HTMLElement | null;
+    }
     requestAnimationFrame(() => addFeedDialogEl?.focus());
     const handleKeydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -393,6 +499,18 @@
     ['/', '/inbox', '/search', '/saved'].includes(item.href),
   );
 
+  function isCurrentNavItem(href: string): boolean {
+    const path = $page.url.pathname;
+    if (
+      (href === '/' || href === '/inbox') &&
+      $page.url.searchParams.has('category')
+    )
+      return false;
+    return href === '/'
+      ? path === '/'
+      : path === href || path.startsWith(`${href}/`);
+  }
+
   const adminItems = [
     {
       href: '/settings',
@@ -403,20 +521,19 @@
 
   let secondaryOpen = $state(false);
 
-  function toggleSidebar() {
-    sidebarOpen = !sidebarOpen;
+  function closeSidebar(restoreFocus = false) {
+    const focusTarget = sidebarOpener || mobileMoreButtonEl;
+    sidebarOpen = false;
+    if (restoreFocus && focusTarget) {
+      void tick().then(() => focusTarget.focus());
+    }
   }
 
   function openMore() {
+    sidebarOpener = document.activeElement as HTMLElement | null;
     secondaryOpen = true;
     sidebarOpen = true;
   }
-
-  $effect(() => {
-    if ($page.url.pathname) {
-      sidebarOpen = false;
-    }
-  });
 
   $effect(() => {
     const path = $page.url.pathname;
@@ -424,6 +541,26 @@
       secondaryOpen = true;
     }
   });
+
+  let newArticlesAvailable = $state(0);
+  let refreshingArticles = $state(false);
+  let articleRefreshVersion = $state(0);
+
+  async function showNewArticles() {
+    refreshingArticles = true;
+    const count = newArticlesAvailable;
+    try {
+      await invalidateAll();
+      articleRefreshVersion++;
+      newArticlesAvailable = Math.max(0, newArticlesAvailable - count);
+      await tick();
+      if (document.activeElement === document.body) mainContentEl?.focus();
+    } catch {
+      addToast('Could not load new articles', 'error');
+    } finally {
+      refreshingArticles = false;
+    }
+  }
 
   // Real-time updates via SSE
   $effect(() => {
@@ -487,15 +624,13 @@
         reconnectAttempt = 0;
       };
 
-      eventSource.addEventListener('new_articles', async (event) => {
+      eventSource.addEventListener('new_articles', (event) => {
         try {
           const payload = JSON.parse(event.data);
 
-          // Refresh the page data
-          await invalidateAll();
-
-          const { addToast } = await import('$lib/stores/toast.svelte');
-          addToast(`Synced ${payload.count} new articles`, 'info');
+          if (Number.isSafeInteger(payload.count) && payload.count > 0) {
+            newArticlesAvailable += payload.count;
+          }
         } catch (err) {
           console.error('[sse] Error handling new_articles event:', err);
         }
@@ -545,107 +680,167 @@
 <div class="grain-overlay" aria-hidden="true"></div>
 <div class="vignette" aria-hidden="true"></div>
 
-<div class="relative z-10 flex h-dvh flex-col">
-  <div class="flex flex-1 overflow-hidden">
-    <!-- Sidebar overlay (mobile) -->
-    {#if sidebarOpen}
-      <div
-        class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
-        onclick={toggleSidebar}
-        onkeydown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            toggleSidebar();
-          }
-        }}
-        role="button"
-        tabindex="0"
-        aria-label="Close navigation"
-      ></div>
-    {/if}
+{#if data.sessionId}
+  <div class="relative z-10 flex h-dvh flex-col">
+    <div class="flex flex-1 overflow-hidden">
+      <!-- Sidebar overlay (mobile) -->
+      {#if sidebarOpen}
+        <div
+          class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+          onclick={() => closeSidebar(true)}
+          onkeydown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              closeSidebar(true);
+            }
+          }}
+          role="button"
+          tabindex="0"
+          aria-label="Close navigation"
+        ></div>
+      {/if}
 
-    <!-- Sidebar -->
-    <aside
-      id="app-sidebar"
-      class="glass-sidebar fixed left-0 top-0 z-50 h-dvh w-56 transform transition-transform duration-300 ease-out max-md:pt-[env(safe-area-inset-top)] md:static md:top-0 md:h-dvh md:translate-x-0"
-      class:translate-x-0={sidebarOpen}
-      class:-translate-x-full={!sidebarOpen}
-    >
-      <div class="hidden p-2 md:block">
-        <a
-          href="/"
-          data-sveltekit-preload-data
-          class="inline-flex items-center gap-2 no-underline"
-        >
-          <BrandMark size={32} class="shrink-0" />
-          <span class="gradient-text text-lg font-bold tracking-tight">
-            Feed Me <span class="italic">Maybe</span>
-          </span>
-        </a>
-      </div>
-
-      <div
-        class="flex h-[calc(100%-5rem)] flex-col justify-between p-3 md:h-[calc(100%-4rem)]"
+      <!-- Sidebar -->
+      <aside
+        id="app-sidebar"
+        bind:this={sidebarEl}
+        class="glass-sidebar fixed left-0 top-0 z-50 h-dvh w-56 transform transition-transform duration-300 ease-out max-md:pt-[env(safe-area-inset-top)] md:static md:top-0 md:h-dvh md:translate-x-0 {sidebarOpen
+          ? ''
+          : 'max-md:invisible'}"
+        class:translate-x-0={sidebarOpen}
+        class:-translate-x-full={!sidebarOpen}
+        inert={isMobileViewport && !sidebarOpen}
+        role={isMobileViewport && sidebarOpen ? 'dialog' : undefined}
+        aria-modal={isMobileViewport && sidebarOpen ? 'true' : undefined}
+        aria-label="Application navigation"
       >
-        <nav class="flex flex-col gap-1 overflow-y-auto" aria-label="Primary">
-          {#each navItems as item (item.href)}
-            <a
-              href={item.href}
-              data-sveltekit-preload-data
-              class={'nav-item' +
-                ($page.url.pathname === item.href ? ' nav-item-active' : '')}
-            >
-              <span class="flex h-5 w-5 items-center justify-center"
-                >{@html item.icon}</span
-              >
-              <span class="min-w-0 flex-1 truncate">{item.label}</span>
-            </a>
-          {/each}
+        <div class="hidden p-2 md:block">
+          <a
+            href="/"
+            data-sveltekit-preload-data
+            class="inline-flex items-center gap-2 no-underline"
+          >
+            <BrandMark size={32} class="shrink-0" />
+            <span class="gradient-text text-lg font-bold tracking-tight">
+              Feed Me <span class="italic">Maybe</span>
+            </span>
+          </a>
+        </div>
 
-          {#if data.feeds && data.feeds.length > 0}
-            <div class="mt-4 flex items-center justify-between px-3 pb-1">
-              <div
-                class="text-[10px] font-bold uppercase tracking-widest"
-                style="color: var(--color-surface-300);"
+        <div
+          class="flex h-[calc(100%-5rem)] flex-col justify-between p-3 md:h-[calc(100%-4rem)]"
+        >
+          <nav
+            class="flex flex-col gap-1 overflow-y-auto"
+            aria-label="Primary navigation"
+          >
+            {#each navItems as item (item.href)}
+              <a
+                href={item.href}
+                data-sveltekit-preload-data
+                class={'nav-item' +
+                  (isCurrentNavItem(item.href) ? ' nav-item-active' : '')}
+                aria-current={isCurrentNavItem(item.href) ? 'page' : undefined}
               >
-                Sources
+                <span class="flex h-5 w-5 items-center justify-center"
+                  >{@html item.icon}</span
+                >
+                <span class="min-w-0 flex-1 truncate">{item.label}</span>
+              </a>
+            {/each}
+
+            {#if data.feeds && data.feeds.length > 0}
+              <div class="mt-4 flex items-center justify-between px-3 pb-1">
+                <div
+                  class="text-[10px] font-bold uppercase tracking-widest"
+                  style="color: var(--color-surface-300);"
+                >
+                  Sources
+                </div>
+                <button
+                  class="nav-icon-button"
+                  onclick={openAddFeedModal}
+                  aria-label="Add feed"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="3"
+                    ><line x1="12" y1="5" x2="12" y2="19" /><line
+                      x1="5"
+                      y1="12"
+                      x2="19"
+                      y2="12"
+                    /></svg
+                  >
+                </button>
               </div>
-              <button
-                class="nav-icon-button"
-                onclick={() => (showAddFeedModal = true)}
-                aria-label="Add feed"
+              <details
+                class="nav-feed-group"
+                open={$page.url.pathname.startsWith('/feeds/') ||
+                  $page.url.searchParams.has('category')}
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="3"
-                  ><line x1="12" y1="5" x2="12" y2="19" /><line
-                    x1="5"
-                    y1="12"
-                    x2="19"
-                    y2="12"
-                  /></svg
-                >
-              </button>
-            </div>
-            <details
-              class="nav-feed-group"
-              open={$page.url.pathname.startsWith('/feeds/')}
-            >
-              <summary class="nav-feed-summary">
-                <span>Browse sources</span>
-                <span class="text-[10px] text-surface-300"
-                  >{data.feeds.length}</span
-                >
-              </summary>
-              <div class="mt-1 flex flex-col gap-1">
-                {#each data.feeds as feed (feed.id)}
+                <summary class="nav-feed-summary">
+                  <span>Browse sources</span>
+                  <span class="text-[10px] text-surface-300"
+                    >{data.feeds.length}</span
+                  >
+                </summary>
+                <div class="mt-1 flex flex-col gap-1">
+                  {#each sidebarFeedGroups as [category, feeds] (category)}
+                    {#if category}
+                      <details
+                        open={feeds.some(
+                          (feed) => $page.url.pathname === `/feeds/${feed.id}`,
+                        ) ||
+                          $page.url.searchParams.get('category') === category}
+                      >
+                        <summary class="nav-feed-summary">
+                          <span>{category}</span>
+                          <span
+                            >{feeds.reduce(
+                              (total, feed) => total + feed.unread_count,
+                              0,
+                            )} unread</span
+                          >
+                        </summary>
+                        <a
+                          class="nav-item nav-item-subtle"
+                          href="/?category={encodeURIComponent(category)}"
+                          aria-current={$page.url.pathname === '/' &&
+                          $page.url.searchParams.get('category') === category
+                            ? 'page'
+                            : undefined}>All {category}</a
+                        >
+                        <a
+                          class="nav-item nav-item-subtle"
+                          href="/inbox?category={encodeURIComponent(category)}"
+                          aria-current={$page.url.pathname === '/inbox' &&
+                          $page.url.searchParams.get('category') === category
+                            ? 'page'
+                            : undefined}>Unread {category}</a
+                        >
+                        {#each feeds as feed (feed.id)}
+                          {@render feedLink(feed)}
+                        {/each}
+                      </details>
+                    {:else}
+                      {#each feeds as feed (feed.id)}
+                        {@render feedLink(feed)}
+                      {/each}
+                    {/if}
+                  {/each}
+                </div>
+                {#snippet feedLink(feed: (typeof data.feeds)[number])}
                   <a
                     href="/feeds/{feed.id}"
+                    aria-current={$page.url.pathname === `/feeds/${feed.id}`
+                      ? 'page'
+                      : undefined}
                     data-sveltekit-preload-data
                     class={'nav-item nav-item-subtle' +
                       ($page.url.pathname === `/feeds/${feed.id}`
@@ -687,95 +882,99 @@
                       >
                     {/if}
                   </a>
-                {/each}
-              </div>
-            </details>
-          {/if}
+                {/snippet}
+              </details>
+            {/if}
 
-          <button
-            class="nav-item mt-4 hidden w-full items-center gap-3 bg-transparent text-left md:flex"
-            onclick={handleManualSync}
-            disabled={syncing}
-          >
-            <span class="flex h-5 w-5 items-center justify-center">
-              {#if syncing}
-                <div
-                  class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
-                ></div>
-              {:else}
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  ><path
-                    d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
-                  /><path d="M3 3v5h5" /><path
-                    d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"
-                  /><path d="M16 16h5v5" /></svg
-                >
-              {/if}
-            </span>
-            <span>{syncing ? 'Syncing...' : 'Sync now'}</span>
-          </button>
-        </nav>
-
-        <nav
-          class="mt-auto flex flex-col gap-1 border-t pt-3"
-          style="border-color: color-mix(in oklch, var(--color-surface-100) 5%, transparent);"
-          aria-label="More"
-        >
-          <button
-            class="nav-section-toggle"
-            onclick={() => (secondaryOpen = !secondaryOpen)}
-            aria-expanded={secondaryOpen}
-            aria-controls="secondary-navigation"
-          >
-            <span class="flex items-center gap-3">
-              <span
-                class="flex h-5 w-5 items-center justify-center text-surface-300"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  ><circle cx="5" cy="12" r="1" /><circle
-                    cx="12"
-                    cy="12"
-                    r="1"
-                  /><circle cx="19" cy="12" r="1" /></svg
-                >
-              </span>
-              <span>More</span>
-            </span>
-            <svg
-              class="nav-section-chevron"
-              class:nav-section-chevron-open={secondaryOpen}
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg
+            <button
+              class="nav-item mt-4 hidden w-full items-center gap-3 bg-transparent text-left md:flex"
+              onclick={handleManualSync}
+              disabled={syncing}
+              aria-busy={syncing}
+              type="button"
             >
-          </button>
+              <span class="flex h-5 w-5 items-center justify-center">
+                {#if syncing}
+                  <div
+                    class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+                  ></div>
+                {:else}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><path
+                      d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
+                    /><path d="M3 3v5h5" /><path
+                      d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"
+                    /><path d="M16 16h5v5" /></svg
+                  >
+                {/if}
+              </span>
+              <span>{syncing ? 'Syncing...' : 'Sync now'}</span>
+            </button>
+          </nav>
 
-          {#if secondaryOpen}
-            <div id="secondary-navigation" class="flex flex-col gap-1">
+          <nav
+            class="mt-auto flex flex-col gap-1 border-t pt-3"
+            style="border-color: color-mix(in oklch, var(--color-surface-100) 5%, transparent);"
+            aria-label="More"
+          >
+            <button
+              class="nav-section-toggle"
+              onclick={() => (secondaryOpen = !secondaryOpen)}
+              aria-expanded={secondaryOpen}
+              aria-controls="secondary-navigation"
+            >
+              <span class="flex items-center gap-3">
+                <span
+                  class="flex h-5 w-5 items-center justify-center text-surface-300"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><circle cx="5" cy="12" r="1" /><circle
+                      cx="12"
+                      cy="12"
+                      r="1"
+                    /><circle cx="19" cy="12" r="1" /></svg
+                  >
+                </span>
+                <span>More</span>
+              </span>
+              <svg
+                class="nav-section-chevron"
+                class:nav-section-chevron-open={secondaryOpen}
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg
+              >
+            </button>
+
+            <div
+              id="secondary-navigation"
+              class="flex flex-col gap-1"
+              hidden={!secondaryOpen}
+            >
               <a
                 href="/recovery"
                 data-sveltekit-preload-data
@@ -783,6 +982,9 @@
                   ($page.url.pathname.startsWith('/recovery')
                     ? ' nav-item-active'
                     : '')}
+                aria-current={$page.url.pathname.startsWith('/recovery')
+                  ? 'page'
+                  : undefined}
               >
                 <span class="flex h-5 w-5 items-center justify-center">
                   <svg
@@ -804,378 +1006,482 @@
                   >Review hidden &amp; rejected</span
                 >
               </a>
-            </div>
-          {/if}
-          {#if secondaryOpen}
-            {#each adminItems as item (item.href)}
-              <a
-                href={item.href}
-                data-sveltekit-preload-data
-                class={'nav-item' +
-                  ($page.url.pathname.startsWith(item.href)
-                    ? ' nav-item-active'
-                    : '')}
-              >
-                <span class="flex h-5 w-5 items-center justify-center"
-                  >{@html item.icon}</span
+              {#each adminItems as item (item.href)}
+                <a
+                  href={item.href}
+                  data-sveltekit-preload-data
+                  class={'nav-item' +
+                    ($page.url.pathname.startsWith(item.href)
+                      ? ' nav-item-active'
+                      : '')}
+                  aria-current={$page.url.pathname.startsWith(item.href)
+                    ? 'page'
+                    : undefined}
                 >
-                <span>{item.label}</span>
-              </a>
-            {/each}
+                  <span class="flex h-5 w-5 items-center justify-center"
+                    >{@html item.icon}</span
+                  >
+                  <span>{item.label}</span>
+                </a>
+              {/each}
 
-            <button
-              class="nav-item bg-transparent text-left"
-              onclick={() => (showShortcuts = true)}
-            >
-              <span class="flex h-5 w-5 items-center justify-center">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  ><rect
-                    width="18"
-                    height="12"
-                    x="3"
-                    y="6"
-                    rx="2"
-                    ry="2"
-                  /><path d="M7 10h.01" /><path d="M11 10h.01" /><path
-                    d="M15 10h.01"
-                  /><path d="M17 10h.01" /><path d="M7 14h.01" /><path
-                    d="M11 14h.01"
-                  /><path d="M15 14h.01" /><path d="M17 14h.01" /></svg
-                >
-              </span>
-              <span>Keyboard Shortcuts</span>
-            </button>
-
-            <button
-              class="nav-item bg-transparent text-left"
-              onclick={logout}
-              type="button"
-            >
-              <span class="flex h-5 w-5 items-center justify-center">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  ><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path
-                    d="M21 19V5a2 2 0 0 0-2-2h-6"
-                  /></svg
-                >
-              </span>
-              <span>Log out</span>
-            </button>
-          {/if}
-
-          <div
-            class="sync-status"
-            class:sync-status-attention={syncNeedsAttention}
-            aria-live="polite"
-          >
-            <span
-              class="sync-status-dot"
-              class:sync-status-dot-offline={offlineState === 'offline'}
-              class:sync-status-dot-attention={offlineState === 'blocked'}
-            ></span>
-            <span>
-              {#if offlineState === 'offline'}
-                Offline · cached
-              {:else if offlineState === 'blocked'}
-                Sync needs attention
-              {:else if offlineState === 'queued'}
-                {queuedActions} action{queuedActions === 1 ? '' : 's'} queued
-              {:else if offlineState === 'syncing'}
-                Syncing…
-              {:else}
-                Up to date
-              {/if}
-            </span>
-            {#if offlineState === 'blocked'}
               <button
-                class="ml-2 text-xs underline underline-offset-2"
-                type="button"
-                disabled={syncing || isOffline()}
-                onclick={retryOfflineActions}
+                class="nav-item bg-transparent text-left"
+                onclick={() => (showShortcuts = true)}
               >
-                Retry
+                <span class="flex h-5 w-5 items-center justify-center">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><rect
+                      width="18"
+                      height="12"
+                      x="3"
+                      y="6"
+                      rx="2"
+                      ry="2"
+                    /><path d="M7 10h.01" /><path d="M11 10h.01" /><path
+                      d="M15 10h.01"
+                    /><path d="M17 10h.01" /><path d="M7 14h.01" /><path
+                      d="M11 14h.01"
+                    /><path d="M15 14h.01" /><path d="M17 14h.01" /></svg
+                  >
+                </span>
+                <span>Keyboard Shortcuts</span>
               </button>
-            {/if}
-          </div>
-        </nav>
-      </div>
-    </aside>
 
-    <!-- Main Content -->
-    <main
-      id="main-content"
-      tabindex="-1"
-      class="relative flex-1 overflow-auto md:p-8"
-    >
-      {#key $page.url.pathname}
-        {@render children()}
-      {/key}
-    </main>
-  </div>
+              <button
+                class="nav-item bg-transparent text-left"
+                onclick={logout}
+                type="button"
+              >
+                <span class="flex h-5 w-5 items-center justify-center">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    ><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path
+                      d="M21 19V5a2 2 0 0 0-2-2h-6"
+                    /></svg
+                  >
+                </span>
+                <span>Log out</span>
+              </button>
+            </div>
 
-  {#if offlineState !== 'online'}
-    <div
-      class="bg-surface-900 px-3 py-1 text-center text-xs text-surface-200 md:hidden"
-      role="status"
-    >
-      {#if offlineState === 'blocked'}
-        <span>Sync needs attention</span>
-        <button
-          class="ml-2 underline underline-offset-2"
-          type="button"
-          disabled={syncing || isOffline()}
-          onclick={retryOfflineActions}
-        >
-          Retry
-        </button>
-      {:else if offlineState === 'syncing'}
-        Syncing…
-      {:else}
-        {offlineState === 'offline'
-          ? 'Offline'
-          : 'Online'}{#if queuedActions > 0}
-          · {queuedActions} queued{/if}
-      {/if}
-    </div>
-  {/if}
-
-  <nav class="mobile-core-nav md:hidden" aria-label="Primary">
-    {#each mobileCoreItems as item (item.href)}
-      <a
-        href={item.href}
-        data-sveltekit-preload-data
-        class={'mobile-core-nav-link' +
-          ($page.url.pathname === item.href
-            ? ' mobile-core-nav-link-active'
-            : '')}
-      >
-        <span class="mobile-core-nav-icon">{@html item.icon}</span>
-        <span>{item.label}</span>
-      </a>
-    {/each}
-    <button
-      class={'mobile-core-nav-link' +
-        (sidebarOpen ? ' mobile-core-nav-link-active' : '')}
-      onclick={openMore}
-      aria-expanded={sidebarOpen}
-      aria-controls="app-sidebar"
-      type="button"
-    >
-      <span class="mobile-core-nav-icon">
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          ><circle cx="5" cy="12" r="1" /><circle
-            cx="12"
-            cy="12"
-            r="1"
-          /><circle cx="19" cy="12" r="1" /></svg
-        >
-      </span>
-      <span>More</span>
-    </button>
-  </nav>
-
-  {#if navigating.to?.url?.pathname?.startsWith('/articles/')}
-    <div
-      class="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-4 bg-surface-950/80 backdrop-blur-sm"
-      transition:fade={{ duration: 200 }}
-    >
-      <div
-        class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
-      ></div>
-      <p class="text-sm font-medium text-surface-200">
-        {navigating.to?.url?.searchParams?.get('mode') === 'archive'
-          ? 'Loading from Archive...'
-          : 'Loading article...'}
-      </p>
-      {#if navigating.to?.url?.searchParams?.get('mode') === 'archive'}
-        <p class="max-w-xs text-center text-xs text-surface-300">
-          This may take a few moments as we retrieve the archived version.
-        </p>
-      {:else}
-        <p class="max-w-xs text-center text-xs text-surface-300">
-          We’re opening the article in the reader.
-        </p>
-      {/if}
-    </div>
-  {/if}
-
-  <dialog
-    bind:this={cachedReader}
-    aria-labelledby="offline-article-title"
-    class="fixed inset-0 m-auto max-h-[90dvh] w-[min(45rem,calc(100%-2rem))] overflow-auto rounded-md bg-surface-900 p-5 text-surface-100 backdrop:bg-black/70 md:p-8"
-    onclose={() => (cachedArticle = null)}
-  >
-    <form method="dialog" class="mb-4 flex items-center justify-between gap-3">
-      <span class="text-sm text-surface-300">Offline article</span>
-      <button type="submit" class="btn preset-filled-surface-200-800"
-        >Close</button
-      >
-    </form>
-    {#if cachedArticle}
-      <h1 id="offline-article-title" class="mb-4 text-2xl font-semibold">
-        {cachedArticle.title}
-      </h1>
-      {#if cachedArticle.content || cachedArticle.summary}
-        <div class="prose prose-invert max-w-none">
-          {@html renderContent(cachedArticle.content || cachedArticle.summary)}
+            <div
+              class="sync-status"
+              class:sync-status-attention={syncNeedsAttention}
+              aria-live="polite"
+            >
+              <span
+                class="sync-status-dot"
+                class:sync-status-dot-offline={offlineState === 'offline'}
+                class:sync-status-dot-attention={offlineState === 'blocked'}
+              ></span>
+              <span>
+                {#if offlineState === 'offline'}
+                  Offline · cached
+                {:else if offlineState === 'blocked'}
+                  Sync needs attention
+                {:else if offlineState === 'queued'}
+                  {queuedActions} action{queuedActions === 1 ? '' : 's'} queued
+                {:else if offlineState === 'syncing'}
+                  Syncing…
+                {:else}
+                  Up to date
+                {/if}
+              </span>
+              {#if offlineState === 'blocked'}
+                <button
+                  class="ml-2 text-xs underline underline-offset-2"
+                  type="button"
+                  disabled={syncing || isOffline()}
+                  onclick={retryOfflineActions}
+                >
+                  Retry
+                </button>
+              {/if}
+            </div>
+          </nav>
         </div>
-      {:else}
-        <p>This article’s text is unavailable offline.</p>
-      {/if}
-    {/if}
-  </dialog>
+      </aside>
 
-  <!-- Toast container -->
-  <div
-    class="fixed bottom-5 right-5 z-50 flex max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5"
-    aria-live="polite"
-    aria-atomic="false"
-  >
-    {#each toasts as toast (toast.id)}
-      <div
-        in:fly={{ y: 12, duration: 280, delay: 60 }}
-        out:fly={{ y: 8, duration: 200 }}
-        class="toast-glass rounded-[2px] px-4 py-2.5 text-sm font-medium text-white shadow-xl transition-all duration-300"
-        role={toast.type === 'error' ? 'alert' : 'status'}
-        class:toast-success={toast.type === 'success'}
-        class:toast-error={toast.type === 'error'}
-        class:toast-info={toast.type === 'info'}
-        class:toast-warning={toast.type === 'warning'}
+      <!-- Main Content -->
+      <main
+        id="main-content"
+        bind:this={mainContentEl}
+        tabindex="-1"
+        class="relative flex-1 overflow-auto md:p-8"
+        aria-busy={Boolean(navigating.to)}
+        inert={isMobileViewport && sidebarOpen}
       >
-        <span>{toast.message}</span>
-        {#if toast.action}
+        {#if newArticlesAvailable > 0 && ['/', '/inbox', '/feeds'].includes($page.url.pathname)}
           <button
             type="button"
-            class="ml-3 underline decoration-primary-300 underline-offset-2 hover:text-primary-200"
-            onclick={() => toast.action?.run()}>{toast.action.label}</button
+            class="btn preset-tonal m-3"
+            disabled={refreshingArticles}
+            aria-busy={refreshingArticles}
+            onclick={showNewArticles}
           >
+            {refreshingArticles
+              ? 'Loading…'
+              : `Load ${newArticlesAvailable} new article${newArticlesAvailable === 1 ? '' : 's'}`}
+          </button>
+        {/if}
+        {#key `${$page.url.pathname}:${articleRefreshVersion}`}
+          {@render children()}
+        {/key}
+      </main>
+    </div>
+
+    {#if offlineState !== 'online'}
+      <div
+        class="bg-surface-900 px-3 py-1 text-center text-xs text-surface-200 md:hidden"
+        role="status"
+        inert={isMobileViewport && sidebarOpen}
+      >
+        {#if offlineState === 'blocked'}
+          <span>Sync needs attention</span>
+          <button
+            class="ml-2 underline underline-offset-2"
+            type="button"
+            disabled={syncing || isOffline()}
+            onclick={retryOfflineActions}
+          >
+            Retry
+          </button>
+        {:else if offlineState === 'syncing'}
+          Syncing…
+        {:else}
+          {offlineState === 'offline'
+            ? 'Offline'
+            : 'Online'}{#if queuedActions > 0}
+            · {queuedActions} queued{/if}
         {/if}
       </div>
-    {/each}
-  </div>
+    {/if}
 
-  {#if showAddFeedModal}
-    <div
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-md"
-      transition:fade={{ duration: 200 }}
-      onclick={(event) => {
-        if (event.target === event.currentTarget) showAddFeedModal = false;
-      }}
-      role="presentation"
+    <nav
+      class="mobile-core-nav md:hidden"
+      aria-label="Mobile primary navigation"
+      inert={isMobileViewport && sidebarOpen}
     >
-      <div
-        bind:this={addFeedDialogEl}
-        class="glass-card w-full max-w-md p-6 shadow-2xl"
-        transition:fly={{ y: 20, duration: 300 }}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-feed-title"
-        tabindex="-1"
+      {#each mobileCoreItems as item (item.href)}
+        <a
+          href={item.href}
+          data-sveltekit-preload-data
+          class={'mobile-core-nav-link' +
+            (isCurrentNavItem(item.href) ? ' mobile-core-nav-link-active' : '')}
+          aria-current={isCurrentNavItem(item.href) ? 'page' : undefined}
+        >
+          <span class="mobile-core-nav-icon">{@html item.icon}</span>
+          <span>{item.label}</span>
+        </a>
+      {/each}
+      <button
+        class={'mobile-core-nav-link' +
+          (sidebarOpen ? ' mobile-core-nav-link-active' : '')}
+        onclick={openMore}
+        bind:this={mobileMoreButtonEl}
+        aria-expanded={sidebarOpen}
+        aria-controls="app-sidebar"
+        type="button"
       >
-        <div class="mb-4 flex items-center justify-between">
-          <h3 id="add-feed-title" class="text-lg font-bold">Add New Feed</h3>
-          <button
-            class="btn-icon"
-            onclick={() => (showAddFeedModal = false)}
-            aria-label="Close"
+        <span class="mobile-core-nav-icon">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><circle cx="5" cy="12" r="1" /><circle
+              cx="12"
+              cy="12"
+              r="1"
+            /><circle cx="19" cy="12" r="1" /></svg
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
-            >
-          </button>
-        </div>
+        </span>
+        <span>More</span>
+      </button>
+    </nav>
 
-        <form onsubmit={addFeed} class="space-y-4">
-          <label class="label">
-            <span class="mb-1 block text-sm font-medium">Feed URL</span>
-            <input
-              type="url"
-              bind:value={newFeedUrl}
-              placeholder="https://example.com/rss"
-              class="input glass-input w-full"
-              required
-              disabled={addingFeed}
-            />
-          </label>
+    {#if navigating.to?.url?.pathname?.startsWith('/articles/')}
+      <div
+        class="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-4 bg-surface-950/80 backdrop-blur-sm"
+        transition:fade={{ duration: 200 }}
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <div
+          class="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
+        ></div>
+        <p class="text-sm font-medium text-surface-200">
+          {navigating.to?.url?.searchParams?.get('mode') === 'archive'
+            ? 'Loading from Archive...'
+            : 'Loading article...'}
+        </p>
+        {#if navigating.to?.url?.searchParams?.get('mode') === 'archive'}
+          <p class="max-w-xs text-center text-xs text-surface-300">
+            This may take a few moments as we retrieve the archived version.
+          </p>
+        {:else}
+          <p class="max-w-xs text-center text-xs text-surface-300">
+            We’re opening the article in the reader.
+          </p>
+        {/if}
+      </div>
+    {/if}
 
-          <div class="flex justify-end gap-3 pt-2">
+    <dialog
+      bind:this={cachedReader}
+      aria-labelledby="offline-article-title"
+      class="fixed inset-0 m-auto max-h-[90dvh] w-[min(45rem,calc(100%-2rem))] overflow-auto rounded-md bg-surface-900 p-5 text-surface-100 backdrop:bg-black/70 md:p-8"
+      onclose={() => (cachedArticle = null)}
+    >
+      <form
+        method="dialog"
+        class="mb-4 flex items-center justify-between gap-3"
+      >
+        <span class="text-sm text-surface-300">Offline article</span>
+        <button type="submit" class="btn preset-filled-surface-200-800"
+          >Close</button
+        >
+      </form>
+      {#if cachedArticle}
+        <h1 id="offline-article-title" class="mb-4 text-2xl font-semibold">
+          {cachedArticle.title}
+        </h1>
+        {#if cachedArticle.content || cachedArticle.summary}
+          <div class="prose prose-invert max-w-none">
+            {@html renderContent(
+              cachedArticle.content || cachedArticle.summary,
+            )}
+          </div>
+        {:else}
+          <p>This article’s text is unavailable offline.</p>
+        {/if}
+      {/if}
+    </dialog>
+
+    <!-- Toast container -->
+    <div
+      class="fixed right-5 z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5 {$page.url.pathname.startsWith(
+        '/articles/',
+      )
+        ? 'bottom-[calc(11rem+env(safe-area-inset-bottom))]'
+        : 'bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))]'}"
+      aria-live="polite"
+      aria-atomic="false"
+    >
+      {#each toasts as toast (toast.id)}
+        <div
+          in:fly={{ y: 12, duration: 280, delay: 60 }}
+          out:fly={{ y: 8, duration: 200 }}
+          class="toast-glass rounded-[2px] px-4 py-2.5 text-sm font-medium text-white shadow-xl transition-all duration-300"
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          class:toast-success={toast.type === 'success'}
+          class:toast-error={toast.type === 'error'}
+          class:toast-info={toast.type === 'info'}
+          class:toast-warning={toast.type === 'warning'}
+        >
+          <span>{toast.message}</span>
+          {#if toast.action}
             <button
               type="button"
-              class="btn preset-tonal"
-              onclick={() => (showAddFeedModal = false)}
-              disabled={addingFeed}
+              class="ml-3 underline decoration-primary-300 underline-offset-2 hover:text-primary-200"
+              onclick={async (event) => {
+                const button = event.currentTarget;
+                await toast.action?.run();
+                if (document.activeElement === button) {
+                  document.getElementById('main-content')?.focus();
+                }
+                removeToast(toast.id);
+              }}>{toast.action.label}</button
             >
-              Cancel
-            </button>
             <button
-              type="submit"
-              class="btn preset-filled-primary-500 flex items-center gap-2"
-              disabled={addingFeed || !newFeedUrl.trim()}
+              type="button"
+              class="ml-3 underline decoration-primary-300 underline-offset-2 hover:text-primary-200"
+              onclick={(event) => {
+                if (document.activeElement === event.currentTarget) {
+                  document.getElementById('main-content')?.focus();
+                }
+                removeToast(toast.id);
+              }}>Dismiss</button
             >
-              {#if addingFeed}
-                <svg
-                  class="h-4 w-4 animate-spin"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    class="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                  ></circle>
-                  <path
-                    class="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  ></path>
-                </svg>
-                Adding...
-              {:else}
-                Add Feed
-              {/if}
+          {/if}
+        </div>
+      {/each}
+    </div>
+
+    {#if showAddFeedModal}
+      <div
+        class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-md"
+        transition:fade={{ duration: 200 }}
+        onclick={(event) => {
+          if (event.target === event.currentTarget) showAddFeedModal = false;
+        }}
+        role="presentation"
+      >
+        <div
+          bind:this={addFeedDialogEl}
+          class="glass-card w-full max-w-md p-6 shadow-2xl"
+          transition:fly={{ y: 20, duration: 300 }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-feed-title"
+          tabindex="-1"
+        >
+          <div class="mb-4 flex items-center justify-between">
+            <h3 id="add-feed-title" class="text-lg font-bold">Add New Feed</h3>
+            <button
+              class="btn-icon"
+              onclick={() => (showAddFeedModal = false)}
+              aria-label="Close"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
+              >
             </button>
           </div>
-        </form>
-      </div>
-    </div>
-  {/if}
 
-  <PWABanner />
-  <KeyboardShortcuts bind:open={showShortcuts} />
-</div>
+          <form
+            onsubmit={addFeed}
+            class="space-y-4"
+            aria-describedby={newFeedError && !newFeedUrlInvalid
+              ? 'new-feed-error'
+              : undefined}
+          >
+            <label class="label">
+              <span class="mb-1 block text-sm font-medium">Feed URL</span>
+              <input
+                id="new-feed-url"
+                type="url"
+                bind:value={newFeedUrl}
+                oninput={() => {
+                  newFeedError = '';
+                  newFeedUrlInvalid = false;
+                }}
+                placeholder="https://example.com/rss"
+                class="input glass-input w-full"
+                aria-invalid={newFeedUrlInvalid ? 'true' : undefined}
+                aria-describedby={newFeedUrlInvalid
+                  ? 'new-feed-url-help new-feed-error'
+                  : 'new-feed-url-help'}
+                required
+                disabled={addingFeed}
+              />
+              <span
+                id="new-feed-url-help"
+                class="mt-1 block text-xs text-surface-300"
+              >
+                Enter a public RSS, website, or Reddit feed URL.
+              </span>
+            </label>
+
+            <label class="label">
+              <span class="mb-1 block text-sm font-medium">Category</span>
+              <input
+                class="input glass-input w-full"
+                bind:value={newFeedCategory}
+                list="feed-categories"
+                disabled={addingFeed}
+              />
+            </label>
+            <datalist id="feed-categories">
+              {#each sidebarFeedGroups as [category] (category)}
+                {#if category}<option value={category}></option>{/if}
+              {/each}
+            </datalist>
+
+            {#if newFeedError}
+              <p
+                id="new-feed-error"
+                class="text-sm text-error-300"
+                role="alert"
+              >
+                {newFeedError}
+              </p>
+            {/if}
+
+            <div class="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                class="btn preset-tonal"
+                onclick={() => (showAddFeedModal = false)}
+                disabled={addingFeed}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                class="btn preset-filled-primary-500 flex items-center gap-2"
+                disabled={addingFeed || !newFeedUrl.trim()}
+              >
+                {#if addingFeed}
+                  <svg
+                    class="h-4 w-4 animate-spin"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  Adding...
+                {:else}
+                  Add Feed
+                {/if}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    {/if}
+
+    <PWABanner />
+    <KeyboardShortcuts
+      bind:open={showShortcuts}
+      reader={$page.url.pathname.startsWith('/articles/')}
+    />
+  </div>
+{:else}
+  <main id="main-content" tabindex="-1" class="relative z-10 min-h-dvh">
+    {@render children()}
+  </main>
+{/if}

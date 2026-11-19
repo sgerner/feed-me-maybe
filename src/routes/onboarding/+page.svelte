@@ -9,18 +9,30 @@
   let feedTitle = $state('');
   let loading = $state(false);
   let importing = $state(false);
-  let error = $state('');
+  let feedError = $state('');
+  let feedUrlInvalid = $state(false);
+  let opmlError = $state('');
+  let feedImportStatus = $state('');
+  let feedImportStatusKind = $state<'success' | 'warning' | 'error' | 'info'>(
+    'info',
+  );
+  let setupError = $state('');
 
-  function finishFeeds() {
+  function finishFeeds(preserveImportStatus = false) {
     step = 2;
-    error = '';
+    feedError = '';
+    feedUrlInvalid = false;
+    opmlError = '';
+    setupError = '';
+    if (!preserveImportStatus) feedImportStatus = '';
   }
 
   async function addFeed() {
     if (!feedUrl.trim()) return;
 
     loading = true;
-    error = '';
+    feedError = '';
+    feedUrlInvalid = false;
     try {
       const res = await fetchWithCsrf('/api/feeds', {
         method: 'POST',
@@ -29,14 +41,15 @@
       });
       if (!res.ok) {
         const d = await res.json();
-        error = d.error || 'Failed to add feed';
+        feedError = d.error || 'Failed to add feed';
+        feedUrlInvalid = d.field === 'url';
         return;
       }
       feedUrl = '';
       feedTitle = '';
       finishFeeds();
     } catch {
-      error = 'Connection error';
+      feedError = 'Connection error';
     } finally {
       loading = false;
     }
@@ -51,7 +64,7 @@
       if (!file) return;
 
       importing = true;
-      error = '';
+      opmlError = '';
 
       try {
         const text = await file.text();
@@ -63,13 +76,38 @@
 
         if (!res.ok) {
           const d = await res.json();
-          error = d.error || 'Failed to import OPML';
+          opmlError = d.error || 'Failed to import OPML';
           return;
         }
 
-        finishFeeds();
+        const result = await res.json();
+        const importedCount = Number.isInteger(result.imported)
+          ? result.imported
+          : 0;
+        const importErrors = Array.isArray(result.errors)
+          ? result.errors.filter(
+              (message: unknown) => typeof message === 'string',
+            )
+          : [];
+
+        if (importErrors.length > 0) {
+          const firstError = importErrors[0];
+          feedImportStatus =
+            importedCount > 0
+              ? `Imported ${importedCount} feed${importedCount === 1 ? '' : 's'}. ${importErrors.length} could not be imported: ${firstError}`
+              : `No feeds were imported. ${importErrors.length} could not be imported: ${firstError}`;
+          feedImportStatusKind = importedCount > 0 ? 'warning' : 'error';
+        } else if (importedCount > 0) {
+          feedImportStatus = `Imported ${importedCount} feed${importedCount === 1 ? '' : 's'}.`;
+          feedImportStatusKind = 'success';
+        } else {
+          feedImportStatus = 'No new feeds were imported.';
+          feedImportStatusKind = 'info';
+        }
+
+        if (importedCount > 0) finishFeeds(true);
       } catch {
-        error = 'Connection error';
+        opmlError = 'Connection error';
       } finally {
         importing = false;
       }
@@ -80,7 +118,7 @@
   async function finishSetup(destination: string) {
     if (loading) return;
     loading = true;
-    error = '';
+    setupError = '';
 
     try {
       const response = await fetchWithCsrf('/api/settings', {
@@ -91,7 +129,7 @@
       if (!response.ok) throw new Error('Setup could not be saved');
       await goto(destination, { invalidateAll: true });
     } catch {
-      error = 'Could not finish setup. Please try again.';
+      setupError = 'Could not finish setup. Please try again.';
     } finally {
       loading = false;
     }
@@ -152,6 +190,9 @@
 
       <form
         class="space-y-4"
+        aria-describedby={feedError && !feedUrlInvalid
+          ? 'feed-error'
+          : undefined}
         onsubmit={(event) => {
           event.preventDefault();
           void addFeed();
@@ -166,10 +207,17 @@
             name="feedUrl"
             type="url"
             bind:value={feedUrl}
+            oninput={() => {
+              feedError = '';
+              feedUrlInvalid = false;
+            }}
             placeholder="https://example.com/feed.xml"
             autocomplete="url"
             class="input glass-input w-full"
-            aria-describedby="feed-url-help"
+            aria-invalid={feedUrlInvalid ? 'true' : undefined}
+            aria-describedby={feedUrlInvalid
+              ? 'feed-url-help feed-error'
+              : 'feed-url-help'}
             required
           />
           <span id="feed-url-help" class="mt-1 block text-xs text-surface-300">
@@ -194,8 +242,9 @@
           />
         </label>
 
-        {#if error}
+        {#if feedError}
           <div
+            id="feed-error"
             class="flex items-center gap-2 px-3 py-2 text-sm"
             role="alert"
             style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent); border-radius: 2px;"
@@ -216,7 +265,7 @@
                 y2="12"
               /><line x1="12" y1="16" x2="12.01" y2="16" /></svg
             >
-            {error}
+            {feedError}
           </div>
         {/if}
 
@@ -252,18 +301,37 @@
           class="action-btn min-h-11 px-4 py-2"
           onclick={importOpml}
           disabled={loading || importing}
+          aria-describedby={opmlError ? 'opml-error' : undefined}
         >
           {#if importing}Importing...{:else}Import OPML{/if}
         </button>
         <button
           type="button"
           class="min-h-11 px-2 py-2 text-sm text-surface-300 underline decoration-surface-500 underline-offset-4 hover:text-surface-100"
-          onclick={finishFeeds}
+          onclick={() => finishFeeds()}
           disabled={loading || importing}
         >
           I'll add feeds later
         </button>
       </div>
+      {#if feedImportStatus}
+        <p
+          class="mt-3 text-sm {feedImportStatusKind === 'error'
+            ? 'text-error-300'
+            : 'text-surface-200'}"
+          role={feedImportStatusKind === 'warning' ||
+          feedImportStatusKind === 'error'
+            ? 'alert'
+            : 'status'}
+        >
+          {feedImportStatus}
+        </p>
+      {/if}
+      {#if opmlError}
+        <p id="opml-error" class="mt-3 text-sm text-error-300" role="alert">
+          {opmlError}
+        </p>
+      {/if}
     </div>
   {:else}
     <div
@@ -290,6 +358,19 @@
         AI summaries and recommendations are optional. You can configure them in
         Settings.
       </p>
+      {#if feedImportStatus}
+        <p
+          class="mx-auto mt-4 max-w-lg text-sm {feedImportStatusKind === 'error'
+            ? 'text-error-300'
+            : 'text-surface-200'}"
+          role={feedImportStatusKind === 'warning' ||
+          feedImportStatusKind === 'error'
+            ? 'alert'
+            : 'status'}
+        >
+          {feedImportStatus}
+        </p>
+      {/if}
       <div
         class="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center"
       >
@@ -298,6 +379,7 @@
           class="btn preset-filled-primary-500 inline-flex min-h-11 items-center justify-center gap-2"
           onclick={() => finishSetup('/')}
           disabled={loading}
+          aria-describedby={setupError ? 'setup-error' : undefined}
         >
           {#if loading}
             <svg
@@ -321,12 +403,15 @@
           onclick={() => finishSetup('/settings/ai')}
           disabled={loading}
           class="min-h-11 px-3 py-2 text-sm text-surface-300 underline decoration-surface-500 underline-offset-4 hover:text-surface-100"
+          aria-describedby={setupError ? 'setup-error' : undefined}
         >
           Configure AI
         </button>
       </div>
-      {#if error}
-        <p class="mt-4 text-sm text-error-300" role="alert">{error}</p>
+      {#if setupError}
+        <p id="setup-error" class="mt-4 text-sm text-error-300" role="alert">
+          {setupError}
+        </p>
       {/if}
       <p class="mt-5 text-xs text-surface-300">
         You can also add more feeds anytime from the Feeds page.

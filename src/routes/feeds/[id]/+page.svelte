@@ -29,6 +29,7 @@
   };
 
   type FeedData = {
+    url?: string;
     id?: string;
     title?: string | null;
     category?: string | null;
@@ -63,6 +64,8 @@
 
   // Settings form state
   let title = $state('');
+  let feedUrl = $state('');
+  let saveError = $state('');
   let category = $state('');
   let enabled = $state(true);
   let openMode = $state('');
@@ -103,6 +106,7 @@
     articles = pageData.articles;
     feed = pageData.feed;
     title = String(pageData.feed.title ?? '');
+    feedUrl = pageData.feed.url ?? '';
     category = String(pageData.feed.category ?? '');
     enabled = !!pageData.feed.enabled;
     openMode = pageData.feed.open_mode ?? '';
@@ -122,12 +126,14 @@
   async function saveSettings() {
     saving = true;
     saveSuccess = false;
+    saveError = '';
     try {
       const res = await fetchWithCsrf(`/api/feeds/${pageData.feedId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
+          url: feedUrl,
           category,
           enabled,
           open_mode: openMode || null,
@@ -140,6 +146,7 @@
         if (data.feed) {
           feed = data.feed;
           title = data.feed.title || '';
+          feedUrl = data.feed.url || '';
           category = data.feed.category || '';
           enabled = !!data.feed.enabled;
           openMode = data.feed.open_mode ?? '';
@@ -149,10 +156,12 @@
           saveSuccess = false;
         }, 2000);
       } else {
-        throw new Error();
+        const result = await res.json().catch(() => null);
+        throw new Error(result?.error || 'Failed to save settings');
       }
-    } catch {
-      addToast('Failed to save settings', 'error');
+    } catch (error) {
+      saveError =
+        error instanceof Error ? error.message : 'Failed to save settings';
     } finally {
       saving = false;
     }
@@ -294,15 +303,18 @@
         class="btn preset-filled-surface-200-800 h-10 px-3"
         onclick={handleSync}
         disabled={syncing}
+        aria-busy={syncing}
       >
         {syncing ? 'Refreshing…' : 'Refresh feed'}
       </button>
       <button
+        type="button"
         class="btn flex h-10 w-10 items-center justify-center p-0 md:h-auto md:w-auto md:px-4 md:py-2 md:gap-2"
         class:preset-filled-primary-500={pageData.showHiddenContent}
         class:preset-filled-surface-200-800={!pageData.showHiddenContent}
         onclick={toggleHiddenContent}
-        aria-label={pageData.showHiddenContent ? 'Show Feed' : 'Show Hidden'}
+        aria-label="Show hidden articles"
+        aria-pressed={Boolean(pageData.showHiddenContent)}
         title={pageData.showHiddenContent ? 'Show Feed' : 'Show Hidden'}
       >
         {#if pageData.showHiddenContent}
@@ -345,9 +357,11 @@
         </span>
       </button>
       <button
+        type="button"
         class="btn preset-filled-surface-200-800 flex h-10 w-10 items-center justify-center p-0 md:h-auto md:w-auto md:px-4 md:py-2 md:gap-2"
         onclick={() => (showSettings = !showSettings)}
         aria-label="Settings"
+        aria-expanded={showSettings}
         title="Settings"
       >
         {@html settingsIcon}
@@ -418,10 +432,20 @@
 
   {#if showSettings}
     <div class="glass-card mb-12 p-6" in:fly={{ y: -10, duration: 200 }}>
+      <p class="text-error-300" role="alert">{saveError}</p>
       <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
         <label class="label">
           <span class="mb-1 block text-sm font-medium">Title</span>
           <input class="input glass-input" type="text" bind:value={title} />
+        </label>
+        <label class="label">
+          <span class="mb-1 block text-sm font-medium">Feed URL</span>
+          <input
+            class="input glass-input"
+            type="url"
+            bind:value={feedUrl}
+            required
+          />
         </label>
         <label class="label">
           <span class="mb-1 block text-sm font-medium">Category</span>
@@ -468,11 +492,14 @@
             class="btn preset-filled-primary-500"
             onclick={saveSettings}
             disabled={saving}
+            aria-busy={saving}
+            type="button"
           >
             {saving ? 'Saving...' : 'Save Changes'}
           </button>
           {#if saveSuccess}
-            <span class="text-sm text-success-400" in:fade>Settings saved!</span
+            <span class="text-sm text-success-400" role="status" in:fade
+              >Settings saved!</span
             >
           {/if}
         </div>

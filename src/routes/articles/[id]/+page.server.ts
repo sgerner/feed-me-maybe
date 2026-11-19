@@ -31,7 +31,9 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 
   article.feed_site_url = safeFeedSiteUrl(article.feed_site_url);
 
-  recordInteraction(params.id, 'open');
+  if (!article.hidden && !article.rejected && !article.thumbs_down) {
+    recordInteraction(params.id, 'open');
+  }
 
   if (url.searchParams.get('mode') === 'archive') {
     const archived = await fetchArchivedArticle(
@@ -47,8 +49,27 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     }
   }
 
+  const published = Number(article.published_at ?? article.fetched_at);
+  const neighbor = (previous: boolean) => {
+    const comparison = previous ? '>' : '<';
+    const order = previous ? 'ASC' : 'DESC';
+    const row = db
+      .prepare(
+        `
+      SELECT id FROM articles
+      WHERE feed_id = ? AND hidden = 0 AND thumbs_down = 0
+        AND (COALESCE(published_at, fetched_at), id) ${comparison} (?, ?)
+      ORDER BY COALESCE(published_at, fetched_at) ${order}, id ${order}
+      LIMIT 1
+    `,
+      )
+      .get(article.feed_id, published, params.id) as { id: string } | undefined;
+    return row?.id ?? null;
+  };
+
   return {
     article,
+    neighbors: { previous: neighbor(true), next: neighbor(false) },
     proxyBaseUrl: getConfiguredProxyBaseUrl() || null,
   };
 };

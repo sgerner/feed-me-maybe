@@ -7,22 +7,50 @@
     setSingleKeyShortcutsEnabled,
   } from '$lib/utils/keyboard-shortcuts';
 
-  let { open = $bindable(false) } = $props();
+  let { open = $bindable(false), reader = false } = $props();
   let dialogEl = $state<HTMLDivElement | null>(null);
   let singleKeyShortcutsEnabled = $state(true);
   let previouslyFocused: HTMLElement | null = null;
 
-  const shortcuts = [
+  const shortcuts = $derived([
     { key: '?', description: 'Show keyboard shortcuts' },
-    { key: 'j', description: 'Focus next article' },
-    { key: 'k', description: 'Focus previous article' },
-    { key: 'o', description: 'Open focused article' },
-    { key: 'h', description: 'Hide focused article' },
-    { key: 's', description: 'Save focused article' },
-    { key: 'm', description: 'Mark focused article as read' },
-    { key: 'Enter', description: 'Open article (when focused)' },
-    { key: 'Space', description: 'Open article (when focused)' },
-  ];
+    {
+      key: 'j',
+      description: reader ? 'Go to next article' : 'Focus next article',
+    },
+    {
+      key: 'k',
+      description: reader ? 'Go to previous article' : 'Focus previous article',
+    },
+    {
+      key: 'o',
+      description: reader ? 'Open original article' : 'Open focused article',
+    },
+    {
+      key: 'h',
+      description: reader
+        ? 'Hide or restore this article'
+        : 'Hide focused article',
+    },
+    {
+      key: 's',
+      description: reader
+        ? 'Toggle saved for this article'
+        : 'Save focused article',
+    },
+    {
+      key: 'm',
+      description: reader
+        ? 'Mark this article as read'
+        : 'Mark focused article as read',
+    },
+    ...(reader
+      ? []
+      : [
+          { key: 'Enter', description: 'Open article (when focused)' },
+          { key: 'Space', description: 'Open article (when focused)' },
+        ]),
+  ]);
 
   onMount(() => {
     const syncShortcutPreference = () => {

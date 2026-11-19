@@ -19,6 +19,11 @@ export function getToasts() {
   return toasts;
 }
 
+export function removeToast(id: number) {
+  const index = toasts.findIndex((toast) => toast.id === id);
+  if (index !== -1) toasts.splice(index, 1);
+}
+
 export function addToast(
   message: string,
   type: ToastType = 'info',
@@ -27,10 +32,5 @@ export function addToast(
 ) {
   const id = nextId++;
   toasts.push({ id, message, type, ...(action ? { action } : {}) });
-  setTimeout(() => {
-    const index = toasts.findIndex((toast) => toast.id === id);
-    if (index !== -1) {
-      toasts.splice(index, 1);
-    }
-  }, duration);
+  if (!action) setTimeout(() => removeToast(id), duration);
 }

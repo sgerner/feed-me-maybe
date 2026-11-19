@@ -23,7 +23,12 @@
   let {
     data,
   }: {
-    data: { articles: Article[]; totalPages: number; totalArticles: number };
+    data: {
+      articles: Article[];
+      totalPages: number;
+      totalArticles: number;
+      category: string;
+    };
   } = $props();
   let articles = $state<Article[]>([]);
 
@@ -59,7 +64,9 @@
   >
     <div>
       <p class="eyebrow text-primary-300">Unread</p>
-      <h1 class="section-title">Inbox</h1>
+      <h1 class="section-title">
+        {data.category ? `${data.category} inbox` : 'Inbox'}
+      </h1>
       <p class="section-subtitle">
         {data.totalArticles} unread {data.totalArticles === 1
           ? 'story'
@@ -71,13 +78,17 @@
     >
   </div>
 
-  <ArticleList
-    bind:articles
-    totalPages={data.totalPages}
-    loadMoreSearchParams={{ unread: '1' }}
-    emptyTitle="No unread stories"
-    emptyMessage="You are all caught up."
-    emptyCtaHref="/"
-    emptyCtaLabel="Browse all stories"
-  />
+  {#key data.category}
+    <ArticleList
+      bind:articles
+      totalPages={data.totalPages}
+      loadMoreSearchParams={data.category
+        ? { unread: '1', category: data.category }
+        : { unread: '1' }}
+      emptyTitle="No unread stories"
+      emptyMessage="You are all caught up."
+      emptyCtaHref="/"
+      emptyCtaLabel="Browse all stories"
+    />
+  {/key}
 </div>

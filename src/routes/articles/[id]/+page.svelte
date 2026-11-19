@@ -1,6 +1,8 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
   import { onMount } from 'svelte';
+  import { goto, invalidate } from '$app/navigation';
+  import { getSingleKeyShortcutsEnabled } from '$lib/utils/keyboard-shortcuts';
   import { formatContent, renderContent } from '$lib/utils/format';
   import { extractArticleImages } from '$lib/utils/article-images';
   import { addToast } from '$lib/stores/toast.svelte';
@@ -35,7 +37,11 @@
   };
 
   let { data: pageData } = $props<{
-    data: { article: ArticleData; proxyBaseUrl?: string | null };
+    data: {
+      article: ArticleData;
+      proxyBaseUrl?: string | null;
+      neighbors?: { previous: string | null; next: string | null };
+    };
   }>();
 
   const article = $derived(pageData.article);
@@ -46,7 +52,6 @@
   let disliked = $state(false);
   let saved = $state(false);
   let hidden = $state(false);
-  let dismissing = $state(false);
   let pendingAction = $state<InteractionType | null>(null);
   let iframeLoading = $state(true);
   let lightboxOpen = $state(false);
@@ -55,7 +60,28 @@
   let readerArticleEl = $state<HTMLElement | null>(null);
   let lightboxBackdropEl = $state<HTMLDivElement | null>(null);
   let lightboxPreviouslyFocused: HTMLElement | null = null;
+  let readerMoreOpen = $state(false);
   let readingProgress = $state(0);
+  let fetchedContent = $state<string | null>(null);
+  let fetchingContent = $state(false);
+  let fetchContentError = $state('');
+  let readerQueue = $state<{ ids: string[]; source: string } | null>(null);
+  const readerIndex = $derived(readerQueue?.ids.indexOf(article.id) ?? -1);
+  const previousId = $derived(
+    readerIndex >= 0
+      ? readerQueue?.ids[readerIndex - 1]
+      : pageData.neighbors?.previous,
+  );
+  const nextId = $derived(
+    readerIndex >= 0
+      ? readerQueue?.ids[readerIndex + 1]
+      : pageData.neighbors?.next,
+  );
+  const returnPath = $derived(
+    readerIndex >= 0 ? readerQueue?.source || '/' : '/',
+  );
+  const articleContent = $derived(fetchedContent ?? article.content);
+
   let fontScale = $state(1);
   let isSpeaking = $state(false);
 
@@ -75,13 +101,13 @@
     ),
   );
   const renderedArticleContent = $derived(
-    article.content ? renderContent(article.content) : '',
+    articleContent ? renderContent(articleContent) : '',
   );
   const articleImages = $derived(
     extractArticleImages({
       articleUrl: article.url,
       heroUrl: article.image_url,
-      content: article.content,
+      content: articleContent,
     }),
   );
   const activeLightboxImage = $derived(articleImages[lightboxIndex] ?? null);
@@ -99,6 +125,7 @@
       case 'unsave':
       case 'hide':
       case 'unhide':
+      case 'restore':
       case 'thumbs_down':
         return type;
       default:
@@ -114,6 +141,24 @@
   // during client-side navigation. Always start a newly opened article at
   // the top, regardless of where the reader was opened from in the feed.
   onMount(() => {
+    try {
+      const stored = JSON.parse(
+        sessionStorage.getItem('feed-me-maybe:reader-queue') || 'null',
+      );
+      if (
+        Array.isArray(stored?.ids) &&
+        stored.ids.every((id: unknown) => typeof id === 'string') &&
+        typeof stored.source === 'string' &&
+        stored.source.startsWith('/') &&
+        !stored.source.startsWith('//') &&
+        !stored.source.includes('\\') &&
+        new URL(stored.source, location.origin).origin === location.origin
+      ) {
+        readerQueue = stored;
+      }
+    } catch {
+      // The fallback order comes from the current feed.
+    }
     const main = document.querySelector('main');
     if (main) {
       main.scrollTop = 0;
@@ -227,13 +272,41 @@
   });
 
   $effect(() => {
-    if (!articleContentEl) return;
+    const content = articleContentEl;
+    const images = articleImages;
+    // Rebuild controls when Svelte replaces the rendered article HTML.
+    if (!content || !renderedArticleContent) return;
 
-    const onClick = (event: MouseEvent) => handleContentClick(event);
-    articleContentEl.addEventListener('click', onClick);
+    const buttons = [...content.querySelectorAll('img')].flatMap((image) => {
+      if (image.closest('a, button')) return [];
+      const source = image.getAttribute('src');
+      if (!source) return [];
+      let absoluteSource: string;
+      try {
+        absoluteSource = new URL(source, article.url).href;
+      } catch {
+        return [];
+      }
+      const index = images.findIndex((item) => item.src === absoluteSource);
+      if (index < 0) return [];
 
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className =
+        'block max-w-full cursor-zoom-in focus-visible:outline-2 focus-visible:outline-primary-400';
+      button.setAttribute(
+        'aria-label',
+        image.alt
+          ? `Enlarge image: ${image.alt}`
+          : `Enlarge article image ${index + 1}`,
+      );
+      button.onclick = () => openLightbox(index, button);
+      image.replaceWith(button);
+      button.append(image);
+      return [button];
+    });
     return () => {
-      articleContentEl?.removeEventListener('click', onClick);
+      for (const button of buttons) button.replaceWith(...button.childNodes);
     };
   });
 
@@ -255,12 +328,12 @@
 
   // Check if the hero image is already the first thing in the content to avoid duplicates
   function contentFirstImg(): string | null {
-    if (!article.content) return null;
+    if (!articleContent) return null;
 
-    const htmlMatch = article.content.match(/<img[^>]+src=["']([^"']+)["']/i);
+    const htmlMatch = articleContent.match(/<img[^>]+src=["']([^"']+)["']/i);
     if (htmlMatch) return htmlMatch[1];
 
-    const markdownMatch = article.content.match(
+    const markdownMatch = articleContent.match(
       /!\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/,
     );
     return markdownMatch ? markdownMatch[1] : null;
@@ -281,10 +354,10 @@
     }
   }
 
-  function openLightbox(index: number) {
+  function openLightbox(index: number, trigger: HTMLElement) {
     if (!articleImages.length) return;
     lightboxIndex = Math.max(0, Math.min(index, articleImages.length - 1));
-    lightboxPreviouslyFocused = document.activeElement as HTMLElement | null;
+    lightboxPreviouslyFocused = trigger;
     lightboxOpen = true;
   }
 
@@ -298,32 +371,49 @@
       (lightboxIndex + delta + articleImages.length) % articleImages.length;
   }
 
-  function handleContentClick(event: MouseEvent) {
-    const target = event.target as HTMLElement | null;
-    const image = target?.closest('img') as HTMLImageElement | null;
-    if (!image) return;
-
-    const src = image.getAttribute('src');
-    if (!src) return;
-
-    const imageIndex = articleImages.findIndex((item) => item.src === src);
-    if (imageIndex === -1) return;
-
-    event.preventDefault();
-    openLightbox(imageIndex);
-  }
-
   function handleLightboxKeydown(event: KeyboardEvent) {
     const openMenu = document.querySelector<HTMLDetailsElement>(
       '[data-reader-more][open]',
     );
     if (event.key === 'Escape' && openMenu) {
       event.preventDefault();
-      openMenu.open = false;
+      readerMoreOpen = false;
       return;
     }
 
-    if (!lightboxOpen) return;
+    if (!lightboxOpen) {
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        !getSingleKeyShortcutsEnabled() ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            'input, textarea, select, button, summary, [contenteditable], [aria-modal="true"]',
+          ))
+      )
+        return;
+      const key = event.key.toLowerCase();
+      const destination =
+        key === 'j' ? nextId : key === 'k' ? previousId : null;
+      if (destination) {
+        event.preventDefault();
+        void goto(readerHref(destination));
+      }
+      if (key === 'o') {
+        event.preventDefault();
+        window.open(sourceHref, '_blank', 'noopener,noreferrer');
+      }
+      if (key === 'h' || key === 's' || key === 'm') {
+        event.preventDefault();
+        if (key === 'm') void markRead();
+        else void interact(key === 'h' ? 'hide' : 'save');
+      }
+      return;
+    }
 
     if (event.key === 'Tab' && lightboxBackdropEl) {
       const focusableElements = Array.from(
@@ -370,9 +460,7 @@
   function handleReaderWindowPointerDown(event: PointerEvent): void {
     const target = event.target as Element | null;
     if (target?.closest('[data-reader-more]')) return;
-    document
-      .querySelectorAll<HTMLDetailsElement>('[data-reader-more]')
-      .forEach((menu) => (menu.open = false));
+    readerMoreOpen = false;
   }
 
   async function interact(type: InteractionType) {
@@ -386,26 +474,26 @@
     const prevDisliked = disliked;
     const prevSaved = saved;
     const prevHidden = hidden;
-    const prevDismissing = dismissing;
     pendingAction = type;
 
     const restoring = type === 'hide' && hidden;
-    const shouldDismiss =
+    const shouldHide =
       (!restoring && type === 'hide') || type === 'thumbs_down';
 
     if (type === 'thumbs_up') {
       liked = !liked;
       if (liked) disliked = false;
     } else if (type === 'thumbs_down') {
-      disliked = !disliked;
-      if (disliked) liked = false;
+      disliked = true;
+      liked = false;
+      hidden = true;
     } else if (type === 'save') {
       saved = !saved;
     } else if (restoring) {
       hidden = false;
-    } else if (shouldDismiss) {
+      disliked = false;
+    } else if (shouldHide) {
       hidden = true;
-      dismissing = true;
     }
 
     try {
@@ -418,7 +506,9 @@
 
       const offline = navigator.onLine === false;
       if (offline) {
-        const queuedType = offlineMutationType(actualType);
+        const queuedType = offlineMutationType(
+          restoring ? 'restore' : actualType,
+        );
         if (!queuedType) throw new Error('This action needs a connection');
         await enqueueOfflineMutation(offlineScope(), {
           articleId: article.id,
@@ -429,41 +519,135 @@
         });
         addToast('Action queued — will sync when you’re online', 'info');
       } else {
-        const res = await fetchWithCsrf('/api/interactions', {
+        const action = restoring
+          ? 'restore'
+          : actualType === 'thumbs_down'
+            ? 'reject'
+            : actualType;
+        const res = await fetchWithCsrf('/api/article-state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             articleId: article.id,
-            type: actualType,
-            ...(visibleArticleIds ? { visibleArticleIds } : {}),
+            action,
+            visibleArticleIds,
           }),
         });
         if (!res.ok) throw new Error();
-      }
-
-      if (!offline) {
+        const result = (await res.json()) as {
+          operationId: string;
+          changes: Array<{ changed: boolean }>;
+        };
+        void invalidate('app:reader-counts');
         const labels: Record<string, string> = {
           hide: 'Hidden',
-          unhide: 'Restored',
+          restore: 'Restored',
           save: 'Saved',
           unsave: 'Removed from Saved',
           thumbs_up: 'Liked',
-          thumbs_down: 'Disliked and hidden',
+          reject: 'Disliked and hidden',
         };
-        addToast(labels[actualType] || type, 'success');
+        addToast(
+          labels[action] || type,
+          'success',
+          3000,
+          result.changes.some((change) => change.changed)
+            ? {
+                label: 'Undo',
+                run: async () => {
+                  try {
+                    const undo = await fetchWithCsrf(
+                      '/api/article-state/undo',
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          operationId: result.operationId,
+                        }),
+                      },
+                    );
+                    if (!undo.ok) throw new Error();
+                    const outcome = (await undo.json()) as {
+                      restoredArticleIds: string[];
+                    };
+                    if (!outcome.restoredArticleIds.includes(article.id)) {
+                      addToast('Article changed since this action', 'warning');
+                      return;
+                    }
+                    liked = prevLiked;
+                    disliked = prevDisliked;
+                    saved = prevSaved;
+                    hidden = prevHidden;
+                    void invalidate('app:reader-counts');
+                    addToast('Action undone', 'success');
+                  } catch {
+                    addToast('Could not undo this action', 'error');
+                  }
+                },
+              }
+            : undefined,
+        );
       }
-
-      if (shouldDismiss) setTimeout(() => window.history.back(), 800);
     } catch {
       // Revert on failure
       liked = prevLiked;
       disliked = prevDisliked;
       saved = prevSaved;
       hidden = prevHidden;
-      dismissing = prevDismissing;
       addToast('Action failed', 'error');
     } finally {
       pendingAction = null;
+    }
+  }
+
+  function readerHref(id: string) {
+    return `/articles/${encodeURIComponent(id)}?mode=${encodeURIComponent(mode)}`;
+  }
+
+  async function markRead() {
+    try {
+      if (!navigator.onLine) {
+        await enqueueOfflineMutation(offlineScope(), {
+          articleId: article.id,
+          type: 'read',
+        });
+      } else {
+        const response = await fetchWithCsrf('/api/article-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ articleId: article.id, action: 'read' }),
+        });
+        if (!response.ok) throw new Error();
+        void invalidate('app:reader-counts');
+      }
+      addToast('Marked as read', 'success');
+    } catch {
+      addToast('Could not mark article as read', 'error');
+    }
+  }
+
+  async function loadFullText() {
+    if (fetchingContent) return;
+    fetchingContent = true;
+    fetchContentError = '';
+    try {
+      const response = await fetchWithCsrf(
+        `/api/articles/${encodeURIComponent(article.id)}/content`,
+        { method: 'POST' },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      fetchedContent = result.content;
+      void cacheArticles(offlineScope(), [
+        { ...article, content: result.content },
+      ]).catch(() => undefined);
+    } catch (error) {
+      fetchContentError =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not load full article text.';
+    } finally {
+      fetchingContent = false;
     }
   }
 
@@ -559,72 +743,54 @@
     </div>
   {:else}
     <article class="glass-card glass-card-hover overflow-hidden">
-      {#if dismissing}
-        <div
-          class="flex min-h-[32rem] flex-col items-center justify-center gap-4 p-8 text-center"
+      <div class="px-4 pt-4">
+        <button
+          type="button"
+          class="btn preset-tonal"
+          onclick={loadFullText}
+          disabled={fetchingContent || Boolean(fetchedContent)}
         >
+          {fetchingContent
+            ? 'Fetching full text…'
+            : fetchedContent
+              ? 'Full text loaded'
+              : 'Fetch full text'}
+        </button>
+        <p role="alert" class="text-sm text-error-300">{fetchContentError}</p>
+      </div>
+      {#if shouldShowHero()}
+        <button
+          type="button"
+          class="group relative block w-full overflow-hidden text-left"
+          onclick={(event) => openLightbox(0, event.currentTarget)}
+          aria-label="Open article image"
+        >
+          <img
+            src={article.image_url}
+            alt={articleImages[0]?.alt || `Illustration for ${article.title}`}
+            class="h-64 w-full object-cover transition-transform duration-300 group-hover:scale-[1.01] md:h-80 cursor-zoom-in"
+            decoding="async"
+            fetchpriority="high"
+          />
           <div
-            class="h-12 w-12 animate-pulse rounded-full border border-primary-500/40 bg-primary-500/10"
+            class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-surface-950)] via-transparent to-transparent opacity-80"
           ></div>
-          <div>
-            <p class="text-lg font-semibold text-surface-50">
-              Hiding article...
-            </p>
-            <p class="mt-1 text-sm text-surface-300">
-              The page will leave as soon as the server confirms it.
-            </p>
-          </div>
-        </div>
-      {:else}
-        {#if shouldShowHero()}
-          <button
-            type="button"
-            class="group relative block w-full overflow-hidden text-left"
-            onclick={() => openLightbox(0)}
-            aria-label="Open article image"
-          >
-            <img
-              src={article.image_url}
-              alt=""
-              class="h-64 w-full object-cover transition-transform duration-300 group-hover:scale-[1.01] md:h-80 cursor-zoom-in"
-              decoding="async"
-              fetchpriority="high"
-            />
-            <div
-              class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-surface-950)] via-transparent to-transparent opacity-80"
-            ></div>
-          </button>
-        {/if}
+        </button>
+      {/if}
 
-        <div bind:this={readerArticleEl} class="p-5 pb-28 md:p-8 md:pb-32">
-          <div class="mb-6">
-            <div
-              class="flex flex-wrap items-center gap-2 text-xs"
-              style="color: var(--color-surface-300);"
+      <div bind:this={readerArticleEl} class="p-5 pb-28 md:p-8 md:pb-32">
+        <div class="mb-6">
+          <div
+            class="flex flex-wrap items-center gap-2 text-xs"
+            style="color: var(--color-surface-300);"
+          >
+            <span
+              class="inline-flex items-center gap-1.5 px-2 py-0.5 font-medium"
+              style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;"
             >
-              <span
-                class="inline-flex items-center gap-1.5 px-2 py-0.5 font-medium"
-                style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent); color: var(--color-primary-300); border-radius: 2px;"
-              >
-                {article.feed_title || 'Unknown Feed'}
-              </span>
-              {#if article.author}
-                <span class="flex items-center gap-1">
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    ><path
-                      d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"
-                    /><circle cx="12" cy="7" r="4" /></svg
-                  >
-                  {article.author}
-                </span>
-              {/if}
+              {article.feed_title || 'Unknown Feed'}
+            </span>
+            {#if article.author}
               <span class="flex items-center gap-1">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -634,129 +800,141 @@
                   fill="none"
                   stroke="currentColor"
                   stroke-width="2"
-                  ><rect
-                    x="3"
-                    y="4"
-                    width="18"
-                    height="18"
-                    rx="2"
-                    ry="2"
-                  /><line x1="16" y1="2" x2="16" y2="6" /><line
-                    x1="8"
-                    y1="2"
-                    x2="8"
-                    y2="6"
-                  /><line x1="3" y1="10" x2="21" y2="10" /></svg
+                  ><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle
+                    cx="12"
+                    cy="7"
+                    r="4"
+                  /></svg
                 >
-                {article.published_at
-                  ? new Date(article.published_at).toLocaleDateString(
-                      undefined,
-                      {
-                        weekday: 'short',
-                        year: 'numeric',
-                        month: 'short',
-                        day: 'numeric',
-                      },
-                    )
-                  : ''}
+                {article.author}
               </span>
-              {#if article.feed_site_url}
-                <a
-                  href={article.feed_site_url}
-                  class="flex items-center gap-1 underline transition-colors hover:text-primary-400"
-                  target="_blank"
-                  rel="noopener"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    ><path
-                      d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
-                    /><polyline points="15 3 21 3 21 9" /><line
-                      x1="10"
-                      y1="14"
-                      x2="21"
-                      y2="3"
-                    /></svg
-                  >
-                  Visit Source
-                </a>
-              {/if}
-            </div>
-            <h1
-              class="mt-3 text-2xl font-bold leading-tight md:text-3xl"
-              style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
-            >
-              {article.title}
-            </h1>
-          </div>
-
-          {#if article.ai_summary}
-            <div
-              class="mb-6 border p-5"
-              style="background: color-mix(in oklch, var(--color-secondary-500) 6%, transparent); border-color: color-mix(in oklch, var(--color-secondary-500) 15%, transparent); border-radius: 2px;"
-            >
-              <div
-                class="mb-2 flex items-center gap-2 text-sm font-semibold"
-                style="color: var(--color-secondary-300);"
+            {/if}
+            <span class="flex items-center gap-1">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                ><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line
+                  x1="16"
+                  y1="2"
+                  x2="16"
+                  y2="6"
+                /><line x1="8" y1="2" x2="8" y2="6" /><line
+                  x1="3"
+                  y1="10"
+                  x2="21"
+                  y2="10"
+                /></svg
+              >
+              {article.published_at
+                ? new Date(article.published_at).toLocaleDateString(undefined, {
+                    weekday: 'short',
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                  })
+                : ''}
+            </span>
+            {#if article.feed_site_url}
+              <a
+                href={article.feed_site_url}
+                class="flex items-center gap-1 underline transition-colors hover:text-primary-400"
+                target="_blank"
+                rel="noopener"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
+                  width="12"
+                  height="12"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
                   stroke-width="2"
                   ><path
-                    d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"
-                  /><path d="M8.5 8.5v.01" /><path d="M16 15.5v.01" /><path
-                    d="M12 12v.01"
-                  /><path d="M11 17v.01" /><path d="M7 14v.01" /></svg
+                    d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
+                  /><polyline points="15 3 21 3 21 9" /><line
+                    x1="10"
+                    y1="14"
+                    x2="21"
+                    y2="3"
+                  /></svg
                 >
-                AI Summary
-              </div>
-              <div
-                class="text-sm leading-relaxed prose prose-sm max-w-none"
-                style="color: color-mix(in oklch, var(--color-surface-100) 75%, transparent);"
-              >
-                {@html formatContent(article.ai_summary)}
-              </div>
-            </div>
-          {/if}
-
-          <div
-            class="prose max-w-none prose-glass [&_img]:cursor-zoom-in"
-            bind:this={articleContentEl}
-            style="font-size: {fontScale * 1.125}rem;"
-          >
-            {#if article.content}
-              {@html renderedArticleContent}
-            {:else if article.summary}
-              <div class="leading-relaxed">
-                {@html formatContent(article.summary)}
-              </div>
-            {:else}
-              <p class="italic" style="color: var(--color-surface-300);">
-                No content available.
-              </p>
+                Visit Source
+              </a>
             {/if}
           </div>
+          <h1
+            class="mt-3 text-2xl font-bold leading-tight md:text-3xl"
+            style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
+          >
+            {article.title}
+          </h1>
+        </div>
 
-          {#if isRedditPost}
-            <RedditComments
-              permalink={article.url}
-              useProxy={Boolean(article.feed_use_proxy)}
-              proxyBaseUrl={pageData.proxyBaseUrl}
-            />
+        {#if article.ai_summary}
+          <div
+            class="mb-6 border p-5"
+            style="background: color-mix(in oklch, var(--color-secondary-500) 6%, transparent); border-color: color-mix(in oklch, var(--color-secondary-500) 15%, transparent); border-radius: 2px;"
+          >
+            <div
+              class="mb-2 flex items-center gap-2 text-sm font-semibold"
+              style="color: var(--color-secondary-300);"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                ><path
+                  d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"
+                /><path d="M8.5 8.5v.01" /><path d="M16 15.5v.01" /><path
+                  d="M12 12v.01"
+                /><path d="M11 17v.01" /><path d="M7 14v.01" /></svg
+              >
+              AI Summary
+            </div>
+            <div
+              class="text-sm leading-relaxed prose prose-sm max-w-none"
+              style="color: color-mix(in oklch, var(--color-surface-100) 75%, transparent);"
+            >
+              {@html formatContent(article.ai_summary)}
+            </div>
+          </div>
+        {/if}
+
+        <div
+          class="prose max-w-none prose-glass [&_img]:cursor-zoom-in"
+          bind:this={articleContentEl}
+          style="font-size: {fontScale * 1.125}rem;"
+        >
+          {#if articleContent}
+            {@html renderedArticleContent}
+          {:else if article.summary}
+            <div class="leading-relaxed">
+              {@html formatContent(article.summary)}
+            </div>
+          {:else}
+            <p class="italic" style="color: var(--color-surface-300);">
+              No content available.
+            </p>
           {/if}
         </div>
-      {/if}
+
+        {#if isRedditPost}
+          <RedditComments
+            permalink={article.url}
+            useProxy={Boolean(article.feed_use_proxy)}
+            proxyBaseUrl={pageData.proxyBaseUrl}
+          />
+        {/if}
+      </div>
     </article>
   {/if}
 
@@ -772,7 +950,7 @@
     >
       <div class="flex h-full w-full flex-col">
         <div class="flex items-center justify-between gap-3 p-3 md:p-4">
-          <div class="text-xs font-medium text-white/70">
+          <div class="text-xs font-medium text-white/70" role="status">
             {lightboxIndex + 1} / {articleImages.length}
           </div>
           <button
@@ -825,7 +1003,10 @@
           >
             <img
               src={activeLightboxImage.src}
-              alt=""
+              alt={activeLightboxImage.alt ||
+                (activeLightboxImage.source === 'hero'
+                  ? `Illustration for ${article.title}`
+                  : `Article image ${lightboxIndex + 1}`)}
               class="max-h-full max-w-full select-none object-contain"
               draggable="false"
               decoding="async"
@@ -868,6 +1049,7 @@
                     : 'border-white/10 opacity-70 hover:opacity-100'}"
                   onclick={() => (lightboxIndex = index)}
                   aria-label={`Show image ${index + 1}`}
+                  aria-pressed={index === lightboxIndex}
                 >
                   <img
                     src={image.src}
@@ -900,16 +1082,16 @@
   {/if}
 
   <div
-    class="reader-action-bar fixed bottom-0 left-0 right-0 z-50 flex flex-wrap items-center justify-center gap-1.5 rounded-t-sm border p-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] shadow-2xl backdrop-blur-xl md:bottom-6 md:left-1/2 md:right-auto md:max-w-[calc(100vw-2rem)] md:-translate-x-1/2 md:rounded-sm md:pb-1.5"
+    class="reader-action-bar fixed bottom-[calc(var(--fmm-mobile-nav-height)+env(safe-area-inset-bottom))] left-0 right-0 z-50 flex flex-wrap items-center justify-center gap-1.5 rounded-t-sm border p-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] shadow-2xl backdrop-blur-xl md:bottom-6 md:left-1/2 md:right-auto md:max-w-[calc(100vw-2rem)] md:-translate-x-1/2 md:rounded-sm md:pb-1.5"
+    role="group"
+    aria-label="Article reader actions"
     style="background: color-mix(in oklch, var(--color-surface-900) 80%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
     in:fly={{ y: 20, duration: 400, delay: 400 }}
   >
-    <button
-      type="button"
+    <a
+      href={returnPath}
       class="action-btn h-9 px-3 rounded-full"
-      disabled={Boolean(pendingAction)}
-      onclick={() => window.history.back()}
-      aria-label="Back to previous page"
+      aria-label="Back to article list"
       title="Back"
     >
       <svg
@@ -922,7 +1104,24 @@
         stroke-width="2"><path d="m15 18-6-6 6-6" /></svg
       >
       <span class="ml-1.5 hidden sm:inline">Back</span>
-    </button>
+    </a>
+
+    {#if previousId}
+      <a
+        class="action-btn h-9 px-3 rounded-full"
+        href={readerHref(previousId)}
+        aria-label="Previous article"
+        title="Previous article (k)">←</a
+      >
+    {/if}
+    {#if nextId}
+      <a
+        class="action-btn h-9 px-3 rounded-full"
+        href={readerHref(nextId)}
+        aria-label="Next article"
+        title="Next article (j)">→</a
+      >
+    {/if}
 
     <div class="w-px h-6 bg-surface-100/10 mx-1"></div>
 
@@ -933,6 +1132,7 @@
         : ''}"
       disabled={Boolean(pendingAction)}
       onclick={() => interact('save')}
+      aria-pressed={saved}
       title="Save Article"
     >
       <svg
@@ -977,10 +1177,12 @@
       </button>
     {/if}
 
-    <details class="relative" data-reader-more>
+    <details class="static" data-reader-more bind:open={readerMoreOpen}>
       <summary
         class="action-btn flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-full px-3"
         aria-label="More reader actions"
+        aria-controls="reader-more-actions"
+        aria-expanded={readerMoreOpen}
         title="More reader actions"
       >
         <svg
@@ -999,8 +1201,11 @@
       </summary>
 
       <div
-        class="absolute bottom-full right-0 z-40 mb-2 flex max-h-[min(70vh,28rem)] max-w-[calc(100vw-1rem)] flex-wrap items-center justify-center gap-1 overflow-y-auto rounded-sm border p-2 shadow-2xl backdrop-blur-xl"
-        style="background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
+        id="reader-more-actions"
+        class="absolute bottom-full left-1/2 z-40 mb-2 flex w-[min(24rem,calc(100vw-1rem))] -translate-x-1/2 flex-col items-stretch justify-start gap-1 overflow-y-auto overscroll-contain rounded-sm border p-2 shadow-2xl backdrop-blur-xl"
+        role="group"
+        aria-label="Additional reader controls"
+        style="max-height: max(5rem, min(28rem, calc(100dvh - 13rem))); background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
       >
         <div
           class="flex items-center gap-1 border-r pr-1.5 mr-0.5"
@@ -1010,12 +1215,11 @@
             type="button"
             class="action-btn min-h-11 min-w-11 rounded-full !p-0 {liked
               ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
-              : ''} {hidden || dismissing
-              ? 'opacity-50 pointer-events-none'
-              : ''}"
-            disabled={Boolean(pendingAction)}
+              : ''} {hidden ? 'opacity-50' : ''}"
+            disabled={Boolean(pendingAction) || hidden}
             onclick={() => interact('thumbs_up')}
             aria-label="Like article"
+            aria-pressed={liked}
             title="Like"
           >
             <svg
@@ -1035,12 +1239,11 @@
             type="button"
             class="action-btn min-h-11 min-w-11 rounded-full !p-0 {disliked
               ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
-              : ''} {hidden || dismissing
-              ? 'opacity-50 pointer-events-none'
-              : ''}"
-            disabled={Boolean(pendingAction)}
+              : ''} {hidden ? 'opacity-50' : ''}"
+            disabled={Boolean(pendingAction) || hidden}
             onclick={() => interact('thumbs_down')}
             aria-label="Dislike and hide article"
+            aria-pressed={disliked}
             title="Dislike and hide"
           >
             <svg
@@ -1148,6 +1351,7 @@
           disabled={Boolean(pendingAction)}
           onclick={() => interact('hide')}
           aria-label={hidden ? 'Restore article' : 'Hide article'}
+          aria-pressed={hidden}
           title={hidden ? 'Restore Article' : 'Hide Article'}
         >
           <svg
@@ -1170,3 +1374,15 @@
     </details>
   </div>
 </div>
+
+<style>
+  :global(#main-content:has(.reader-action-bar)) {
+    scroll-padding-bottom: calc(12rem + env(safe-area-inset-bottom));
+  }
+
+  @media (min-width: 768px) {
+    :global(#main-content:has(.reader-action-bar)) {
+      scroll-padding-bottom: 8rem;
+    }
+  }
+</style>

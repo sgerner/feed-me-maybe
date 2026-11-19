@@ -47,6 +47,12 @@
   const totalUnread = $derived(
     data.feeds.reduce((sum, feed) => sum + Number(feed.unread_count || 0), 0),
   );
+  const filteredUnread = $derived(
+    filteredFeeds.reduce(
+      (sum, feed) => sum + Number(feed.unread_count || 0),
+      0,
+    ),
+  );
 
   function feedLabel(feed: Feed): string {
     return feed.title?.trim() || new URL(feed.url).hostname;
@@ -95,8 +101,18 @@
     <div>
       <p class="eyebrow text-primary-300">Manage your feeds</p>
       <h1 class="section-title">Feeds</h1>
-      <p class="section-subtitle">
-        {data.feeds.length} feeds · {totalUnread} unread stories.
+      <p
+        class="section-subtitle"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {#if query.trim()}
+          {filteredFeeds.length} of {data.feeds.length} feeds match · {filteredUnread}
+          unread stories.
+        {:else}
+          {data.feeds.length} feeds · {totalUnread} unread stories.
+        {/if}
       </p>
     </div>
     <div class="flex flex-wrap items-center gap-3">
@@ -135,7 +151,7 @@
     </div>
   {:else if groupedFeeds.length === 0}
     <div class="glass-card p-10 text-center" in:fade={{ duration: 260 }}>
-      <p class="text-lg font-semibold text-surface-100">
+      <p class="text-lg font-semibold text-surface-100" role="status">
         No feeds match “{query}”.
       </p>
       <button
@@ -157,7 +173,15 @@
           <div class="mb-3 flex items-center justify-between">
             <div>
               <p class="eyebrow text-surface-300">Category</p>
-              <h2 class="text-xl font-semibold text-surface-100">{category}</h2>
+              <h2 class="text-xl font-semibold text-surface-100">
+                {#if feeds.some((feed) => Boolean(feed.category?.trim()))}
+                  <a href="/?category={encodeURIComponent(category)}"
+                    >{category}</a
+                  >
+                {:else}
+                  {category}
+                {/if}
+              </h2>
             </div>
             <span class="text-xs uppercase tracking-[0.18em] text-surface-300"
               >{feeds.length} feeds</span

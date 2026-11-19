@@ -34,11 +34,22 @@
 </script>
 
 <svelte:head>
-  <title>All Articles · Feed Me Maybe</title>
+  <title>{pageData.category || 'All Articles'} · Feed Me Maybe</title>
 </svelte:head>
 
-<h1 class="sr-only">All Articles</h1>
+{#if !pageData.category}<h1 class="sr-only">All Articles</h1>{/if}
 
 <PullToRefresh onSync={handleSync} {syncing} mobileOnly>
-  <ArticleList bind:articles totalPages={pageData.totalPages} />
+  {#key pageData.category}
+    {#if pageData.category}
+      <h1 class="section-title">{pageData.category}</h1>
+    {/if}
+    <ArticleList
+      bind:articles
+      totalPages={pageData.totalPages}
+      loadMoreSearchParams={pageData.category
+        ? { category: pageData.category }
+        : {}}
+    />
+  {/key}
 </PullToRefresh>
