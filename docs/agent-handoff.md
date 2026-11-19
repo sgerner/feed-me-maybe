@@ -96,10 +96,12 @@ Self-hosted AI-powered RSS reader. SvelteKit + Svelte 5 + SQLite + Docker.
 ```bash
 npm run dev      # Development server
 npm run build    # Production build
-npm run check    # Type check (svelte-check)
-npm run test     # Run tests (Vitest)
-npm run lint     # ESLint check
-npm run format   # Prettier format
+npm run check    # Sync SvelteKit and type-check app, scripts, worker, and configs
+npm run check:python   # Run mypy checks for Python scripts
+npm test               # Run Vitest and Python unit tests
+npm run lint           # Prettier and ESLint
+npm run lint:python    # Run Ruff checks for Python scripts
+npm run format         # Prettier format
 
 # Docker
 docker build -t feed-me-maybe .

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   rss-reader:
     build: .
@@ -10,6 +8,7 @@ services:
       - NODE_ENV=production
       - APP_PASSWORD=${APP_PASSWORD}
       - APP_SECRET=${APP_SECRET:-}
+      - ORIGIN
       - DATABASE_URL=/app/data/feed-me-maybe.db
       - HOST=0.0.0.0
       - PORT=3000

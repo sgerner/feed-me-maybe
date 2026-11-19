@@ -20,7 +20,7 @@ import math
 import re
 import sqlite3
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote

@@ -12,6 +12,8 @@ export default defineConfig({
     tailwindcss(),
     sveltekit(),
     SvelteKitPWA({
+      base: '/',
+      scope: '/',
       // SvelteKit SSR does not inject the generated registration script into
       // app.html; the deferred script tag is declared there explicitly.
       injectRegister: 'auto',
@@ -20,6 +22,7 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'service-worker.ts',
       includeAssets: [
+        'offline.html',
         'brand-mark.svg',
         'favicon.png',
         'favicon-16x16.png',

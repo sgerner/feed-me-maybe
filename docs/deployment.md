@@ -13,8 +13,23 @@ not change the selected ranking provider.
 The project uses a multi-stage Dockerfile to minimize the final image size:
 
 ```dockerfile
-Stage 1 (builder): node:26-slim + build tools → npm ci + npm run build
-Stage 2 (runner):  node:26-slim + runtime deps → npm ci --omit=dev + copy build
+Stage 1 (builder): node:24-slim + native build tools → npm ci + build + prune dev deps
+Stage 2 (runner):  node:24-slim → copy production dependencies and build output
+```
+
+The final image has no compiler toolchain and runs the app as the unprivileged
+`node` user. Docker reports the container healthy after the public login page
+returns successfully.
+
+The named `feed-me-maybe-data` volume is created from `/app/data`, which is
+owned by `node`. If an older or bind-mounted data directory is still owned by
+root and startup reports a SQLite permission error, stop the app and repair it
+once:
+
+```bash
+docker compose stop rss-reader
+docker compose run --rm --user root --entrypoint sh rss-reader -c 'chown -R node:node /app/data'
+docker compose up -d rss-reader
 ```
 
 Build the image:
@@ -192,55 +207,15 @@ This makes the database file directly accessible on the host filesystem for easi
 
 ## Health Check
 
-The application does not expose a dedicated `/health` endpoint. You can verify health by checking:
+The image checks the public login page using Node. Docker Compose inherits the
+image's health check. Review its status with:
 
 ```bash
-# HTTP check
-curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/login
-# Expected: 200
-
-# Docker health check (add to docker-compose.yml)
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:3000/login"]
-  interval: 30s
-  timeout: 5s
-  retries: 3
-  start_period: 10s
+docker compose ps rss-reader
 ```
 
-### Updated docker-compose.yml with Health Check
-
-```yaml
-version: '3.8'
-
-services:
-  rss-reader:
-    build: .
-    container_name: feed-me-maybe
-    ports:
-      - '${PORT:-3000}:3000'
-    environment:
-      - NODE_ENV=production
-      - APP_PASSWORD=${APP_PASSWORD}
-    volumes:
-      - feed-me-maybe-data:/app/data
-    restart: unless-stopped
-    healthcheck:
-      test:
-        [
-          'CMD',
-          'node',
-          '-e',
-          "require('http').get('http://localhost:3000/login', (r) => process.exit(r.statusCode === 200 ? 0 : 1))",
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-volumes:
-  feed-me-maybe-data:
-```
+The probe confirms that the HTTP server responds. To verify login, sign in with
+the deployment's `APP_PASSWORD`.
 
 ## Production Checklist
 
