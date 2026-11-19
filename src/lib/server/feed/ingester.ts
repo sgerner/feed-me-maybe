@@ -293,9 +293,10 @@ export async function ingestFeed(
     };
   }
 
-  // Update feed metadata
+  // Prepare feed metadata and cache headers with the article batch. If any
+  // article write rolls back, the next fetch must still use the prior ETag.
   const updates: string[] = [];
-  const values: (string | number)[] = [];
+  const values: (string | number | null)[] = [];
   if (fetchResult.title && !feedRecord?.custom_title) {
     updates.push('title = ?');
     values.push(fetchResult.title);
@@ -313,27 +314,12 @@ export async function ingestFeed(
     values.push(fetchResult.imageUrl);
   }
 
-  // Cache headers
-  if (fetchResult.etag) {
-    updates.push('etag = ?');
-    values.push(fetchResult.etag);
-  }
-  if (fetchResult.lastModified) {
-    updates.push('last_modified_header = ?');
-    values.push(fetchResult.lastModified);
-  }
-
-  if (updates.length > 0) {
-    updates.push('updated_at = ?');
-    values.push(Date.now());
-    values.push(feedId);
-    db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(
-      ...values,
-    );
-  }
+  updates.push('etag = ?', 'last_modified_header = ?');
+  values.push(fetchResult.etag || null, fetchResult.lastModified || null);
 
   // Process articles in a transaction for atomicity
   const newArticleIds: string[] = [];
+  const webhookArticles: Record<string, unknown>[] = [];
   // Older databases created before the additive external_url migration may
   // not have this optional column. Keep ingestion compatible without changing
   // schema or losing the rest of the article row.
@@ -579,17 +565,10 @@ export async function ingestFeed(
       ).run(...articleValues);
       applyPreferenceModelToArticle(articleId);
 
-      // Trigger webhook for new article
       const newArticle = db
         .prepare('SELECT * FROM articles WHERE id = ?')
-        .get(articleId) as any;
-      if (newArticle) {
-        dispatchWebhookEvent({
-          type: 'article.ingested',
-          timestamp: Date.now(),
-          payload: { article: newArticle },
-        });
-      }
+        .get(articleId) as Record<string, unknown> | undefined;
+      if (newArticle) webhookArticles.push(newArticle);
 
       newArticleIds.push(articleId);
       const inserted: ExistingArticle = {
@@ -634,11 +613,31 @@ export async function ingestFeed(
       );
     }
 
+    updates.push('updated_at = ?');
+    values.push(Date.now(), feedId);
+    db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(
+      ...values,
+    );
+
     return articlesNew;
   });
 
   try {
     const articlesNew = ingestTx();
+
+    for (const article of webhookArticles) {
+      void dispatchWebhookEvent({
+        type: 'article.ingested',
+        timestamp: Date.now(),
+        payload: { article },
+      }).catch((error) => {
+        recordAppError({
+          source: 'feed.ingester.webhook',
+          error,
+          details: { feedId, articleId: article.id },
+        });
+      });
+    }
 
     if (articlesNew > 0) {
       broadcast('new_articles', {
