@@ -51,6 +51,7 @@ export type SearchArticle = {
   feedTitle: string | null;
   feedUrl: string | null;
   feedCategory: string | null;
+  feedOpenMode: string | null;
   relevance: number | null;
   titleHighlight: string | null;
   authorHighlight: string | null;
@@ -109,7 +110,7 @@ function makeFtsQuery(terms: string[]): string {
         .trim(),
     )
     .flatMap((term) => term.split(/\s+/))
-    .filter(Boolean);
+    .filter((term) => /[\p{L}\p{N}]/u.test(term));
   return normalizedTerms
     .map((term) => `"${term.replace(/"/g, '""')}"`)
     .join(' ');
@@ -169,7 +170,15 @@ export function parseSearchQuery(rawQuery: string): ParsedSearchQuery {
     }
   }
 
-  return { text: makeFtsQuery(textTerms), filters, tokens };
+  const text = makeFtsQuery(textTerms);
+  const hasFilters = Object.values(filters).some(
+    (value) => value !== undefined,
+  );
+  if (query && !text && !hasFilters) {
+    throw new SearchQueryError('Enter a search word or supported filter.');
+  }
+
+  return { text, filters, tokens };
 }
 
 type SearchCursor = {
@@ -295,6 +304,7 @@ function searchSelect(parsed: ParsedSearchQuery): string {
            a.read_at, a.saved_at, a.hidden_at, a.rejected_at, a.state_version,
            a.heuristic_score, a.combined_score,
            f.title AS feed_title, f.url AS feed_url, f.category AS feed_category,
+           f.open_mode AS feed_open_mode,
            ${highlights}
   `;
 }
@@ -327,6 +337,7 @@ function toSearchArticle(row: Record<string, unknown>): SearchArticle {
     feedTitle: (row.feed_title as string | null) ?? null,
     feedUrl: (row.feed_url as string | null) ?? null,
     feedCategory: (row.feed_category as string | null) ?? null,
+    feedOpenMode: (row.feed_open_mode as string | null) ?? null,
     relevance: (row.relevance as number | null) ?? null,
     titleHighlight: (row.title_highlight as string | null) ?? null,
     authorHighlight: (row.author_highlight as string | null) ?? null,
