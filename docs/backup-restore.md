@@ -4,11 +4,11 @@ Feed Me Maybe stores all data in a single SQLite database file. Backup and resto
 
 ## Database Location
 
-| Deployment            | Path                                          |
-| --------------------- | --------------------------------------------- |
-| Local development     | `./data/feed-me-maybe.db`                     |
-| Docker (named volume) | Inside the volume at `/data/feed-me-maybe.db` |
-| Docker (bind mount)   | The host path you specified                   |
+| Deployment            | Path                                              |
+| --------------------- | ------------------------------------------------- |
+| Local development     | `./data/feed-me-maybe.db`                         |
+| Docker (named volume) | `/app/data/feed-me-maybe.db` inside the container |
+| Docker (bind mount)   | The host path you specified                       |
 
 ## SQLite WAL Mode
 
@@ -25,48 +25,43 @@ The database runs in WAL (Write-Ahead Logging) mode, which creates two additiona
 ### Method 1: File Copy (Docker Named Volume)
 
 ```bash
-# Stop the container to ensure a consistent snapshot
+# Stop the container to ensure the database and WAL files form a consistent snapshot.
 docker stop feed-me-maybe
 
-# Copy the database files from the volume
+# Copy the mounted volume contents without adding a nested source directory.
+backup_dir="$(pwd)/backups/feed-me-maybe-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
 docker run --rm \
   -v feed-me-maybe-data:/source:ro \
-  -v $(pwd)/backups:/backup \
-  alpine cp -r /source /backup/feed-me-maybe-$(date +%Y%m%d)
+  -v "$backup_dir:/backup" \
+  alpine cp -a /source/. /backup/
 
-# Restart the container
 docker start feed-me-maybe
 ```
 
 ### Method 2: File Copy (Bind Mount)
 
 ```bash
-# Stop the container
+# Stop the container first to ensure a consistent snapshot.
 docker stop feed-me-maybe
-
-# Copy the database directory
-cp -r /path/on/host/data /path/to/backups/feed-me-maybe-$(date +%Y%m%d)
-
-# Restart
+backup_dir="/path/to/backups/feed-me-maybe-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+cp -a /path/on/host/data/. "$backup_dir/"
 docker start feed-me-maybe
 ```
 
 ### Method 3: SQLite Online Backup (No Downtime)
 
-Use the `sqlite3` CLI to perform an online backup without stopping the container:
+Use the SQLite backup API through the app's installed `better-sqlite3` package
+to perform an online backup without stopping the container. The runtime image
+does not include the `sqlite3` command-line program.
 
 ```bash
-# Enter the running container
-docker exec -it feed-me-maybe sh
-
-# Perform online backup
-sqlite3 /data/feed-me-maybe.db ".backup '/data/feed-me-maybe.backup.db'"
-
-# Exit the container
-exit
+# Perform the online backup inside the running container
+docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); await db.backup('/app/data/feed-me-maybe.backup.db'); db.close();"
 
 # Copy the backup out of the container
-docker cp feed-me-maybe:/data/feed-me-maybe.backup.db ./feed-me-maybe-$(date +%Y%m%d).db
+docker cp feed-me-maybe:/app/data/feed-me-maybe.backup.db ./feed-me-maybe-$(date +%Y%m%d).db
 ```
 
 ### Method 4: Automated Cron Backup
@@ -78,7 +73,7 @@ Add a cron job to back up the database daily:
 crontab -e
 
 # Add this line (daily backup at 2 AM)
-0 2 * * * docker exec feed-me-maybe sqlite3 /data/feed-me-maybe.db ".backup '/data/feed-me-maybe.backup.db'" && docker cp feed-me-maybe:/data/feed-me-maybe.backup.db /backups/feed-me-maybe-$(date +\%Y\%m\%d).db && find /backups -name "feed-me-maybe-*.db" -mtime +30 -delete
+0 2 * * * docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); await db.backup('/app/data/feed-me-maybe.backup.db'); db.close();" && docker cp feed-me-maybe:/app/data/feed-me-maybe.backup.db /backups/feed-me-maybe-$(date +\%Y\%m\%d).db && find /backups -name "feed-me-maybe-*.db" -mtime +30 -delete
 ```
 
 This keeps 30 days of backups and removes older ones automatically.
@@ -131,6 +126,10 @@ docker run --rm \
 docker start feed-me-maybe
 ```
 
+The database backup does not contain `APP_SECRET`. Restore the same `APP_SECRET`
+used when the database was backed up so encrypted AI provider and webhook
+credentials remain readable.
+
 ### From Local Development
 
 ```bash
@@ -152,14 +151,11 @@ After restoring, verify the database is intact:
 
 ```bash
 # Check database integrity
-docker exec feed-me-maybe sqlite3 /data/feed-me-maybe.db "PRAGMA integrity_check;"
-# Expected output: "ok"
+docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); console.log(db.pragma('integrity_check')); db.close();"
+# Expected result: [{ integrity_check: 'ok' }]
 
 # Check table counts
-docker exec feed-me-maybe sqlite3 /data/feed-me-maybe.db \
-  "SELECT 'feeds: ' || COUNT(*) FROM feeds;
-   SELECT 'articles: ' || COUNT(*) FROM articles;
-   SELECT 'sessions: ' || COUNT(*) FROM sessions;"
+docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); for (const table of ['feeds', 'articles', 'sessions']) console.log(table + ': ' + db.prepare('SELECT COUNT(*) AS count FROM ' + table).get().count); db.close();"
 ```
 
 ## Backup Best Practices

@@ -117,6 +117,40 @@ describe('Webhooks', () => {
     deleteWebhook(hookId);
   });
 
+  it('does not send an unsigned event when an encrypted secret cannot be read', async () => {
+    const hookId = createWebhook('Restored Hook', WEBHOOK_URL, [
+      'article.saved',
+    ]);
+    const db = getDb();
+    db.prepare('UPDATE webhooks SET secret = ? WHERE id = ?').run(
+      'v1:unreadable:secret',
+      hookId,
+    );
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await dispatchWebhookEvent({
+        type: 'article.saved',
+        timestamp: Date.now(),
+        payload: { article: { id: 'test' } },
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        db
+          .prepare(
+            "SELECT message FROM app_error_logs WHERE source = 'webhook.dispatch'",
+          )
+          .pluck()
+          .all(),
+      ).toContain(
+        'Webhook signing secret is unreadable. Restore APP_SECRET or replace the signing secret.',
+      );
+    } finally {
+      errorLog.mockRestore();
+      deleteWebhook(hookId);
+    }
+  });
+
   it('rejects private webhook destinations on create and update', () => {
     expect(() =>
       createWebhook('Local Hook', 'http://127.0.0.1:5555/webhook', [

@@ -5,6 +5,8 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'sqlite',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? './data/feed-me-maybe.db',
+    // Drizzle's schema is not the authoritative runtime schema. Keep CLI
+    // commands away from DATABASE_URL, which may point at the reader's data.
+    url: './data/drizzle-scratch.db',
   },
 });

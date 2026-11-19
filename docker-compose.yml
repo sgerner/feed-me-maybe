@@ -9,6 +9,7 @@ services:
     environment:
       - NODE_ENV=production
       - APP_PASSWORD=${APP_PASSWORD}
+      - APP_SECRET=${APP_SECRET:-}
       - DATABASE_URL=/app/data/feed-me-maybe.db
       - HOST=0.0.0.0
       - PORT=3000
