@@ -44,6 +44,7 @@ const STRIP_HEADERS = new Set([
   'x-api-key',
 ]);
 
+/** @param {string} requestUrl */
 function buildTargetUrl(requestUrl) {
   const incoming = new URL(requestUrl);
   const explicitTarget = incoming.searchParams.get('url');
@@ -65,6 +66,7 @@ function buildTargetUrl(requestUrl) {
     .href;
 }
 
+/** @param {string} address */
 function isPrivateIpv4(address) {
   const parts = address.split('.').map(Number);
   if (
@@ -88,8 +90,66 @@ function isPrivateIpv4(address) {
   );
 }
 
-function isSafeTargetUrl(value) {
-  const parsed = new URL(value);
+/** @param {string} address */
+function parseIpv6Hextets(address) {
+  let value = address.toLowerCase();
+  if (value.includes('.')) {
+    const lastColon = value.lastIndexOf(':');
+    if (lastColon < 0) return null;
+    const octets = value
+      .slice(lastColon + 1)
+      .split('.')
+      .map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : NaN));
+    if (
+      octets.length !== 4 ||
+      octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+    )
+      return null;
+    value = `${value.slice(0, lastColon)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+
+  const halves = value.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if ([...left, ...right].some((part) => !/^[0-9a-f]{1,4}$/.test(part)))
+    return null;
+
+  const missing = halves.length === 2 ? 8 - left.length - right.length : 0;
+  if (
+    missing < 0 ||
+    (halves.length === 1 && left.length !== 8) ||
+    (halves.length === 2 && missing < 1)
+  )
+    return null;
+  return [
+    ...left.map((part) => Number.parseInt(part, 16)),
+    ...Array.from({ length: missing }, () => 0),
+    ...right.map((part) => Number.parseInt(part, 16)),
+  ];
+}
+
+/** @param {string} address */
+function ipv4FromMappedIpv6(address) {
+  const hextets = parseIpv6Hextets(address);
+  if (
+    !hextets ||
+    !hextets.slice(0, 5).every((part) => part === 0) ||
+    hextets[5] !== 0xffff
+  )
+    return null;
+
+  return `${hextets[6] >> 8}.${hextets[6] & 255}.${hextets[7] >> 8}.${hextets[7] & 255}`;
+}
+
+/** @param {string} value */
+export function isSafeTargetUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
   if (
     !['http:', 'https:'].includes(parsed.protocol) ||
     parsed.username ||
@@ -108,6 +168,11 @@ function isSafeTargetUrl(value) {
     return false;
   if (/^\d+(?:\.\d+){3}$/.test(hostname) && isPrivateIpv4(hostname))
     return false;
+  if (hostname.includes(':')) {
+    const mappedIpv4 = ipv4FromMappedIpv6(hostname);
+    if (mappedIpv4 !== null) return !isPrivateIpv4(mappedIpv4);
+    if (!parseIpv6Hextets(hostname)) return false;
+  }
   if (
     hostname === '::1' ||
     hostname === '::' ||
@@ -117,6 +182,7 @@ function isSafeTargetUrl(value) {
   return true;
 }
 
+/** @param {Response} response */
 function contentTypeIsAllowed(response) {
   const contentType = (response.headers.get('content-type') || '')
     .split(';', 1)[0]
@@ -125,6 +191,7 @@ function contentTypeIsAllowed(response) {
   return !contentType || ALLOWED_CONTENT_TYPES.includes(contentType);
 }
 
+/** @param {string} targetUrl @param {Request} request */
 async function fetchTarget(targetUrl, request) {
   let currentUrl = targetUrl;
   for (let redirects = 0; ; redirects += 1) {
@@ -155,6 +222,7 @@ async function fetchTarget(targetUrl, request) {
   }
 }
 
+/** @param {ReadableStream<Uint8Array> | null} body */
 function limitResponseBody(body) {
   if (!body) return body;
   let total = 0;
@@ -172,6 +240,7 @@ function limitResponseBody(body) {
   );
 }
 
+/** @param {Request} request */
 function buildForwardHeaders(request) {
   const headers = new Headers();
 
@@ -203,7 +272,7 @@ function buildCorsHeaders() {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(/** @type {Request} */ request) {
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,

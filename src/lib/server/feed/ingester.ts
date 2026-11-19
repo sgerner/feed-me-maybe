@@ -224,6 +224,21 @@ export async function ingestFeed(
     });
   }
 
+  const current = db
+    .prepare('SELECT url FROM feeds WHERE id = ?')
+    .get(feedId) as { url: string } | undefined;
+  if (current?.url !== feedRecord.url) {
+    db.prepare(
+      'UPDATE feed_fetch_logs SET status = ?, completed_at = ? WHERE id = ?',
+    ).run('success', Date.now(), logId);
+    return {
+      success: true,
+      articlesFound: 0,
+      articlesNew: 0,
+      status: 'completed',
+    };
+  }
+
   if (sourceType === 'reddit') {
     const normalizedUrl = normalizeRedditUrl(canonicalUrl).normalizedUrl;
     if (feedRecord.url !== normalizedUrl) {

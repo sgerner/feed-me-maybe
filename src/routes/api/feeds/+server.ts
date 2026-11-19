@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { fetchFeed } from '$lib/server/feed/fetcher';
 import { enqueueFeedFetch } from '$lib/server/feed/job-queue';
 import { wakePoller } from '$lib/server/poller';
 import {
@@ -42,15 +43,24 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   let body: Record<string, unknown>;
   try {
     body = await request.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      throw new Error('Invalid body');
   } catch {
     return json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { url: requestedUrl, category } = body;
-  let title = body.title;
+  const requestedUrl = body.url;
+  const category =
+    typeof body.category === 'string' ? body.category.trim() : '';
+  const requestedTitle =
+    typeof body.title === 'string' ? body.title.trim() : '';
+  let title = requestedTitle;
 
   if (!requestedUrl || typeof requestedUrl !== 'string') {
-    return json({ error: 'Feed URL is required' }, { status: 400 });
+    return json(
+      { error: 'Feed URL is required', field: 'url' },
+      { status: 400 },
+    );
   }
 
   // Reject unsupported protocols, embedded credentials, and obvious private
@@ -60,7 +70,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     url = normalizeFeedUrl(validatePublicUrl(requestedUrl).href);
   } catch {
     return json(
-      { error: 'Only public http/https feed URLs are supported' },
+      { error: 'Only public http/https feed URLs are supported', field: 'url' },
       { status: 400 },
     );
   }
@@ -105,6 +115,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
           error:
             validation.error ||
             'This looks like a Reddit URL, but Reddit did not return a readable JSON feed. Check that the subreddit, user, or search URL exists.',
+          field: 'url',
         },
         { status: 422 },
       );
@@ -126,16 +137,48 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         redditSource.username ||
         'Reddit';
     }
+  } else {
+    const existing = db.prepare('SELECT id FROM feeds WHERE url = ?').get(url);
+    if (existing)
+      return json(
+        { error: 'Feed URL already exists', field: 'url' },
+        { status: 409 },
+      );
+    const deadline = AbortSignal.timeout(15_000);
+    let result = await fetchFeed(url, { discover: true, deadline });
+    if (!result.success && proxyBaseUrl && !deadline.aborted) {
+      const throughProxy = await fetchFeed(url, {
+        discover: true,
+        proxyBaseUrl,
+        deadline,
+      });
+      if (throughProxy.success) {
+        result = throughProxy;
+        useProxy = true;
+      }
+    }
+    if (!result.success || !result.subscriptionUrl) {
+      return json(
+        {
+          error: result.error || 'This URL did not return a readable feed',
+          field: 'url',
+        },
+        { status: 422 },
+      );
+    }
+    normalizedUrl = normalizeFeedUrl(result.subscriptionUrl);
+    if (!title) title = result.title ?? '';
   }
 
   try {
     db.transaction(() => {
       db.prepare(
-        'INSERT INTO feeds (id, url, title, category, source_type, source_metadata, use_proxy, poll_interval_mins, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
+        'INSERT INTO feeds (id, url, title, custom_title, category, source_type, source_metadata, use_proxy, poll_interval_mins, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
       ).run(
         id,
         normalizedUrl,
         title || '',
+        requestedTitle ? 1 : 0,
         category || '',
         sourceType,
         sourceMetadata,
@@ -148,7 +191,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     if (msg.includes('UNIQUE constraint')) {
-      return json({ error: 'Feed URL already exists' }, { status: 409 });
+      return json(
+        { error: 'Feed URL already exists', field: 'url' },
+        { status: 409 },
+      );
     }
     return json({ error: 'Failed to create feed' }, { status: 500 });
   }
