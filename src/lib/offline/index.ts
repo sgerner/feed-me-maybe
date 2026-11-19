@@ -25,7 +25,12 @@ export {
   orderMutations,
   replayMutationBatch,
   replayOfflineMutations,
+  retryBlockedOfflineMutations,
   requestOfflineBackgroundSync,
 } from './outbox';
-export { applyMutationToArticle, mutationDedupeKey } from './state';
+export {
+  applyMutationToArticle,
+  matchesOfflineVisibility,
+  mutationDedupeKey,
+} from './state';
 export * from './types';

@@ -3,6 +3,7 @@ import {
   buildInteractionRequest,
   calculateRetryDelay,
   coalesceMutations,
+  requeueBlockedMutations,
   replayMutationBatch,
 } from './outbox';
 import { mutationDedupeKey } from './state';
@@ -104,6 +105,35 @@ describe('offline mutation outbox', () => {
       state: 'conflict',
       lastError: 'server state changed',
     });
+  });
+
+  it('requeues blocked actions with a fresh idempotency key for explicit retry', () => {
+    const blocked = mutation(1, 'article-1', 'save', {
+      state: 'blocked',
+      lastError: 'Unauthorized',
+      idempotencyKey: 'stale-key',
+    });
+    const pending = mutation(2, 'article-2', 'read');
+    const conflict = mutation(3, 'article-3', 'hide', {
+      state: 'conflict',
+      lastError: 'idempotency conflict',
+      idempotencyKey: 'conflict-key',
+    });
+    const result = requeueBlockedMutations([blocked, pending, conflict], 500);
+
+    expect(result[0]).toMatchObject({
+      id: blocked.id,
+      articleId: 'article-1',
+      type: 'save',
+      state: 'pending',
+      attempts: 0,
+      nextAttemptAt: 500,
+      lastError: undefined,
+    });
+    expect(result[0].idempotencyKey).toBe('stale-key');
+    expect(result[1]).toEqual(pending);
+    expect(result[2]).toMatchObject({ state: 'pending', id: conflict.id });
+    expect(result[2].idempotencyKey).not.toBe('conflict-key');
   });
 
   it('builds a replay request with a stable idempotency identity', () => {

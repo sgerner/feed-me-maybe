@@ -2,6 +2,7 @@ import {
   getAllRecords,
   getMetaValue,
   normalizeOfflineScope,
+  putRecords,
   putMetaValue,
   replaceRecords,
 } from './db';
@@ -222,6 +223,27 @@ function createId(prefix: string): string {
   return `${prefix}-${uuid || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
 
+export function requeueBlockedMutations(
+  mutations: OfflineMutation[],
+  now = Date.now(),
+): OfflineMutation[] {
+  return mutations.map((mutation) =>
+    mutation.state === 'blocked' || mutation.state === 'conflict'
+      ? {
+          ...mutation,
+          ...(mutation.state === 'conflict'
+            ? { idempotencyKey: createId('offline-idempotency') }
+            : {}),
+          attempts: 0,
+          nextAttemptAt: now,
+          state: 'pending',
+          processingAt: undefined,
+          lastError: undefined,
+        }
+      : mutation,
+  );
+}
+
 function normalizeVisibleArticleIds(value: string[] | undefined): string[] {
   if (!value) return [];
   const ids: string[] = [];
@@ -414,6 +436,21 @@ export async function replayOfflineMutations(
     nextAttemptAt,
     lastError: result.lastError,
   };
+}
+
+export async function retryBlockedOfflineMutations(
+  userScope: string,
+  options: { fetchImpl?: typeof fetch; now?: number } = {},
+): Promise<OfflineReplayResult> {
+  const scope = normalizeOfflineScope(userScope);
+  const now = options.now ?? Date.now();
+  const mutations = await getOfflineMutations(scope);
+  const blocked = mutations.filter(
+    (mutation) => mutation.state === 'blocked' || mutation.state === 'conflict',
+  );
+  const requeued = requeueBlockedMutations(blocked, now);
+  await putRecords('outbox', requeued);
+  return replayOfflineMutations(scope, { ...options, now });
 }
 
 export async function getOfflineSyncStatus(

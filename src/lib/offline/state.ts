@@ -1,5 +1,16 @@
 import type { OfflineArticle, OfflineMutationType } from './types';
 
+export type OfflineVisibilityFilter = 'visible' | 'hidden' | 'rejected';
+
+export function matchesOfflineVisibility(
+  article: Pick<OfflineArticle, 'hidden' | 'thumbs_down'>,
+  filter: OfflineVisibilityFilter = 'visible',
+): boolean {
+  if (filter === 'hidden') return article.hidden === true;
+  if (filter === 'rejected') return article.thumbs_down === true;
+  return article.hidden !== true && article.thumbs_down !== true;
+}
+
 export function mutationDedupeKey(
   articleId: string,
   type: OfflineMutationType,
