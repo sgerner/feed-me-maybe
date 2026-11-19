@@ -13,6 +13,7 @@ export {
   getCachedDigests,
   getCachedSavedArticles,
   getOfflineStorageCounts,
+  refreshOfflineArticleBodies,
 } from './store';
 export {
   buildInteractionRequest,

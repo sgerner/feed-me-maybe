@@ -66,7 +66,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   const rawArticleId = body.articleId;
   const type = body.type;
-  const validTypes: InteractionType[] = [
+  const offlineKey = request.headers.get('x-offline-idempotency-key');
+  const hasOfflineProtocol =
+    Boolean(offlineKey) &&
+    request.headers.get(OFFLINE_PROTOCOL_HEADER) === OFFLINE_PROTOCOL_VERSION;
+  const validTypes: string[] = [
     'read',
     'unread',
     'hide',
@@ -77,6 +81,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     'unhide',
     'unsave',
     'open',
+    ...(hasOfflineProtocol ? ['restore'] : []),
   ];
 
   if (
@@ -97,12 +102,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   // The service worker replays mutations through this compatibility endpoint
   // so older clients and the installed PWA share one queue contract. Route
   // those requests through the versioned state API for exactly-once behavior.
-  const offlineKey = request.headers.get('x-offline-idempotency-key');
-  if (
-    offlineKey &&
-    request.headers.get(OFFLINE_PROTOCOL_HEADER) === OFFLINE_PROTOCOL_VERSION
-  ) {
-    const actions: Partial<Record<InteractionType, ArticleStateAction>> = {
+  if (hasOfflineProtocol && offlineKey) {
+    const actions: Partial<Record<string, ArticleStateAction>> = {
       read: 'read',
       unread: 'unread',
       save: 'save',
@@ -110,6 +111,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       hide: 'hide',
       unhide: 'unhide',
       thumbs_down: 'reject',
+      restore: 'restore',
     };
     const action = actions[type as InteractionType];
     if (!action) {

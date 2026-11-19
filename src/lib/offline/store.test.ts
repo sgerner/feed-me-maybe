@@ -48,7 +48,12 @@ const memory = vi.hoisted(() => {
 
 vi.mock('./db', () => memory);
 
-import { cacheSavedArticles, getCachedSavedArticles } from './store';
+import {
+  cacheSavedArticles,
+  getCachedArticles,
+  getCachedSavedArticles,
+  refreshOfflineArticleBodies,
+} from './store';
 import type { CachedArticle, OfflineMutation } from './types';
 
 function cachedArticle(id: string, updatedAt: number): CachedArticle {
@@ -110,5 +115,65 @@ describe('offline article cache', () => {
     await cacheSavedArticles('reader', []);
 
     expect(await getCachedSavedArticles('reader')).toEqual([]);
+  });
+
+  it('refreshes private unread and saved bodies without cacheable requests', async () => {
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init).toMatchObject({
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        return Response.json({
+          articles: [
+            {
+              id: 'unread-body',
+              url: 'https://example.com/unread-body',
+              title: 'Unread body',
+              content: 'Cached article text',
+              read: false,
+            },
+          ],
+          savedArticles: [
+            {
+              id: 'saved-body',
+              url: 'https://example.com/saved-body',
+              title: 'Saved body',
+              content: 'Saved article text',
+              saved: true,
+            },
+          ],
+        });
+      },
+    );
+
+    await expect(
+      refreshOfflineArticleBodies('reader', fetchImpl),
+    ).resolves.toBe(true);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/offline/articles',
+      expect.objectContaining({ credentials: 'include', cache: 'no-store' }),
+    );
+    expect(await getCachedArticles('reader')).toMatchObject([
+      { id: 'saved-body', content: 'Saved article text', saved: true },
+      { id: 'unread-body', content: 'Cached article text', read: false },
+    ]);
+    expect(await getCachedSavedArticles('reader')).toMatchObject([
+      { id: 'saved-body', content: 'Saved article text' },
+    ]);
+  });
+
+  it('keeps existing private bodies when the snapshot endpoint requires login', async () => {
+    const existing = cachedArticle('offline-body', 10);
+    existing.content = 'Previously cached text';
+    memory.stores.get('articles')!.set(existing.key, existing);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 401 }));
+
+    await expect(
+      refreshOfflineArticleBodies('reader', fetchImpl),
+    ).resolves.toBe(false);
+    expect(await getCachedArticles('reader')).toMatchObject([
+      { id: 'offline-body', content: 'Previously cached text' },
+    ]);
   });
 });

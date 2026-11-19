@@ -16,7 +16,14 @@ export const DEFAULT_OFFLINE_LIMITS = {
 } as const;
 
 export type OfflineMutationType =
-  'read' | 'unread' | 'save' | 'unsave' | 'hide' | 'unhide' | 'thumbs_down';
+  | 'read'
+  | 'unread'
+  | 'save'
+  | 'unsave'
+  | 'hide'
+  | 'unhide'
+  | 'thumbs_down'
+  | 'restore';
 
 export type OfflineMutationState =
   'pending' | 'processing' | 'blocked' | 'conflict';
@@ -40,6 +47,7 @@ export interface OfflineArticle {
   feed_title?: string | null;
   feed_url?: string | null;
   feed_site_url?: string | null;
+  feed_open_mode?: string | null;
   read?: boolean | null;
   saved?: boolean | null;
   hidden?: boolean | null;
@@ -82,6 +90,7 @@ export interface OfflineMutation {
   attempts: number;
   nextAttemptAt: number;
   state: OfflineMutationState;
+  blockedStatus?: number;
   processingAt?: number;
   lastError?: string;
 }
