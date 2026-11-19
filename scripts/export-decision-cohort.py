@@ -271,7 +271,7 @@ def source_counts(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     comparator = "<" if strict_before else "<="
     positive = connection.execute(
-        f"""SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source, COUNT(*) AS interaction_count
+        f"""SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source, COUNT(DISTINCT a.id) AS interaction_count
             FROM user_interactions ui JOIN articles a ON a.id = ui.article_id
             JOIN feeds f ON f.id = a.feed_id
             WHERE ui.interaction_type IN ('open', 'read') AND ui.timestamp {comparator} ?
@@ -279,10 +279,12 @@ def source_counts(
         (before_ms,),
     ).fetchall()
     negative = connection.execute(
-        f"""SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source, COUNT(*) AS interaction_count
+        f"""SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source, COUNT(DISTINCT a.id) AS interaction_count
             FROM user_interactions ui JOIN articles a ON a.id = ui.article_id
             JOIN feeds f ON f.id = a.feed_id
             WHERE ui.interaction_type IN ('thumbs_down', 'hide') AND ui.timestamp {comparator} ?
+              AND (ui.interaction_type = 'thumbs_down' OR COALESCE(json_extract(
+                   CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{{}}' END, '$.auto'), 0) = 0)
             GROUP BY f.id ORDER BY interaction_count DESC, source ASC LIMIT 5""",
         (before_ms,),
     ).fetchall()
@@ -331,6 +333,8 @@ def interaction_features(connection: sqlite3.Connection, tables: dict[str, set[s
                     AND am.processed_at IS NOT NULL
                     AND am.processed_at < ?
                     AND am.processed_at <= ui.timestamp"""
+        if "analysis_status" in tables["article_ai_metadata"]:
+            ai_join += " AND am.analysis_status = 'ready'"
         ai_select = "COALESCE(am.topics, '[]') AS ai_topics, COALESCE(am.entities, '[]') AS ai_entities, COALESCE(am.content_type, '') AS ai_content_type, COALESCE(am.signals, '[]') AS ai_signals"
 
     sql = f"""SELECT ui.article_id, ui.interaction_type, ui.timestamp, ui.metadata,
@@ -373,6 +377,9 @@ def temporal_profile(
     memory: dict[tuple[str, str, str], dict[str, float | int]] = {}
     positives: Counter[str] = Counter()
     negatives: Counter[str] = Counter()
+    seen_positive: set[str] = set()
+    seen_negative: set[str] = set()
+    seen_opens: set[str] = set()
     used_events = 0
 
     for event in events:
@@ -380,22 +387,27 @@ def temporal_profile(
             continue
         interaction_type = str(event["interaction_type"])
         timestamp = int(event["timestamp"])
-        if interaction_type in ("open", "read"):
-            positives[str(event["feed_id"])] += 1
-        elif interaction_type in ("thumbs_down", "hide"):
-            negatives[str(event["feed_id"])] += 1
-
-        delta = interaction_delta(interaction_type)
-        if delta is None:
-            continue
         metadata = {}
         try:
             metadata = json.loads(event["metadata"] or "{}")
         except (TypeError, json.JSONDecodeError):
             pass
-        # Preference-model auto-hides are generated from the profile itself and
-        # are not fed back into memory by the application interaction handler.
         if interaction_type == "hide" and isinstance(metadata, dict) and metadata.get("auto"):
+            continue
+
+        article_id = str(event["article_id"])
+        if interaction_type in ("open", "read") and article_id not in seen_positive:
+            positives[str(event["feed_id"])] += 1
+            seen_positive.add(article_id)
+        elif interaction_type in ("thumbs_down", "hide") and article_id not in seen_negative:
+            negatives[str(event["feed_id"])] += 1
+            seen_negative.add(article_id)
+        if interaction_type == "open":
+            if article_id in seen_opens:
+                continue
+            seen_opens.add(article_id)
+        delta = interaction_delta(interaction_type)
+        if delta is None:
             continue
 
         positive_delta, negative_delta, implicit = delta
@@ -520,7 +532,8 @@ def candidate_select(
     ai_join = ""
     if tables["article_ai_metadata"]:
         cutoff_condition = "AND am.processed_at IS NOT NULL AND am.processed_at <= ui.first_action_at" if cutoff_ms is not None else ""
-        ai_join = f"""LEFT JOIN article_ai_metadata am ON am.article_id = a.id {cutoff_condition}"""
+        ready_condition = "AND am.analysis_status = 'ready'" if "analysis_status" in tables["article_ai_metadata"] else ""
+        ai_join = f"""LEFT JOIN article_ai_metadata am ON am.article_id = a.id {cutoff_condition} {ready_condition}"""
         ai_select = "am.processed_at AS ai_processed_at, COALESCE(am.summary, '') AS ai_summary, COALESCE(am.topics, '[]') AS ai_topics, COALESCE(am.entities, '[]') AS ai_entities, COALESCE(am.content_type, '') AS ai_content_type, COALESCE(am.signals, '[]') AS ai_signals, COALESCE(am.ai_relevance_score, 0) AS ai_relevance_score, COALESCE(am.quality_score, 0) AS quality_score, COALESCE(am.novelty_score, 0) AS novelty_score"
 
     base_join = """FROM articles a
