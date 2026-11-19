@@ -38,6 +38,7 @@ export type FeedArticlesQueryResult = {
 type FeedArticlesQueryOptions = {
   feedId: string;
   page?: number;
+  offset?: number;
   showHiddenContent?: boolean;
 };
 
@@ -117,7 +118,7 @@ export function getFeedArticles(
   }
 
   const limit = DEFAULT_FEED_PAGE_LIMIT;
-  const offset = (page - 1) * limit;
+  const offset = options.offset ?? (page - 1) * limit;
 
   const countResult = db
     .prepare(

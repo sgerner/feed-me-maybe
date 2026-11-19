@@ -12,6 +12,7 @@ type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 
 export interface FetchResult {
   success: boolean;
+  subscriptionUrl?: string;
   title?: string;
   description?: string;
   link?: string;
@@ -170,9 +171,62 @@ function parseAtom(xml: string, baseUrl: string) {
   };
 }
 
+function parseJsonFeed(source: string) {
+  const feed = JSON.parse(source) as Record<string, unknown>;
+  if (
+    !feed ||
+    typeof feed.version !== 'string' ||
+    !/^https:\/\/jsonfeed\.org\/version\/1(?:\.1)?$/.test(feed.version) ||
+    !Array.isArray(feed.items)
+  )
+    throw new Error('The URL did not return a valid JSON Feed');
+
+  const htmlText = (value: unknown) =>
+    coerceText(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  return {
+    title: coerceText(feed.title),
+    description: coerceText(feed.description),
+    link: coerceText(feed.home_page_url),
+    image: { url: coerceText(feed.icon) },
+    items: feed.items.flatMap((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const item = entry as Record<string, unknown>;
+      const author = (
+        Array.isArray(item.authors) ? item.authors[0] : item.author
+      ) as { name?: unknown } | undefined;
+      const date = [item.date_published, item.date_modified].find(
+        (value) =>
+          typeof value === 'string' && Number.isFinite(Date.parse(value)),
+      );
+      return [
+        {
+          guid: item.id,
+          link: item.url || item.external_url,
+          title: item.title,
+          author: author?.name,
+          summary: htmlText(item.summary),
+          content: coerceText(item.content_html) || htmlText(item.content_text),
+          mediaContent: { url: item.image || item.banner_image },
+          categories: item.tags,
+          pubDate: date,
+        },
+      ];
+    }),
+  };
+}
+
 export async function fetchFeed(
   url: string,
-  options: { etag?: string; lastModified?: string; proxyBaseUrl?: string } = {},
+  options: {
+    etag?: string;
+    lastModified?: string;
+    proxyBaseUrl?: string;
+    discover?: boolean;
+    deadline?: AbortSignal;
+  } = {},
 ): Promise<FetchResult> {
   try {
     const parsedUrl = new URL(url);
@@ -184,10 +238,14 @@ export async function fetchFeed(
       };
     }
 
+    const deadline = options.deadline ?? AbortSignal.timeout(15000);
     const headers: Record<string, string> = {
       'User-Agent': 'FeedMeMaybe/1.0 RSS Reader',
       Accept:
-        'application/rss+xml, application/atom+xml, application/xml, text/xml',
+        'application/rss+xml, application/atom+xml, application/feed+json, application/xml, text/xml' +
+        (options.discover
+          ? ', text/html;q=0.8, application/xhtml+xml;q=0.8'
+          : ''),
     };
 
     if (options.etag) {
@@ -201,7 +259,7 @@ export async function fetchFeed(
       parsedUrl.href,
       {
         headers,
-        signal: AbortSignal.timeout(15000),
+        signal: deadline,
       },
       {
         proxyBaseUrl: options.proxyBaseUrl,
@@ -209,6 +267,8 @@ export async function fetchFeed(
         allowedContentTypes: [
           'application/atom+xml',
           'application/rss+xml',
+          'application/feed+json',
+          'application/json',
           'application/xml',
           'text/xml',
           'text/rss',
@@ -216,6 +276,7 @@ export async function fetchFeed(
           'application/rdf+xml',
           'application/octet-stream',
           'text/plain',
+          ...(options.discover ? ['text/html', 'application/xhtml+xml'] : []),
         ],
       },
     );
@@ -240,13 +301,67 @@ export async function fetchFeed(
       MAX_FEED_RESPONSE_BYTES,
       (bytes) => decodeFeed(bytes, response.headers.get('content-type') || ''),
     );
+    if (
+      options.discover &&
+      (/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(
+        response.headers.get('content-type') || '',
+      ) ||
+        /^\s*(?:<!doctype html|<html[\s>])/i.test(xml))
+    ) {
+      const document = new DOMParser().parseFromString(
+        xml,
+        'text/html',
+      ) as unknown as Document;
+      const base =
+        safeHttpUrl(
+          document.querySelector('head base[href]')?.getAttribute('href'),
+          finalUrl,
+        ) || finalUrl;
+      const candidates = new Set<string>();
+      for (const link of document.querySelectorAll('head link[href]')) {
+        const rel = (link.getAttribute('rel') || '').toLowerCase().split(/\s+/);
+        const type = (link.getAttribute('type') || '')
+          .toLowerCase()
+          .split(';')[0]
+          .trim();
+        if (
+          !rel.includes('alternate') ||
+          ![
+            'application/rss+xml',
+            'application/atom+xml',
+            'application/feed+json',
+          ].includes(type)
+        )
+          continue;
+        const candidate = safeHttpUrl(link.getAttribute('href'), base);
+        if (candidate && candidate !== finalUrl) candidates.add(candidate);
+        if (candidates.size === 3) break;
+      }
+      for (const candidate of candidates) {
+        if (deadline.aborted) break;
+        const result = await fetchFeed(candidate, {
+          deadline,
+          proxyBaseUrl: options.proxyBaseUrl,
+        });
+        if (result.success) return result;
+      }
+      return {
+        success: false,
+        items: [],
+        error:
+          candidates.size > 0
+            ? 'The website advertised feeds, but none returned a readable feed.'
+            : 'No feed was advertised by this website. Enter the feed URL directly.',
+      };
+    }
     const isAtom =
       /^\s*(?:<\?xml[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:[\w.-]+:)?feed[\s>]/i.test(
         xml,
       );
-    const result =
-      (isAtom ? parseAtom(xml, finalUrl) : null) ??
-      (await parser.parseString(xml));
+    const result = xml.trimStart().startsWith('{')
+      ? parseJsonFeed(xml)
+      : ((isAtom ? parseAtom(xml, finalUrl) : null) ??
+        (await parser.parseString(xml)));
 
     const newEtag = response.headers.get('etag') || undefined;
     const newLastModified = response.headers.get('last-modified') || undefined;
@@ -322,6 +437,7 @@ export async function fetchFeed(
 
     return {
       success: true,
+      subscriptionUrl: parsedUrl.href,
       title: result.title || undefined,
       description: result.description || undefined,
       link: safeHttpUrl(result.link, finalUrl) || undefined,

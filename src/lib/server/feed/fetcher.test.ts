@@ -25,6 +25,58 @@ describe('Feed Fetcher', () => {
     expect(result.error).toContain('http');
   });
 
+  it('discovers a relative alternate feed URL from a website', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          '<html><head><link rel="alternate" type="application/rss+xml" href="feed.xml"></head></html>',
+          { headers: { 'content-type': 'text/html' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          '<rss version="2.0"><channel><title>Feed</title></channel></rss>',
+          { headers: { 'content-type': 'application/rss+xml' } },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/blog/', {
+      discover: true,
+    });
+    expect(result).toMatchObject({
+      success: true,
+      subscriptionUrl: 'https://example.com/blog/feed.xml',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts JSON Feed and preserves plain-text content', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            version: 'https://jsonfeed.org/version/1.1',
+            title: 'A JSON feed',
+            items: [{ id: 'one', url: '/story', content_text: 'A < B' }],
+          }),
+          { headers: { 'content-type': 'application/feed+json' } },
+        ),
+      ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/feed.json');
+    expect(result).toMatchObject({
+      success: true,
+      items: [
+        { guid: 'one', url: 'https://example.com/story', content: 'A &lt; B' },
+      ],
+    });
+  });
+
   it('proxies requests through a configured worker', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
