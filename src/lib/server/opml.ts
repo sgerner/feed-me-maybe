@@ -123,9 +123,7 @@ export function importOpml(xml: string): {
         const added = db.transaction(() => {
           const safeUrl = safeHttpUrl(outline.xmlUrl);
           if (!safeUrl) throw new Error('Feed URL must use http or https');
-          const feedUrl = normalizeFeedUrl(
-            validatePublicUrl(safeUrl).href,
-          );
+          const feedUrl = normalizeFeedUrl(validatePublicUrl(safeUrl).href);
 
           const redditSource = isRedditUrl(feedUrl)
             ? normalizeRedditUrl(feedUrl)
