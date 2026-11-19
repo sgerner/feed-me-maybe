@@ -40,6 +40,9 @@ describe('feed job queue', () => {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM feeds').run();
     db.prepare('DELETE FROM app_error_logs').run();
+    db.prepare(
+      "DELETE FROM app_settings WHERE key LIKE 'provider_cooldown_%' OR key = 'ai_enabled'",
+    ).run();
     jevMocks.isRankingProviderConfigured.mockReturnValue(true);
     jevMocks.processJevArticle.mockReset().mockResolvedValue(undefined);
     aiMocks.processArticle.mockReset().mockResolvedValue(undefined);
@@ -91,6 +94,40 @@ describe('feed job queue', () => {
     expect(row.scheduled_at).toBe(30_000);
     expect(row.error_message).toBe('');
     expect(JSON.parse(row.payload).force).toBe(true);
+  });
+
+  it('leaves queued AI work paused until background processing is re-enabled', async () => {
+    const { enqueueAiProcess, getNextQueuedJobAt, getJob, runDueJobs } =
+      await import('./job-queue');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    const job = enqueueAiProcess('paused-ai-article', { now });
+    db.prepare(
+      `INSERT INTO app_settings (key, value, updated_at)
+       VALUES ('ai_enabled', 'false', ?)
+       ON CONFLICT(key) DO UPDATE SET value = 'false', updated_at = excluded.updated_at`,
+    ).run(now);
+
+    expect(getNextQueuedJobAt()).toBeNull();
+    expect(await runDueJobs({ now, maxJobs: 1 })).toMatchObject({
+      processed: 0,
+      completed: 0,
+    });
+    expect(getJob(job.id)).toMatchObject({
+      status: 'queued',
+      attempts: 0,
+    });
+    expect(aiMocks.processArticle).not.toHaveBeenCalled();
+
+    db.prepare(
+      `UPDATE app_settings SET value = 'true', updated_at = ? WHERE key = 'ai_enabled'`,
+    ).run(now + 1);
+    expect(await runDueJobs({ now: now + 1, maxJobs: 1 })).toMatchObject({
+      processed: 1,
+      completed: 1,
+    });
+    expect(aiMocks.processArticle).toHaveBeenCalledWith('paused-ai-article');
   });
 
   it('runs a bounded set of feed fetches concurrently', async () => {
@@ -193,6 +230,41 @@ describe('feed job queue', () => {
       ingest.mockRestore();
     }
   });
+
+  it.each([401, 429] as const)(
+    'pauses the affected scoring lane after HTTP %s',
+    async (status) => {
+      const { enqueueAiProcess, runDueJobs, getJob, getNextQueuedJobAt } =
+        await import('./job-queue');
+      const { ProviderHttpError } =
+        await import('$lib/server/ai/provider-error');
+      const retryAt = Date.now() + 120_000;
+      aiMocks.processArticle.mockRejectedValueOnce(
+        new Error('Wrapped request failure', {
+          cause: new ProviderHttpError(
+            'Provider rejected request',
+            status,
+            retryAt,
+          ),
+        }),
+      );
+      const first = enqueueAiProcess('one');
+      const second = enqueueAiProcess('two');
+      await runDueJobs({ maxJobs: 4 });
+
+      expect(aiMocks.processArticle).toHaveBeenCalledTimes(1);
+      expect(getJob(first.id)).toMatchObject({
+        status: status === 401 ? 'failed' : 'queued',
+        attempts: 1,
+      });
+      expect(getJob(second.id)).toMatchObject({
+        status: 'queued',
+        attempts: 0,
+      });
+      expect(getNextQueuedJobAt()).toBe(retryAt);
+      expect((await runDueJobs({ maxJobs: 4 })).processed).toBe(0);
+    },
+  );
 
   it('recovers abandoned processing jobs and fetch logs', async () => {
     const { FEED_FETCH_LEASE_MS, recoverAbandonedJobs } =
@@ -449,6 +521,186 @@ describe('feed job queue', () => {
       'jev-new-1',
       'jev-new-2',
     ]);
+  });
+
+  it('waits for active enrichment and skips archived articles during backfill', async () => {
+    const {
+      AI_PROCESS_JOB_TYPE,
+      enqueueJevBackfill,
+      enqueueJevProcess,
+      JEV_PROCESS_JOB_TYPE,
+    } = await import('./job-queue');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = 55_000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-ai-backfill', 'https://example.com/ai-backfill', now, now);
+
+    const article = db.prepare(
+      `INSERT INTO articles
+         (id, feed_id, url, title, hidden, rejected, jev_score, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    );
+    for (const [id, hidden, rejected] of [
+      ['ai-queued', 0, 0],
+      ['ai-processing', 0, 0],
+      ['ai-failed', 0, 0],
+      ['hidden-archive', 1, 0],
+      ['rejected-archive', 0, 1],
+      ['visible-article', 0, 0],
+    ] as const) {
+      article.run(
+        id,
+        'feed-ai-backfill',
+        `https://example.com/${id}`,
+        id,
+        hidden,
+        rejected,
+        now,
+        now,
+        now,
+      );
+    }
+
+    const insertJob = db.prepare(
+      'INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at) VALUES (?, ?, ?, ?, 0, 4, ?)',
+    );
+    insertJob.run(
+      'ai-queued-job',
+      AI_PROCESS_JOB_TYPE,
+      'queued',
+      JSON.stringify({ articleId: 'ai-queued' }),
+      now,
+    );
+    insertJob.run(
+      'ai-processing-job',
+      AI_PROCESS_JOB_TYPE,
+      'processing',
+      JSON.stringify({ articleId: 'ai-processing' }),
+      now,
+    );
+    insertJob.run(
+      'ai-failed-job',
+      AI_PROCESS_JOB_TYPE,
+      'failed',
+      JSON.stringify({ articleId: 'ai-failed' }),
+      now,
+    );
+
+    expect(enqueueJevProcess('hidden-archive', { now })).toBeNull();
+    expect(enqueueJevProcess('rejected-archive', { now })).toBeNull();
+    expect(enqueueJevBackfill({ now, limit: 10 })).toBe(2);
+    const queuedIds = db
+      .prepare(
+        `SELECT json_extract(payload, '$.articleId') AS article_id
+         FROM jobs WHERE type = ? AND status = 'queued'
+         ORDER BY article_id`,
+      )
+      .all(JEV_PROCESS_JOB_TYPE) as Array<{ article_id: string }>;
+    expect(queuedIds.map((row) => row.article_id)).toEqual([
+      'ai-failed',
+      'visible-article',
+    ]);
+  });
+
+  it('backfills active AI articles while AI processing is disabled', async () => {
+    const { AI_PROCESS_JOB_TYPE, enqueueJevBackfill, JEV_PROCESS_JOB_TYPE } =
+      await import('./job-queue');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = 60_000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-ai-paused', 'https://example.com/ai-paused', now, now);
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'ai-paused-article',
+      'feed-ai-paused',
+      'https://example.com/ai-paused/article',
+      'Paused enrichment',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      "INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_enabled', 'false', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    ).run(now);
+    db.prepare(
+      'INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at) VALUES (?, ?, ?, ?, 0, 4, ?)',
+    ).run(
+      'ai-paused-job',
+      AI_PROCESS_JOB_TYPE,
+      'queued',
+      JSON.stringify({ articleId: 'ai-paused-article' }),
+      now,
+    );
+
+    expect(enqueueJevBackfill({ now })).toBe(1);
+    expect(
+      db
+        .prepare(
+          "SELECT status FROM jobs WHERE type = ? AND json_extract(payload, '$.articleId') = ?",
+        )
+        .get(JEV_PROCESS_JOB_TYPE, 'ai-paused-article'),
+    ).toEqual({ status: 'queued' });
+  });
+
+  it('allows one cooled down recovery for a failed Jev backfill', async () => {
+    const { enqueueJevBackfill, JEV_PROCESS_JOB_TYPE } =
+      await import('./job-queue');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = 10_000_000;
+    const cooldown = 60 * 60 * 1000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-jev-recovery', 'https://example.com/jev-recovery', now, now);
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'jev-recovery-article',
+      'feed-jev-recovery',
+      'https://example.com/jev-recovery/article',
+      'Failed enrichment',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at, completed_at) VALUES (?, ?, ?, ?, 4, 4, ?, ?)',
+    ).run(
+      'jev-original-failure',
+      JEV_PROCESS_JOB_TYPE,
+      'failed',
+      JSON.stringify({ articleId: 'jev-recovery-article', backfill: true }),
+      now - cooldown - 1,
+      now - cooldown - 1,
+    );
+
+    expect(enqueueJevBackfill({ now })).toBe(1);
+    const recovery = db
+      .prepare(
+        "SELECT id, payload FROM jobs WHERE type = ? AND status = 'queued' AND json_extract(payload, '$.articleId') = ?",
+      )
+      .get(JEV_PROCESS_JOB_TYPE, 'jev-recovery-article') as {
+      id: string;
+      payload: string;
+    };
+    expect(JSON.parse(recovery.payload)).toMatchObject({
+      articleId: 'jev-recovery-article',
+      backfill: true,
+      backfillRecovery: true,
+    });
+
+    db.prepare(
+      "UPDATE jobs SET status = 'failed', completed_at = ? WHERE id = ?",
+    ).run(now, recovery.id);
+    expect(enqueueJevBackfill({ now: now + cooldown + 1 })).toBe(0);
   });
 
   it('bounds Jev backfill to four active jobs and deduplicates repeated runs', async () => {

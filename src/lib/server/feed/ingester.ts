@@ -1,4 +1,5 @@
 import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
+import { hasArticleAnalysisText } from '$lib/server/ai/prompts';
 import { normalizeSourceUrl } from '$lib/server/source-url';
 import { getDb } from '$lib/server/db';
 import { fetchFeed } from '$lib/server/feed/fetcher';
@@ -8,6 +9,7 @@ import {
   fetchRedditSource,
 } from '$lib/server/sources/reddit';
 import { applyPreferenceModelToArticle } from '$lib/server/preferences';
+import { refreshCombinedScore } from '$lib/server/scoring';
 import { dispatchWebhookEvent } from '$lib/server/webhooks';
 import { broadcast } from '$lib/server/realtime';
 import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
@@ -320,6 +322,9 @@ export async function ingestFeed(
   // Process articles in a transaction for atomicity
   const newArticleIds: string[] = [];
   const webhookArticles: Record<string, unknown>[] = [];
+  const aiQueuedArticleIds = new Set<string>();
+  const rankingArticleIds = new Set<string>();
+  const queueAi = fetchResult.items.length > 0 && isAiProcessingConfigured();
   // Older databases created before the additive external_url migration may
   // not have this optional column. Keep ingestion compatible without changing
   // schema or losing the rest of the article row.
@@ -414,6 +419,7 @@ export async function ingestFeed(
         existingById.get(legacyId);
       if (existing) {
         let needsUpdate = false;
+        let rankingInputChanged = false;
         const updates: string[] = [];
         const params: any[] = [];
 
@@ -441,12 +447,14 @@ export async function ingestFeed(
           updates.push('title = ?');
           params.push(item.title);
           needsUpdate = true;
+          rankingInputChanged = true;
         }
 
         if (!existing.author && item.author) {
           updates.push('author = ?');
           params.push(item.author);
           needsUpdate = true;
+          rankingInputChanged = true;
         }
 
         const newLen = item.content?.length || 0;
@@ -467,16 +475,30 @@ export async function ingestFeed(
           }
         }
 
-        if (!existing.has_summary && item.summary && !shouldUpgradeContent) {
+        if (
+          !shouldUpgradeContent &&
+          newLen > 0 &&
+          newLen !== existing.content_length_lower &&
+          hasArticleAnalysisText(null, item.content)
+        ) {
+          const stored = readExistingContent.get(existing.id) as
+            { content: string | null } | undefined;
+          shouldUpgradeContent = !hasArticleAnalysisText(null, stored?.content);
+        }
+
+        const addsSummary = !existing.has_summary && Boolean(item.summary);
+        if (addsSummary && !shouldUpgradeContent) {
           updates.push('summary = ?');
           params.push(item.summary);
           needsUpdate = true;
+          rankingInputChanged = true;
         }
 
         if (!existing.categories && item.categories.length > 0) {
           updates.push('categories = ?');
           params.push(JSON.stringify(item.categories));
           needsUpdate = true;
+          rankingInputChanged = true;
         }
 
         if (!existing.image_url && item.imageUrl) {
@@ -501,6 +523,7 @@ export async function ingestFeed(
             params.push(item.summary);
           }
           needsUpdate = true;
+          rankingInputChanged = true;
         }
 
         if (needsUpdate) {
@@ -508,6 +531,32 @@ export async function ingestFeed(
           db.prepare(
             `UPDATE articles SET ${updates.join(', ')}, updated_at = ? WHERE id = ?`,
           ).run(...params.slice(0, -1), Date.now(), params.at(-1));
+        }
+
+        if (rankingInputChanged) {
+          db.prepare(
+            `UPDATE articles
+             SET jev_score = NULL, jev_processed_at = NULL, jev_error = ''
+             WHERE id = ?`,
+          ).run(existing.id);
+          db.prepare(
+            `UPDATE article_ai_metadata
+             SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
+             WHERE article_id = ?`,
+          ).run(existing.id);
+          refreshCombinedScore(existing.id);
+          rankingArticleIds.add(existing.id);
+        }
+
+        const shouldQueueAi =
+          queueAi &&
+          rankingInputChanged &&
+          (Boolean(existing.has_content) ||
+            Boolean(existing.has_summary) ||
+            hasArticleAnalysisText(item.summary, item.content));
+        if (shouldQueueAi) {
+          enqueueAiProcess(existing.id, { feedId });
+          aiQueuedArticleIds.add(existing.id);
         }
         continue;
       }
@@ -564,6 +613,10 @@ export async function ingestFeed(
         `INSERT INTO articles (${articleColumns}) VALUES (${articleValues.map(() => '?').join(', ')})`,
       ).run(...articleValues);
       applyPreferenceModelToArticle(articleId);
+      if (queueAi && hasArticleAnalysisText(item.summary, item.content)) {
+        enqueueAiProcess(articleId, { feedId });
+        aiQueuedArticleIds.add(articleId);
+      }
 
       const newArticle = db
         .prepare('SELECT * FROM articles WHERE id = ?')
@@ -571,6 +624,7 @@ export async function ingestFeed(
       if (newArticle) webhookArticles.push(newArticle);
 
       newArticleIds.push(articleId);
+      rankingArticleIds.add(articleId);
       const inserted: ExistingArticle = {
         id: articleId,
         url: normalizedUrl,
@@ -647,19 +701,11 @@ export async function ingestFeed(
       });
     }
 
-    // AI work is durable now. The worker can retry it after provider errors or
-    // a process restart instead of losing the fire-and-forget promise.
-    const queueAi = newArticleIds.length > 0 && isAiProcessingConfigured();
-    for (const articleId of newArticleIds) {
-      try {
-        if (queueAi) enqueueAiProcess(articleId, { feedId });
-      } catch (err) {
-        recordAppError({
-          source: 'feed.ingester.ai.enqueue',
-          error: err,
-          details: { articleId, feedId },
-        });
-      }
+    // Articles with queued enrichment receive a fresh Jev judgment after the
+    // enrichment job finishes. Ranking the raw stub first would score the
+    // same article again immediately after enrichment.
+    for (const articleId of rankingArticleIds) {
+      if (aiQueuedArticleIds.has(articleId)) continue;
       try {
         enqueueJevProcess(articleId, { feedId });
       } catch (err) {

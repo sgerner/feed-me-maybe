@@ -1,7 +1,7 @@
 import { stripHtml } from '$lib/server/normalization';
 import type { ArticleAnalysisInput } from './types';
 
-const SIGNAL_TAGS = [
+export const ARTICLE_ANALYSIS_SIGNAL_TAGS = [
   'official_announcement',
   'primary_source',
   'specific_details',
@@ -22,6 +22,21 @@ const SIGNAL_TAGS = [
   'thin_rewrite',
   'ad_copy',
 ];
+
+export const ARTICLE_ANALYSIS_CONTENT_TYPES = [
+  'news',
+  'tutorial',
+  'opinion',
+  'analysis',
+  'release_note',
+  'review',
+  'interview',
+  'announcement',
+  'podcast',
+  'video',
+  'essay',
+  'other',
+] as const;
 
 const MAX_TITLE_CHARS = 240;
 const MAX_META_CHARS = 160;
@@ -50,20 +65,33 @@ LikelyUserInterest must be high, medium, or low.
 Quality should reflect factual grounding, specificity, and usefulness.
 Topics and entities should be short arrays of the most relevant items.
 Choose up to 6 neutral signals from this list:
-${SIGNAL_TAGS.join(', ')}
+${ARTICLE_ANALYSIS_SIGNAL_TAGS.join(', ')}
 Signals are descriptive labels, not user preferences.
-Use contentType values such as news, tutorial, opinion, analysis, release_note, review, interview, announcement, podcast, video, essay, other.
+Use exactly one contentType from this list: ${ARTICLE_ANALYSIS_CONTENT_TYPES.join(', ')}.
 Return JSON keys: summary, topics, entities, contentType, relevanceScore, noveltyScore, qualityScore, likelyUserInterest, signals, explanation.`;
+
+export function hasArticleAnalysisText(
+  summary: string | null | undefined,
+  content: string | null | undefined,
+): boolean {
+  return Boolean(stripHtml(summary || '') || stripHtml(content || ''));
+}
 
 export function buildArticleAnalysisPrompt(
   article: ArticleAnalysisInput,
 ): string {
+  const summary = stripHtml(article.summary || '');
+  const content = stripHtml(article.content || '');
+  const summaryIsIncluded = summary && summary === content;
   return JSON.stringify({
     title: clipText(article.title || '', MAX_TITLE_CHARS),
     author: clipText(article.author || '', MAX_META_CHARS),
     age: clipText(article.publishedAge || '', 32),
     categories: joinList(article.categories, 6),
-    summary: clipText(article.summary || '', MAX_SUMMARY_CHARS),
-    content: clipText(article.content || '', MAX_CONTENT_CHARS),
+    summary:
+      summaryIsIncluded || !summary
+        ? undefined
+        : clipText(summary, MAX_SUMMARY_CHARS),
+    content: content ? clipText(content, MAX_CONTENT_CHARS) : undefined,
   });
 }

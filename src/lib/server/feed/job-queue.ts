@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { AiRateLimitError } from '$lib/server/ai/client';
+import { ProviderHttpError } from '$lib/server/ai/provider-error';
+import { SafeFetchError } from '$lib/server/network';
 import { getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
 import { isRankingProviderConfigured } from '$lib/server/ai/jev';
@@ -20,6 +21,7 @@ export const AI_PROCESS_LEASE_MS = 30 * 60 * 1000;
 export const JEV_PROCESS_LEASE_MS = 5 * 60 * 1000;
 export const DEFAULT_RETRY_BASE_MS = 30 * 1000;
 export const MAX_RETRY_DELAY_MS = 60 * 60 * 1000;
+const FAILED_JEV_BACKFILL_COOLDOWN_MS = MAX_RETRY_DELAY_MS;
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 
@@ -37,6 +39,7 @@ export type JevProcessJobPayload = {
   articleId: string;
   feedId?: string;
   backfill?: boolean;
+  backfillRecovery?: boolean;
   feedback?: boolean;
 };
 
@@ -440,8 +443,19 @@ export function enqueueJevProcess(
   options: { feedId?: string; now?: number; feedback?: boolean } = {},
 ): JobRecord | null {
   if (!isRankingProviderConfigured()) return null;
+  const db = getDb();
+  const isActiveArticle = db
+    .prepare(
+      `SELECT 1 FROM articles
+       WHERE id = ?
+         AND COALESCE(hidden, 0) = 0
+         AND COALESCE(rejected, 0) = 0
+         AND COALESCE(thumbs_down, 0) = 0`,
+    )
+    .get(articleId);
+  if (!isActiveArticle) return null;
+
   if (!options.feedback) {
-    const db = getDb();
     const now = options.now ?? Date.now();
     const enqueueTx = db.transaction(() => {
       const existing = readActiveJob(
@@ -476,15 +490,14 @@ export function enqueueJevProcess(
     return enqueueTx.immediate();
   }
 
-  const db = getDb();
   const now = options.now ?? Date.now();
   const enqueueTx = db.transaction(() => {
     const activeRows = db
       .prepare(
         `SELECT * FROM jobs
          WHERE type = ? AND status IN ('queued', 'processing')
-           AND json_valid(payload) = 1
-           AND json_extract(payload, '$.articleId') = ?
+           AND CASE WHEN json_valid(payload) = 1
+                    THEN json_extract(payload, '$.articleId') END = ?
          ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at ASC`,
       )
       .all(JEV_PROCESS_JOB_TYPE, articleId) as RawJobRow[];
@@ -532,10 +545,9 @@ export function enqueueJevProcess(
 }
 
 /**
- * Queue a bounded batch of existing articles without a Jev score. Active or
- * failed jobs exclude an article; completed backfill jobs also exclude it so
- * a no-op completion cannot loop. A completed ordinary job may receive one
- * backfill pass if it never produced a score.
+ * Queue a bounded batch of existing articles without a Jev score. Active jobs
+ * and completed backfill jobs are tombstones. Failed jobs get one backfill
+ * recovery after a cooldown; a failed recovery is a permanent tombstone.
  */
 export function enqueueJevBackfill(
   options: { now?: number; limit?: number } = {},
@@ -552,6 +564,7 @@ export function enqueueJevBackfill(
 
   const db = getDb();
   const now = options.now ?? Date.now();
+  const aiProcessingEnabled = isAiProcessingEnabled();
   const enqueueTx = db.transaction(() => {
     const active = db
       .prepare(
@@ -568,32 +581,63 @@ export function enqueueJevBackfill(
 
     const candidates = db
       .prepare(
-        `SELECT a.id, a.feed_id
+        `SELECT a.id, a.feed_id,
+                CASE WHEN EXISTS (
+                  SELECT 1 FROM jobs j
+                  WHERE j.type = 'jev_process'
+                    AND CASE WHEN json_valid(j.payload) = 1
+                             THEN json_extract(j.payload, '$.articleId') END = +a.id
+                    AND j.status = 'failed'
+                    AND COALESCE(j.completed_at, j.created_at) <= ?
+                ) THEN 1 ELSE 0 END AS backfill_recovery
          FROM articles a
          WHERE a.jev_score IS NULL
+           AND COALESCE(a.hidden, 0) = 0
+           AND COALESCE(a.rejected, 0) = 0
+           AND COALESCE(a.thumbs_down, 0) = 0
            AND NOT EXISTS (
              SELECT 1 FROM ranking_refresh_queue r
              WHERE r.article_id = a.id
            )
+           AND (? = 0 OR NOT EXISTS (
+             SELECT 1 FROM jobs ai
+             WHERE ai.type = 'ai_process'
+               AND ai.status IN ('queued', 'processing')
+               AND CASE WHEN json_valid(ai.payload) = 1
+                        THEN json_extract(ai.payload, '$.articleId') END = +a.id
+           ))
            AND NOT EXISTS (
              SELECT 1 FROM jobs j
              WHERE j.type = 'jev_process'
                AND CASE WHEN json_valid(j.payload) = 1
                         THEN json_extract(j.payload, '$.articleId')
-                   END = a.id
+                   -- Remove column affinity so SQLite can seek the JSON expression index.
+                   END = +a.id
                AND (
-                 j.status != 'completed'
-                 OR CASE WHEN json_valid(j.payload) = 1
-                         THEN json_extract(j.payload, '$.backfill')
-                    END = 1
+                 j.status IN ('queued', 'processing')
+                 OR (j.status = 'completed'
+                     AND CASE WHEN json_valid(j.payload) = 1
+                              THEN json_extract(j.payload, '$.backfill') END = 1)
+                 OR (j.status = 'failed'
+                     AND (
+                       CASE WHEN json_valid(j.payload) = 1
+                            THEN json_extract(j.payload, '$.backfillRecovery') END = 1
+                       OR COALESCE(j.completed_at, j.created_at) > ?
+                     ))
                )
            )
          ORDER BY a.fetched_at DESC, a.id DESC
          LIMIT ?`,
       )
-      .all(batchSize) as Array<{
+      .all(
+        now - FAILED_JEV_BACKFILL_COOLDOWN_MS,
+        aiProcessingEnabled ? 1 : 0,
+        now - FAILED_JEV_BACKFILL_COOLDOWN_MS,
+        batchSize,
+      ) as Array<{
       id: string;
       feed_id: string;
+      backfill_recovery: number;
     }>;
 
     const insert = db.prepare(
@@ -610,6 +654,7 @@ export function enqueueJevBackfill(
           articleId: article.id,
           feedId: article.feed_id,
           backfill: true,
+          ...(article.backfill_recovery ? { backfillRecovery: true } : {}),
         } satisfies JevProcessJobPayload),
         DEFAULT_JEV_PROCESS_MAX_ATTEMPTS,
         now,
@@ -642,26 +687,62 @@ export function getLatestFeedFetchJob(feedId: string): JobRecord | null {
   return row ? toJobRecord(row) : null;
 }
 
+function getProviderCooldown(type: string): number {
+  const row = getDb()
+    .prepare(
+      'SELECT CAST(value AS INTEGER) AS due FROM app_settings WHERE key = ?',
+    )
+    .get(`provider_cooldown_${type}`) as { due: number } | undefined;
+  return row?.due ?? 0;
+}
+
+function isAiProcessingEnabled(): boolean {
+  const row = getDb()
+    .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
+    .get() as { value: string } | undefined;
+  return row?.value !== 'false';
+}
+
+function setProviderCooldown(type: string, retryAt: number, now: number): void {
+  getDb()
+    .prepare(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = MAX(CAST(app_settings.value AS INTEGER), CAST(excluded.value AS INTEGER)),
+       updated_at = excluded.updated_at`,
+    )
+    .run(`provider_cooldown_${type}`, String(retryAt), now);
+}
+
 export function getNextQueuedJobAt(): number | null {
   const rankingProviderConfigured = isRankingProviderConfigured();
+  const aiProcessingEnabled = isAiProcessingEnabled();
   const row = getDb()
     .prepare(
       `
         SELECT MIN(scheduled_at) AS scheduled_at FROM (
-          SELECT MIN(COALESCE(scheduled_at, created_at)) AS scheduled_at
+          SELECT MIN(MAX(COALESCE(scheduled_at, created_at),
+            CASE type WHEN 'ai_process' THEN ? WHEN 'jev_process' THEN ? ELSE 0 END
+          )) AS scheduled_at
           FROM jobs
           WHERE status = 'queued' AND attempts < max_attempts
             AND (? = 1 OR type != ?)
+            AND (? = 1 OR type != ?)
           UNION ALL
-          SELECT MIN(not_before) AS scheduled_at
+          SELECT MIN(MAX(not_before, ?)) AS scheduled_at
           FROM ranking_refresh_queue
           WHERE ? = 1
         )
       `,
     )
     .get(
+      getProviderCooldown(AI_PROCESS_JOB_TYPE),
+      getProviderCooldown(JEV_PROCESS_JOB_TYPE),
       rankingProviderConfigured ? 1 : 0,
       JEV_PROCESS_JOB_TYPE,
+      aiProcessingEnabled ? 1 : 0,
+      AI_PROCESS_JOB_TYPE,
+      getProviderCooldown(JEV_PROCESS_JOB_TYPE),
       rankingProviderConfigured ? 1 : 0,
     ) as { scheduled_at: number | null } | undefined;
   return row?.scheduled_at == null ? null : Number(row.scheduled_at);
@@ -686,6 +767,7 @@ function claimNextJob(
             AND attempts < max_attempts
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
+            AND (? = 1 OR type != ?)
             AND (? = 1 OR type = ?)
             AND (type != ? OR NOT EXISTS (
               SELECT 1 FROM ranking_refresh_queue q
@@ -706,10 +788,18 @@ function claimNextJob(
       )
       .get(
         now,
-        options.allowJev === false ? 0 : 1,
+        options.allowJev === false ||
+          getProviderCooldown(JEV_PROCESS_JOB_TYPE) > now
+          ? 0
+          : 1,
         JEV_PROCESS_JOB_TYPE,
         options.allowFeed === false ? 0 : 1,
         FEED_FETCH_JOB_TYPE,
+        getProviderCooldown(AI_PROCESS_JOB_TYPE) > now ||
+          !isAiProcessingEnabled()
+          ? 0
+          : 1,
+        AI_PROCESS_JOB_TYPE,
         options.allowScoring === false ? 0 : 1,
         FEED_FETCH_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
@@ -774,9 +864,27 @@ function failOrRetryJob(
     error instanceof Error
       ? error.message
       : String(error || 'Unknown job error');
+  const cause = error instanceof Error ? error.cause : undefined;
+  const providerRejection = error instanceof ProviderHttpError ? error : cause;
+  if (
+    (job.type === AI_PROCESS_JOB_TYPE || job.type === JEV_PROCESS_JOB_TYPE) &&
+    providerRejection instanceof ProviderHttpError &&
+    [401, 403, 429].includes(providerRejection.status)
+  ) {
+    setProviderCooldown(
+      job.type,
+      Math.max(now + 60_000, providerRejection.retryAt ?? 0),
+      now,
+    );
+  }
+  const networkError = error instanceof SafeFetchError ? error : cause;
   const exhausted =
     job.attempts >= job.maxAttempts ||
-    (error instanceof FeedJobError && error.permanent);
+    (error instanceof FeedJobError && error.permanent) ||
+    (providerRejection instanceof ProviderHttpError &&
+      providerRejection.permanent) ||
+    (networkError instanceof SafeFetchError &&
+      networkError.code !== 'dns_failure');
   if (exhausted) {
     db.prepare(
       `
@@ -788,10 +896,10 @@ function failOrRetryJob(
     return 'failed';
   }
 
-  const cause = error instanceof Error ? error.cause : undefined;
-  const rateLimit = error instanceof AiRateLimitError ? error : cause;
   const retryAt =
-    rateLimit instanceof AiRateLimitError ? rateLimit.retryAt : null;
+    providerRejection instanceof ProviderHttpError
+      ? providerRejection.retryAt
+      : undefined;
   const feedRetryAt = error instanceof FeedJobError ? error.retryAt : undefined;
   const scheduledAt = Math.max(
     now + getRetryDelayMs(job.attempts),

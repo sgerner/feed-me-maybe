@@ -45,6 +45,7 @@ describe('feed ingester identity and duplicate handling', () => {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM articles').run();
     db.prepare('DELETE FROM feeds').run();
+    db.prepare('DELETE FROM provider_configs').run();
     const { fetchFeed } = await import('./fetcher');
     vi.mocked(fetchFeed).mockReset();
   });
@@ -261,6 +262,95 @@ describe('feed ingester identity and duplicate handling', () => {
       'https://example.com/releases#v1',
       'https://example.com/releases#v2',
     ]);
+  });
+
+  it('skips image-only AI work and schedules enrichment when article text arrives', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('stub-feed', 'https://example.com/stubs.rss', now, now);
+    db.prepare(
+      'INSERT INTO provider_configs (id, provider_id, model_id, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run('provider', 'test-provider', 'test-model', now, now);
+    const item = {
+      guid: 'stub',
+      url: 'https://example.com/stub',
+      title: 'Stub',
+      categories: [],
+      content: `<img src="https://example.com/${'x'.repeat(100)}.png">`,
+    };
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [item],
+    });
+    expect((await ingestFeed({ feedId: 'stub-feed' })).articlesNew).toBe(1);
+    const count = db
+      .prepare("SELECT COUNT(*) FROM jobs WHERE type = 'ai_process'")
+      .pluck();
+    expect(count.get()).toBe(0);
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [{ ...item, content: '<p>Readable text arrived.</p>' }],
+    });
+    expect((await ingestFeed({ feedId: 'stub-feed' })).articlesNew).toBe(0);
+    expect(count.get()).toBe(1);
+    expect(db.prepare('SELECT content FROM articles').pluck().get()).toBe(
+      '<p>Readable text arrived.</p>',
+    );
+  });
+
+  it('waits for enrichment before queueing the first ranking score', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    const originalJevApiKey = process.env.JEV_API_KEY;
+    process.env.JEV_API_KEY = 'test-ranking-key';
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run(
+      'feed-ai-before-jev',
+      'https://example.com/ai-before-jev.rss',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO provider_configs (id, provider_id, model_id, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run('provider-ai-before-jev', 'test-provider', 'test-model', now, now);
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'story',
+          url: 'https://example.com/ai-before-jev/story',
+          title: 'A useful story',
+          summary: 'A grounded summary.',
+          categories: [],
+        },
+      ],
+    });
+
+    try {
+      expect(
+        (await ingestFeed({ feedId: 'feed-ai-before-jev' })).articlesNew,
+      ).toBe(1);
+      const counts = db
+        .prepare(
+          `SELECT type, COUNT(*) AS count FROM jobs
+           WHERE type IN ('ai_process', 'jev_process') GROUP BY type`,
+        )
+        .all() as Array<{ type: string; count: number }>;
+      expect(counts).toEqual([{ type: 'ai_process', count: 1 }]);
+    } finally {
+      if (originalJevApiKey === undefined) delete process.env.JEV_API_KEY;
+      else process.env.JEV_API_KEY = originalJevApiKey;
+    }
   });
 
   it('preserves the UTF-16 content upgrade threshold during deduplication', async () => {
