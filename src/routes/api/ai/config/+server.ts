@@ -4,7 +4,11 @@ import { encrypt } from '$lib/server/ai/crypto';
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { assertPublicNetworkUrl, SafeFetchError } from '$lib/server/network';
-import { getModel } from '$lib/server/ai/models-dev';
+import { getProvider } from '$lib/server/ai/models-dev';
+import {
+  decryptProviderCredentials,
+  hasProviderCredentials,
+} from '$lib/server/ai/credentials';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
@@ -17,13 +21,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ error: 'Invalid body' }, { status: 400 });
   }
 
-  const { providerId, modelId, config, customBaseUrl, enabled } = body as {
-    providerId: unknown;
-    modelId: unknown;
-    config?: unknown;
-    customBaseUrl?: unknown;
-    enabled?: unknown;
-  };
+  const { providerId, modelId, config, customBaseUrl, enabled, clear } =
+    body as {
+      providerId: unknown;
+      modelId: unknown;
+      config?: unknown;
+      customBaseUrl?: unknown;
+      enabled?: unknown;
+      clear?: unknown;
+    };
 
   if (
     typeof enabled === 'boolean' &&
@@ -41,6 +47,33 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ success: true, aiEnabled: enabled });
   }
 
+  if (
+    clear === true &&
+    providerId === undefined &&
+    modelId === undefined &&
+    config === undefined &&
+    customBaseUrl === undefined
+  ) {
+    const db = getDb();
+    const active = db
+      .prepare(
+        'SELECT id FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
+      )
+      .get() as { id: string } | undefined;
+    db.transaction(() => {
+      db.prepare(
+        'UPDATE provider_configs SET enabled = 0 WHERE enabled = 1',
+      ).run();
+      if (active) {
+        db.prepare('DELETE FROM provider_configs WHERE id = ?').run(active.id);
+      }
+      db.prepare(
+        "DELETE FROM app_settings WHERE key = 'provider_cooldown_ai_process'",
+      ).run();
+    })();
+    return json({ success: true, cleared: Boolean(active) });
+  }
+
   if (typeof providerId !== 'string' || typeof modelId !== 'string')
     return json({ error: 'providerId and modelId required' }, { status: 400 });
   const providerIdValue = providerId.trim();
@@ -48,7 +81,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   if (!providerIdValue || !modelIdValue)
     return json({ error: 'providerId and modelId required' }, { status: 400 });
 
-  if (!(await getModel(providerIdValue, modelIdValue))) {
+  const provider = await getProvider(providerIdValue);
+  if (!provider?.models.some((model) => model.id === modelIdValue)) {
     return json(
       { error: 'Select a supported text chat model and provider.' },
       { status: 400 },
@@ -91,13 +125,35 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   const db = getDb();
   const existing = db
-    .prepare('SELECT id FROM provider_configs WHERE provider_id = ?')
-    .get(providerIdValue) as { id: string } | undefined;
+    .prepare(
+      'SELECT id, api_key_encrypted, api_key_nonce FROM provider_configs WHERE provider_id = ?',
+    )
+    .get(providerIdValue) as
+    | {
+        id: string;
+        api_key_encrypted: string | null;
+        api_key_nonce: string | null;
+      }
+    | undefined;
+
+  const existingCredentials = decryptProviderCredentials(
+    existing?.api_key_encrypted,
+    existing?.api_key_nonce,
+  );
+  const credentialsToStore = { ...existingCredentials, ...safeConfig };
+  if (Object.keys(credentialsToStore).length === 0) {
+    return json(
+      {
+        error: 'Enter a provider credential before saving this configuration.',
+      },
+      { status: 400 },
+    );
+  }
 
   let encrypted: string | undefined;
   let nonce: string | undefined;
   if (Object.keys(safeConfig).length > 0 || !existing) {
-    const result = encrypt(JSON.stringify(safeConfig));
+    const result = encrypt(JSON.stringify(credentialsToStore));
     encrypted = result.encrypted;
     nonce = result.nonce;
   }
@@ -141,9 +197,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     );
 
     db.prepare(
-      "INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_enabled', 'true', ?) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = ?",
-    ).run(Date.now(), Date.now());
-    db.prepare(
       "DELETE FROM app_settings WHERE key = 'provider_cooldown_ai_process'",
     ).run();
   })();
@@ -156,11 +209,30 @@ export const GET: RequestHandler = async ({ locals }) => {
     return json({ error: 'Unauthorized' }, { status: 401 });
 
   const db = getDb();
-  const configs = db
+  const configRows = db
     .prepare(
-      'SELECT id, provider_id, model_id, custom_base_url, enabled FROM provider_configs',
+      'SELECT id, provider_id, model_id, custom_base_url, enabled, api_key_encrypted, api_key_nonce FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
     )
-    .all();
+    .all() as Array<{
+    id: string;
+    provider_id: string;
+    model_id: string;
+    custom_base_url: string | null;
+    enabled: number;
+    api_key_encrypted: string | null;
+    api_key_nonce: string | null;
+  }>;
+  const configs = configRows.map((config) => ({
+    id: config.id,
+    provider_id: config.provider_id,
+    model_id: config.model_id,
+    custom_base_url: config.custom_base_url,
+    enabled: config.enabled,
+    has_api_key: hasProviderCredentials(
+      config.api_key_encrypted,
+      config.api_key_nonce,
+    ),
+  }));
 
   const setting = db
     .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
@@ -220,9 +292,7 @@ export const GET: RequestHandler = async ({ locals }) => {
   return json({
     configs,
     aiEnabled: setting?.value !== 'false',
-    aiConfigured: configs.some(
-      (config) => (config as { enabled: number }).enabled === 1,
-    ),
+    aiConfigured: configs.some((config) => config.has_api_key),
     analysisCounts,
     aiJobCounts,
     recentFailures: recentFailures.map((item) => ({

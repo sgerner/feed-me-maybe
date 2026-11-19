@@ -1,5 +1,8 @@
 import { getDb } from '$lib/server/db';
-import { decrypt } from './crypto';
+import {
+  decryptProviderCredentials,
+  hasProviderCredentials,
+} from './credentials';
 import { createAiClient } from './client';
 import { getProvider } from './models-dev';
 
@@ -12,7 +15,11 @@ type ProviderConfigRow = {
 };
 
 export function isAiProcessingConfigured(): boolean {
-  return Boolean(getProviderConfig());
+  const config = getProviderConfig();
+  return Boolean(
+    config &&
+    hasProviderCredentials(config.api_key_encrypted, config.api_key_nonce),
+  );
 }
 
 function getProviderConfig() {
@@ -33,19 +40,11 @@ export async function getConfiguredAiClient() {
 
   if (!config) return null;
 
-  const decryptedRaw = decrypt(
-    config.api_key_encrypted || '',
-    config.api_key_nonce || '',
+  const decryptedConfig = decryptProviderCredentials(
+    config.api_key_encrypted,
+    config.api_key_nonce,
   );
-  if (!decryptedRaw) return null;
-
-  const decryptedConfig: Record<string, string> = (() => {
-    try {
-      return JSON.parse(decryptedRaw) as Record<string, string>;
-    } catch {
-      return { apiKey: decryptedRaw };
-    }
-  })();
+  if (Object.keys(decryptedConfig).length === 0) return null;
 
   const providerInfo = await getProvider(config.provider_id);
   const modelInfo = providerInfo?.models.find(

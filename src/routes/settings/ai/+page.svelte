@@ -1,18 +1,24 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import type { AiProvider, AiModel } from '$lib/server/ai/types';
   import { fetchWithCsrf } from '$lib/client/csrf';
-
-  let { data: pageData } = $props();
 
   let providers = $state<AiProvider[]>([]);
   let searchQuery = $state('');
   let selectedProviderId = $state('');
   let selectedModelId = $state('');
+  let activeModelIndex = $state(-1);
+  let modelSuggestionsDismissed = $state(false);
   let envConfig = $state<Record<string, string>>({});
   let customBaseUrl = $state('');
+  let hasSavedConfig = $state(false);
+  let savedProviderId = $state('');
+  let hasSavedCredential = $state(false);
   let loading = $state(true);
   let message = $state('');
+  let messageIsError = $state(false);
+  let registryError = $state('');
   let saving = $state(false);
   let aiEnabled = $state(true);
   let aiConfigured = $state(false);
@@ -53,6 +59,36 @@
           )
           .slice(0, 10),
   );
+  const showModelOptions = $derived(
+    !modelSuggestionsDismissed && filteredModels.length > 0,
+  );
+
+  function applyConfigData(data: Record<string, any>) {
+    aiEnabled = data.aiEnabled !== false;
+    aiConfigured = Boolean(data.aiConfigured);
+    analysisCounts = data.analysisCounts || analysisCounts;
+    aiJobCounts = data.aiJobCounts || aiJobCounts;
+    recentFailures = Array.isArray(data.recentFailures)
+      ? data.recentFailures
+      : [];
+
+    const configs = Array.isArray(data.configs) ? data.configs : [];
+    const cfg =
+      configs.find((item: { enabled?: number }) => item.enabled) ?? configs[0];
+    hasSavedConfig = Boolean(cfg);
+    savedProviderId = cfg?.provider_id ?? '';
+    hasSavedCredential = Boolean(cfg?.has_api_key);
+    selectedProviderId = cfg?.provider_id ?? '';
+    selectedModelId = cfg?.model_id ?? '';
+    customBaseUrl = cfg?.custom_base_url ?? '';
+    envConfig = {};
+  }
+
+  async function refreshAiSettings() {
+    const response = await fetch('/api/ai/config');
+    if (!response.ok) throw new Error('Could not refresh AI settings.');
+    applyConfigData(await response.json());
+  }
 
   const selectedProvider = $derived(
     providers.find((p) => p.id === selectedProviderId),
@@ -62,43 +98,83 @@
   );
 
   async function loadProviders() {
+    loading = true;
+    registryError = '';
+    message = '';
+    messageIsError = false;
     try {
-      const [providerResponse, configResponse] = await Promise.all([
+      const [providerResult, configResult] = await Promise.allSettled([
         fetch('/api/ai/providers'),
         fetch('/api/ai/config'),
       ]);
-      if (providerResponse.ok) {
-        const data = await providerResponse.json();
-        providers = data.providers;
-      }
-      if (configResponse.ok) {
-        const data = await configResponse.json();
-        aiEnabled = data.aiEnabled !== false;
-        aiConfigured = Boolean(data.aiConfigured);
-        analysisCounts = data.analysisCounts || analysisCounts;
-        aiJobCounts = data.aiJobCounts || aiJobCounts;
-        recentFailures = Array.isArray(data.recentFailures)
-          ? data.recentFailures
-          : [];
+
+      if (providerResult.status === 'fulfilled' && providerResult.value.ok) {
+        try {
+          const data = await providerResult.value.json();
+          providers = Array.isArray(data.providers) ? data.providers : [];
+          if (providers.length === 0) {
+            registryError = 'The model registry returned no providers.';
+          }
+        } catch {
+          registryError = 'Could not load the model registry. Try again.';
+        }
+      } else {
+        registryError = 'Could not load the model registry. Try again.';
       }
 
-      // Pre-fill from saved config.
-      if (pageData.configs && pageData.configs.length > 0) {
-        const cfg = pageData.configs[0];
-        selectedProviderId = cfg.provider_id;
-        selectedModelId = cfg.model_id;
-        envConfig = {};
-        customBaseUrl = cfg.custom_base_url || '';
-        if (cfg.has_api_key) {
-          message =
-            'Credentials are stored securely. Leave blank to keep them unchanged.';
-        }
+      if (configResult.status === 'fulfilled' && configResult.value.ok) {
+        applyConfigData(await configResult.value.json());
+      } else {
+        message = 'Could not load AI settings.';
+        messageIsError = true;
+      }
+
+      if (hasSavedCredential && !messageIsError) {
+        message =
+          'Credentials are stored securely. Leave blank to keep them unchanged.';
       }
     } catch {
       message = 'Failed to load AI settings.';
+      messageIsError = true;
     } finally {
       loading = false;
     }
+  }
+
+  function handleModelSearchKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowDown' && filteredModels.length > 0) {
+      event.preventDefault();
+      modelSuggestionsDismissed = false;
+      setActiveModelIndex((activeModelIndex + 1) % filteredModels.length);
+    } else if (event.key === 'ArrowUp' && filteredModels.length > 0) {
+      event.preventDefault();
+      modelSuggestionsDismissed = false;
+      setActiveModelIndex(
+        activeModelIndex <= 0
+          ? filteredModels.length - 1
+          : activeModelIndex - 1,
+      );
+    } else if (
+      event.key === 'Enter' &&
+      showModelOptions &&
+      activeModelIndex >= 0
+    ) {
+      event.preventDefault();
+      selectModel(filteredModels[activeModelIndex]);
+    } else if (event.key === 'Escape' && showModelOptions) {
+      event.preventDefault();
+      modelSuggestionsDismissed = true;
+      activeModelIndex = -1;
+    }
+  }
+
+  function setActiveModelIndex(index: number) {
+    activeModelIndex = index;
+    void tick().then(() =>
+      document
+        .getElementById(`ai-model-option-${index}`)
+        ?.scrollIntoView({ block: 'nearest' }),
+    );
   }
 
   async function setAiEnabled(event: Event) {
@@ -125,10 +201,17 @@
     }
   }
 
-  function selectModel(model: any) {
+  function selectModel(model: AiModel & { provider: AiProvider }) {
+    if (selectedProviderId !== model.provider.id) {
+      envConfig = {};
+      hasSavedCredential =
+        savedProviderId === model.provider.id && hasSavedCredential;
+    }
     selectedProviderId = model.provider.id;
     selectedModelId = model.id;
     searchQuery = '';
+    activeModelIndex = -1;
+    modelSuggestionsDismissed = false;
 
     // Initialize env vars if not present
     model.provider.requiredEnvVars.forEach((ev: string) => {
@@ -138,6 +221,7 @@
 
   async function saveConfig() {
     message = '';
+    messageIsError = false;
     saving = true;
     try {
       const res = await fetchWithCsrf('/api/ai/config', {
@@ -155,13 +239,48 @@
         }),
       });
       if (res.ok) {
-        message = 'Configuration saved successfully.';
+        await refreshAiSettings();
+        message =
+          'Configuration saved. Background processing keeps its current state.';
+        messageIsError = false;
       } else {
         const err = await res.json();
         message = `Error: ${err.error || 'Failed to save settings.'}`;
+        messageIsError = true;
       }
     } catch {
-      message = 'Connection error.';
+      message = 'Could not save or refresh AI settings. Try again.';
+      messageIsError = true;
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function clearSelectedModel() {
+    if (!hasSavedConfig) {
+      selectedProviderId = '';
+      selectedModelId = '';
+      customBaseUrl = '';
+      envConfig = {};
+      hasSavedCredential = false;
+      return;
+    }
+
+    saving = true;
+    message = '';
+    messageIsError = false;
+    try {
+      const response = await fetchWithCsrf('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true }),
+      });
+      if (!response.ok) throw new Error('Could not clear the saved model.');
+      await refreshAiSettings();
+      message = 'Saved model configuration cleared.';
+    } catch {
+      message = 'Could not clear the saved model configuration.';
+      messageIsError = true;
     } finally {
       saving = false;
     }
@@ -185,8 +304,27 @@
   >. Search for any model to get started.
 </p>
 
+{#if registryError}
+  <div
+    class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-error-500/20 bg-error-500/10 px-4 py-3 text-sm text-error-300"
+    role="alert"
+  >
+    <span>{registryError}</span>
+    <button
+      type="button"
+      class="btn preset-tonal-error btn-sm"
+      onclick={() => void loadProviders()}
+      disabled={loading}>Retry</button
+    >
+  </div>
+{/if}
+
 {#if loading}
-  <div class="glass-card mt-4 h-64 animate-pulse p-5"></div>
+  <div
+    class="glass-card mt-4 h-64 animate-pulse p-5"
+    aria-busy="true"
+    aria-label="Loading AI settings"
+  ></div>
 {:else}
   <div class="space-y-6">
     <section
@@ -200,7 +338,8 @@
           </h3>
           <p class="mt-1 max-w-2xl text-sm opacity-70">
             Pause or resume article enrichment. Existing article data stays
-            available while processing is paused.
+            available while processing is paused. Personalized ranking uses the
+            separate Jev or SubQ provider and local heuristic scores.
           </p>
         </div>
         <label class="flex cursor-pointer items-center gap-3 text-sm">
@@ -224,9 +363,9 @@
           enrichment.
         </p>
       {/if}
-      {#if aiStatusMessage}
-        <p class="text-sm opacity-75" aria-live="polite">{aiStatusMessage}</p>
-      {/if}
+      <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {aiStatusMessage}
+      </p>
 
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {#each [{ label: 'Ready', value: analysisCounts.ready }, { label: 'Failed', value: analysisCounts.failed }, { label: 'Skipped', value: analysisCounts.skipped }, { label: 'Pending metadata', value: analysisCounts.pending }, { label: 'Queued jobs', value: aiJobCounts.queued }, { label: 'Running jobs', value: aiJobCounts.processing }] as item (item.label)}
@@ -282,7 +421,21 @@
             class="input glass-input w-full pl-10"
             type="search"
             placeholder="e.g. gpt-4o, claude-3.5, llama-3..."
-            bind:value={searchQuery}
+            value={searchQuery}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-expanded={showModelOptions}
+            aria-controls="ai-model-options"
+            aria-activedescendant={showModelOptions && activeModelIndex >= 0
+              ? `ai-model-option-${activeModelIndex}`
+              : undefined}
+            oninput={(event) => {
+              searchQuery = (event.currentTarget as HTMLInputElement).value;
+              activeModelIndex = -1;
+              modelSuggestionsDismissed = false;
+            }}
+            onkeydown={handleModelSearchKeydown}
           />
           <div class="absolute left-3 top-1/2 -translate-y-1/2 opacity-50">
             <svg
@@ -301,38 +454,66 @@
         </div>
       </label>
 
-      {#if filteredModels.length > 0}
-        <div
-          class="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-white/10 bg-surface-900 shadow-xl"
-          in:fade={{ duration: 150 }}
-        >
-          {#each filteredModels as m}
-            <button
-              class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/5"
-              onclick={() => selectModel(m)}
-            >
-              <img
-                src="https://models.dev/logos/{m.provider.id}.svg"
-                alt=""
-                class="h-6 w-6 rounded-sm bg-white/10 p-1"
-                onerror={(e) =>
-                  ((e.currentTarget as HTMLImageElement).src =
-                    'https://models.dev/logos/default.svg')}
-              />
-              <div class="flex-1">
-                <div class="text-sm font-semibold text-white">{m.name}</div>
-                <div class="text-xs opacity-60">{m.provider.name} • {m.id}</div>
+      <div
+        id="ai-model-options"
+        class="absolute left-0 right-0 top-full z-50 mt-1 max-h-[min(60vh,28rem)] overflow-y-auto rounded-md border border-white/10 bg-surface-900 shadow-xl"
+        role="listbox"
+        aria-label="Model suggestions"
+        hidden={!showModelOptions}
+        in:fade={{ duration: 150 }}
+      >
+        {#each filteredModels as m, index}
+          <button
+            id="ai-model-option-{index}"
+            type="button"
+            role="option"
+            aria-selected={activeModelIndex === index}
+            tabindex="-1"
+            class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/5 {activeModelIndex ===
+            index
+              ? 'bg-white/10'
+              : ''}"
+            onmousedown={(event) => event.preventDefault()}
+            onclick={() => selectModel(m)}
+          >
+            <img
+              src="https://models.dev/logos/{m.provider.id}.svg"
+              alt=""
+              class="h-6 w-6 rounded-sm bg-white/10 p-1"
+              onerror={(e) =>
+                ((e.currentTarget as HTMLImageElement).src =
+                  'https://models.dev/logos/default.svg')}
+            />
+            <div class="flex-1">
+              <div class="text-sm font-semibold text-white">{m.name}</div>
+              <div class="text-xs opacity-60">{m.provider.name} • {m.id}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-[10px] font-mono opacity-40">
+                {Math.round(m.contextWindow / 1000)}k ctx
               </div>
-              <div class="text-right">
-                <div class="text-[10px] font-mono opacity-40">
-                  {Math.round(m.contextWindow / 1000)}k ctx
-                </div>
-              </div>
-            </button>
-          {/each}
-        </div>
+            </div>
+          </button>
+        {/each}
+      </div>
+      {#if searchQuery.length >= 2 && filteredModels.length === 0 && !registryError}
+        <p class="mt-2 text-sm opacity-65" role="status">
+          No matching models found.
+        </p>
       {/if}
     </div>
+
+    {#if message}
+      <div
+        class="flex items-center gap-2 rounded-sm border border-white/10 bg-white/5 px-4 py-3 text-sm"
+        role={messageIsError ? 'alert' : 'status'}
+        aria-live={messageIsError ? 'assertive' : 'polite'}
+        aria-atomic="true"
+        in:fly={{ y: 6, duration: 220 }}
+      >
+        {message}
+      </div>
+    {/if}
 
     {#if selectedModel}
       <div
@@ -376,12 +557,10 @@
           </div>
           <button
             class="btn-icon variant-soft-surface btn-sm"
-            aria-label="Clear selected model"
-            title="Clear selected model"
-            onclick={() => {
-              selectedProviderId = '';
-              selectedModelId = '';
-            }}
+            aria-label="Clear saved model configuration"
+            title="Clear saved model configuration"
+            onclick={clearSelectedModel}
+            disabled={saving}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -403,8 +582,25 @@
           </h4>
 
           {#if selectedProvider?.requiredEnvVars.length === 0}
-            <p class="text-sm italic opacity-60">
-              This provider does not require any environment variables.
+            <label class="label">
+              <span class="mb-1 block text-xs font-medium opacity-80"
+                >API key</span
+              >
+              <input
+                class="input glass-input w-full"
+                type="password"
+                bind:value={envConfig.apiKey}
+                autocomplete="new-password"
+                placeholder={hasSavedCredential
+                  ? 'Stored securely — leave blank to keep'
+                  : 'Enter provider API key'}
+                aria-describedby="ai-credential-help"
+              />
+            </label>
+            <p id="ai-credential-help" class="text-xs opacity-60">
+              Credentials are encrypted on this server. Saving with a blank
+              field keeps an existing credential; a new configuration needs a
+              key.
             </p>
           {:else}
             <div class="grid gap-4 sm:grid-cols-1">
@@ -417,7 +613,8 @@
                     class="input glass-input w-full"
                     type="password"
                     bind:value={envConfig[ev]}
-                    placeholder={pageData.configs?.[0]?.has_api_key
+                    autocomplete="new-password"
+                    placeholder={hasSavedCredential
                       ? 'Stored securely — leave blank to keep'
                       : 'Enter value...'}
                   />
@@ -440,30 +637,6 @@
             </label>
           </div>
         </div>
-
-        {#if message}
-          <div
-            class="flex items-center gap-2 rounded-sm border border-white/10 bg-white/5 px-4 py-3 text-sm"
-            in:fly={{ y: 6, duration: 220 }}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              ><circle cx="12" cy="12" r="10" /><line
-                x1="12"
-                y1="16"
-                x2="12"
-                y2="12"
-              /><line x1="12" y1="8" x2="12.01" y2="8" /></svg
-            >
-            {message}
-          </div>
-        {/if}
 
         <div class="flex items-center justify-between pt-4">
           <button
@@ -548,8 +721,9 @@
           >
         </div>
         <p class="max-w-xs text-sm opacity-50">
-          Select a model above to configure your AI provider. Article ranking
-          and summarization will use the selected model.
+          Select a model above for article enrichment, including summaries and
+          metadata. Personalized feed ranking uses the separate Jev or SubQ
+          provider together with local heuristic scores.
         </p>
       </div>
     {/if}

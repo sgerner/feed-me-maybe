@@ -39,19 +39,27 @@ export const actions: Actions = {
     const data = await request.formData();
     const interval = data.get('interval');
 
-    if (!interval || isNaN(Number(interval))) {
-      return fail(400, { error: 'Invalid interval' });
-    }
+    const intervalValue = typeof interval === 'string' ? Number(interval) : NaN;
 
-    const intervalVal = Math.max(1, Math.min(1440, Number(interval))); // 1 min to 24 hours
+    if (
+      !Number.isInteger(intervalValue) ||
+      intervalValue < 1 ||
+      intervalValue > 1440
+    ) {
+      return fail(400, {
+        action: 'updatePolling',
+        field: 'interval',
+        error: 'Enter a whole number from 1 to 1440 minutes.',
+      });
+    }
 
     const db = getDb();
     db.prepare(
       "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'poll_interval_mins'",
-    ).run(String(intervalVal), Date.now());
+    ).run(String(intervalValue), Date.now());
     wakePoller();
 
-    return { success: true };
+    return { action: 'updatePolling', success: true };
   },
   updateArticleSettings: async ({ request, locals }) => {
     if (!locals.sessionId) return fail(401);
@@ -61,7 +69,11 @@ export const actions: Actions = {
     const hideOnOpen = data.get('hideOnOpen') === 'on';
 
     if (!openMode || !isArticleOpenMode(openMode)) {
-      return fail(400, { error: 'Invalid open mode' });
+      return fail(400, {
+        action: 'updateArticleSettings',
+        field: 'openMode',
+        error: 'Choose a valid article open mode.',
+      });
     }
 
     const db = getDb();
@@ -72,6 +84,6 @@ export const actions: Actions = {
       "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'hide_on_open'",
     ).run(hideOnOpen ? 'true' : 'false', Date.now());
 
-    return { success: true };
+    return { action: 'updateArticleSettings', success: true };
   },
 };

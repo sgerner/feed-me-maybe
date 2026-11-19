@@ -14,9 +14,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   const body = await request.json();
   const { name, url, events, secret } = body;
 
-  if (!name || !url || !events) {
+  const missingField = !name
+    ? 'name'
+    : !url
+      ? 'url'
+      : !Array.isArray(events) || events.length === 0
+        ? 'events'
+        : null;
+
+  if (missingField) {
     return json(
-      { error: 'name, url, and events are required' },
+      {
+        error: 'Name, target URL, and at least one event are required.',
+        field: missingField,
+      },
       { status: 400 },
     );
   }
@@ -26,7 +37,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ success: true, id });
   } catch (err: any) {
     if (err instanceof SafeFetchError) {
-      return json({ error: err.message }, { status: 400 });
+      return json({ error: err.message, field: 'url' }, { status: 400 });
     }
     return json({ error: err.message }, { status: 500 });
   }

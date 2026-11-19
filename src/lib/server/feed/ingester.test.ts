@@ -273,9 +273,19 @@ describe('feed ingester identity and duplicate handling', () => {
     db.prepare(
       'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
     ).run('stub-feed', 'https://example.com/stubs.rss', now, now);
+    const { encrypt } = await import('$lib/server/ai/crypto');
+    const config = encrypt(JSON.stringify({ apiKey: 'fixture-key' }));
     db.prepare(
-      'INSERT INTO provider_configs (id, provider_id, model_id, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
-    ).run('provider', 'test-provider', 'test-model', now, now);
+      'INSERT INTO provider_configs (id, provider_id, model_id, enabled, api_key_encrypted, api_key_nonce, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)',
+    ).run(
+      'provider',
+      'test-provider',
+      'test-model',
+      config.encrypted,
+      config.nonce,
+      now,
+      now,
+    );
     const item = {
       guid: 'stub',
       url: 'https://example.com/stub',
@@ -320,9 +330,19 @@ describe('feed ingester identity and duplicate handling', () => {
       now,
       now,
     );
+    const { encrypt } = await import('$lib/server/ai/crypto');
+    const config = encrypt(JSON.stringify({ apiKey: 'fixture-key' }));
     db.prepare(
-      'INSERT INTO provider_configs (id, provider_id, model_id, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
-    ).run('provider-ai-before-jev', 'test-provider', 'test-model', now, now);
+      'INSERT INTO provider_configs (id, provider_id, model_id, enabled, api_key_encrypted, api_key_nonce, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)',
+    ).run(
+      'provider-ai-before-jev',
+      'test-provider',
+      'test-model',
+      config.encrypted,
+      config.nonce,
+      now,
+      now,
+    );
     vi.mocked(fetchFeed).mockResolvedValueOnce({
       success: true,
       items: [

@@ -12,22 +12,25 @@ import {
   getClientAddress as getSafeClientAddress,
   resetLoginAttempts,
 } from '$lib/server/auth/rate-limit';
+import { safeReturnTo } from '$lib/server/auth/redirect';
 
-export const load: PageServerLoad = async ({ cookies }) => {
+export const load: PageServerLoad = async ({ cookies, url }) => {
+  const returnTo = safeReturnTo(url.searchParams.get('returnTo'));
   const sessionId = cookies.get(getSessionCookieName());
   if (sessionId && validateSession(sessionId)) {
-    throw redirect(302, '/');
+    throw redirect(302, returnTo);
   }
-  return {};
+  return { returnTo };
 };
 
 export const actions: Actions = {
-  default: async ({ request, cookies, getClientAddress }) => {
+  default: async ({ request, cookies, getClientAddress, url }) => {
     const address = getSafeClientAddress(getClientAddress);
     const rate = consumeLoginAttempt(address);
     if (!rate.allowed) {
       return fail(429, {
         error: 'Too many attempts. Try again later.',
+        field: 'form',
         retryAfterSeconds: rate.retryAfterSeconds || 300,
       });
     }
@@ -36,11 +39,11 @@ export const actions: Actions = {
     const password = data.get('password');
 
     if (typeof password !== 'string' || password.length === 0) {
-      return fail(400, { error: 'Password is required' });
+      return fail(400, { error: 'Password is required', field: 'password' });
     }
 
     if (!verifyPassword(password)) {
-      return fail(401, { error: 'Invalid password' });
+      return fail(401, { error: 'Invalid password', field: 'password' });
     }
 
     const session = createSession();
@@ -53,6 +56,12 @@ export const actions: Actions = {
       secure: process.env.NODE_ENV === 'production',
     });
 
-    throw redirect(303, '/');
+    const formReturnTo = data.get('returnTo');
+    const returnTo = safeReturnTo(
+      typeof formReturnTo === 'string'
+        ? formReturnTo
+        : url.searchParams.get('returnTo'),
+    );
+    throw redirect(303, returnTo);
   },
 };
