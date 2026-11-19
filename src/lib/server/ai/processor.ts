@@ -2,9 +2,14 @@ import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { getConfiguredAiClient, isAiProcessingConfigured } from './runtime';
 import type { ArticleScore } from './types';
+import { hasArticleAnalysisText } from './prompts';
 import { parseJsonTextArray } from '$lib/server/normalization';
-import { refreshCombinedScore } from '$lib/server/scoring';
-import { recordAppError } from '$lib/server/logging';
+import {
+  applyPreferenceModelToArticle,
+  updateHeuristicScore,
+} from '$lib/server/preferences';
+import { markArticleForRankingRefresh } from '$lib/server/ranking-freshness';
+import { isRankingProviderConfigured } from './jev';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -95,16 +100,24 @@ export async function processArticle(articleId: string): Promise<void> {
 
   if (!isAiProcessingConfigured()) return;
 
-  const article = db
-    .prepare(
-      `
+  const selectArticle = db.prepare(
+    `
     SELECT a.title, a.summary, a.content, a.author, a.categories, a.published_at
     FROM articles a
     WHERE a.id = ?
   `,
-    )
-    .get(articleId) as ArticleAnalysisRow | undefined;
+  );
+  const article = selectArticle.get(articleId) as
+    ArticleAnalysisRow | undefined;
   if (!article) return;
+  if (!hasArticleAnalysisText(article.summary, article.content)) {
+    markAnalysisFailed(
+      articleId,
+      'skipped',
+      'Article does not contain readable text',
+    );
+    return;
+  }
 
   let analysis: Partial<ArticleScore>;
   try {
@@ -151,75 +164,105 @@ export async function processArticle(articleId: string): Promise<void> {
   const likelyInterest = String(analysis.likelyUserInterest || '');
   const explanation = String(analysis.explanation || '');
 
-  const existing = db
-    .prepare('SELECT id FROM article_ai_metadata WHERE article_id = ?')
-    .get(articleId);
-  if (existing) {
-    db.prepare(
-      `
-      UPDATE article_ai_metadata
-      SET summary = ?, topics = ?, entities = ?, content_type = ?,
-          ai_relevance_score = ?, novelty_score = ?, quality_score = ?, likely_user_interest = ?,
-          signals = ?, explanation = ?, analysis_status = 'ready', analysis_error = '', processed_at = ?
-      WHERE article_id = ?
-    `,
-    ).run(
-      aiSummary,
-      topicsJson,
-      entitiesJson,
-      contentType,
-      aiRelevanceScore,
-      noveltyScore,
-      qualityScore,
-      likelyInterest,
-      signalsJson,
-      explanation,
-      now,
-      articleId,
-    );
-  } else {
-    db.prepare(
-      `
-      INSERT INTO article_ai_metadata (
-        id, article_id, summary, topics, entities, content_type,
-        ai_relevance_score, novelty_score, quality_score, likely_user_interest,
-        signals, explanation, processed_at, created_at
-        , analysis_status, analysis_error
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', '')
-    `,
-    ).run(
-      crypto.randomUUID(),
-      articleId,
-      aiSummary,
-      topicsJson,
-      entitiesJson,
-      contentType,
-      aiRelevanceScore,
-      noveltyScore,
-      qualityScore,
-      likelyInterest,
-      signalsJson,
-      explanation,
-      now,
-      now,
-    );
-  }
+  db.transaction(() => {
+    const current = selectArticle.get(articleId) as
+      ArticleAnalysisRow | undefined;
+    if (!current) return;
+    if (
+      current.content !== article.content ||
+      current.summary !== article.summary
+    ) {
+      throw new Error('Article content changed while AI analysis was running');
+    }
+    const existing = db
+      .prepare('SELECT id FROM article_ai_metadata WHERE article_id = ?')
+      .get(articleId);
+    if (existing) {
+      db.prepare(
+        `
+        UPDATE article_ai_metadata
+        SET summary = ?, topics = ?, entities = ?, content_type = ?,
+            ai_relevance_score = ?, novelty_score = ?, quality_score = ?, likely_user_interest = ?,
+            signals = ?, explanation = ?, analysis_status = 'ready', analysis_error = '', processed_at = ?
+        WHERE article_id = ?
+      `,
+      ).run(
+        aiSummary,
+        topicsJson,
+        entitiesJson,
+        contentType,
+        aiRelevanceScore,
+        noveltyScore,
+        qualityScore,
+        likelyInterest,
+        signalsJson,
+        explanation,
+        now,
+        articleId,
+      );
+    } else {
+      db.prepare(
+        `
+        INSERT INTO article_ai_metadata (
+          id, article_id, summary, topics, entities, content_type,
+          ai_relevance_score, novelty_score, quality_score, likely_user_interest,
+          signals, explanation, processed_at, created_at
+          , analysis_status, analysis_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', '')
+      `,
+      ).run(
+        crypto.randomUUID(),
+        articleId,
+        aiSummary,
+        topicsJson,
+        entitiesJson,
+        contentType,
+        aiRelevanceScore,
+        noveltyScore,
+        qualityScore,
+        likelyInterest,
+        signalsJson,
+        explanation,
+        now,
+        now,
+      );
+    }
 
-  // Recompute after enrichment. If a Jev score is already present, this
-  // activates the hybrid score; otherwise it preserves the LLM-only formula.
-  refreshCombinedScore(articleId);
+    const readerState = db
+      .prepare(
+        'SELECT read, saved, hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+      )
+      .get(articleId) as {
+      read: number;
+      saved: number;
+      hidden: number;
+      rejected: number;
+      thumbs_down: number;
+    };
+    const visible =
+      !readerState.hidden && !readerState.rejected && !readerState.thumbs_down;
+    const refreshRanking = visible && isRankingProviderConfigured();
+    if (refreshRanking) {
+      db.prepare(
+        "UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '' WHERE id = ?",
+      ).run(articleId);
+    }
 
-  // Jev's candidate state includes this newly extracted enrichment, so
-  // refresh its judgment whenever an LLM analysis succeeds. The queue
-  // deduplicates an already queued or processing Jev job for this article.
-  try {
-    const { enqueueJevProcess } = await import('$lib/server/feed/job-queue');
-    enqueueJevProcess(articleId);
-  } catch (error) {
-    recordAppError({
-      source: 'ai.processor.jev.enqueue',
-      error,
-      details: { articleId },
-    });
-  }
+    if (visible && !readerState.read && !readerState.saved) {
+      applyPreferenceModelToArticle(articleId);
+    } else {
+      updateHeuristicScore(articleId);
+    }
+
+    if (
+      refreshRanking &&
+      db
+        .prepare('SELECT 1 FROM articles WHERE id = ? AND hidden = 0')
+        .get(articleId)
+    ) {
+      // Commit the refresh intent with enrichment even if the Jev job
+      // queue is full. The worker will submit it when capacity returns.
+      markArticleForRankingRefresh(articleId);
+    }
+  }).immediate();
 }

@@ -14,6 +14,27 @@
   let loading = $state(true);
   let message = $state('');
   let saving = $state(false);
+  let aiEnabled = $state(true);
+  let aiConfigured = $state(false);
+  let savingAiEnabled = $state(false);
+  let aiStatusMessage = $state('');
+  let analysisCounts = $state({
+    pending: 0,
+    ready: 0,
+    failed: 0,
+    skipped: 0,
+  });
+  let aiJobCounts = $state({ queued: 0, processing: 0 });
+  let recentFailures = $state<
+    Array<{
+      article_id: string;
+      title: string;
+      feed_title: string;
+      analysis_status: 'failed' | 'skipped';
+      analysis_error: string;
+      processed_at: number | null;
+    }>
+  >([]);
 
   // Derived state
   const allModels = $derived(
@@ -42,28 +63,65 @@
 
   async function loadProviders() {
     try {
-      const res = await fetch('/api/ai/providers');
-      if (res.ok) {
-        const data = await res.json();
+      const [providerResponse, configResponse] = await Promise.all([
+        fetch('/api/ai/providers'),
+        fetch('/api/ai/config'),
+      ]);
+      if (providerResponse.ok) {
+        const data = await providerResponse.json();
         providers = data.providers;
+      }
+      if (configResponse.ok) {
+        const data = await configResponse.json();
+        aiEnabled = data.aiEnabled !== false;
+        aiConfigured = Boolean(data.aiConfigured);
+        analysisCounts = data.analysisCounts || analysisCounts;
+        aiJobCounts = data.aiJobCounts || aiJobCounts;
+        recentFailures = Array.isArray(data.recentFailures)
+          ? data.recentFailures
+          : [];
+      }
 
-        // Pre-fill from saved config
-        if (pageData.configs && pageData.configs.length > 0) {
-          const cfg = pageData.configs[0];
-          selectedProviderId = cfg.provider_id;
-          selectedModelId = cfg.model_id;
-          envConfig = {};
-          customBaseUrl = cfg.custom_base_url || '';
-          if (cfg.has_api_key) {
-            message =
-              'Credentials are stored securely. Leave blank to keep them unchanged.';
-          }
+      // Pre-fill from saved config.
+      if (pageData.configs && pageData.configs.length > 0) {
+        const cfg = pageData.configs[0];
+        selectedProviderId = cfg.provider_id;
+        selectedModelId = cfg.model_id;
+        envConfig = {};
+        customBaseUrl = cfg.custom_base_url || '';
+        if (cfg.has_api_key) {
+          message =
+            'Credentials are stored securely. Leave blank to keep them unchanged.';
         }
       }
     } catch {
-      message = 'Failed to load model registry.';
+      message = 'Failed to load AI settings.';
     } finally {
       loading = false;
+    }
+  }
+
+  async function setAiEnabled(event: Event) {
+    const nextEnabled = (event.currentTarget as HTMLInputElement).checked;
+    const previousEnabled = aiEnabled;
+    savingAiEnabled = true;
+    aiStatusMessage = '';
+    try {
+      const response = await fetchWithCsrf('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      if (!response.ok) throw new Error('Failed to update AI processing.');
+      aiEnabled = nextEnabled;
+      aiStatusMessage = nextEnabled
+        ? 'Background AI processing is enabled.'
+        : 'Background AI processing is paused.';
+    } catch {
+      aiEnabled = previousEnabled;
+      aiStatusMessage = 'Could not update AI processing.';
+    } finally {
+      savingAiEnabled = false;
     }
   }
 
@@ -131,6 +189,84 @@
   <div class="glass-card mt-4 h-64 animate-pulse p-5"></div>
 {:else}
   <div class="space-y-6">
+    <section
+      class="glass-card space-y-5 p-5 md:p-6"
+      aria-labelledby="ai-processing-heading"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 id="ai-processing-heading" class="text-base font-bold text-white">
+            Background AI processing
+          </h3>
+          <p class="mt-1 max-w-2xl text-sm opacity-70">
+            Pause or resume article enrichment. Existing article data stays
+            available while processing is paused.
+          </p>
+        </div>
+        <label class="flex cursor-pointer items-center gap-3 text-sm">
+          <input
+            type="checkbox"
+            class="h-4 w-4 accent-primary-500"
+            checked={aiEnabled}
+            onchange={setAiEnabled}
+            disabled={savingAiEnabled}
+            aria-label="Enable background AI processing"
+          />
+          <span>{aiEnabled ? 'Enabled' : 'Paused'}</span>
+        </label>
+      </div>
+
+      {#if !aiConfigured}
+        <p
+          class="rounded-sm border border-white/10 bg-white/5 px-3 py-2 text-sm opacity-75"
+        >
+          No AI provider is configured. Select a compatible model below to start
+          enrichment.
+        </p>
+      {/if}
+      {#if aiStatusMessage}
+        <p class="text-sm opacity-75" aria-live="polite">{aiStatusMessage}</p>
+      {/if}
+
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {#each [{ label: 'Ready', value: analysisCounts.ready }, { label: 'Failed', value: analysisCounts.failed }, { label: 'Skipped', value: analysisCounts.skipped }, { label: 'Pending metadata', value: analysisCounts.pending }, { label: 'Queued jobs', value: aiJobCounts.queued }, { label: 'Running jobs', value: aiJobCounts.processing }] as item (item.label)}
+          <div class="rounded-sm border border-white/10 bg-white/5 px-3 py-3">
+            <div class="text-xl font-semibold text-white">{item.value}</div>
+            <div class="mt-1 text-xs opacity-65">{item.label}</div>
+          </div>
+        {/each}
+      </div>
+
+      <div>
+        <h4 class="text-sm font-bold text-white">Recent enrichment failures</h4>
+        {#if recentFailures.length === 0}
+          <p class="mt-2 text-sm opacity-65">
+            No failed or skipped analyses with recorded errors.
+          </p>
+        {:else}
+          <ul class="mt-3 divide-y divide-white/10">
+            {#each recentFailures as failure (failure.article_id)}
+              <li class="py-3">
+                <div
+                  class="flex flex-wrap items-baseline justify-between gap-2"
+                >
+                  <span class="text-sm font-medium text-white"
+                    >{failure.title}</span
+                  >
+                  <span class="text-xs uppercase tracking-wide opacity-60">
+                    {failure.analysis_status} · {failure.feed_title}
+                  </span>
+                </div>
+                <p class="mt-1 break-words text-sm opacity-70">
+                  {failure.analysis_error}
+                </p>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    </section>
+
     <!-- Search Section -->
     <div
       class="glass-card relative z-20 p-5 md:p-6"

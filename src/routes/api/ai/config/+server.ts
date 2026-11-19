@@ -4,6 +4,7 @@ import { encrypt } from '$lib/server/ai/crypto';
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { assertPublicNetworkUrl, SafeFetchError } from '$lib/server/network';
+import { getModel } from '$lib/server/ai/models-dev';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
@@ -16,14 +17,43 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ error: 'Invalid body' }, { status: 400 });
   }
 
-  const { providerId, modelId, config, customBaseUrl } = body as {
+  const { providerId, modelId, config, customBaseUrl, enabled } = body as {
     providerId: unknown;
     modelId: unknown;
     config?: unknown;
     customBaseUrl?: unknown;
+    enabled?: unknown;
   };
-  if (!providerId || !modelId)
+
+  if (
+    typeof enabled === 'boolean' &&
+    providerId === undefined &&
+    modelId === undefined
+  ) {
+    const now = Date.now();
+    getDb()
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('ai_enabled', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(String(enabled), now);
+    return json({ success: true, aiEnabled: enabled });
+  }
+
+  if (typeof providerId !== 'string' || typeof modelId !== 'string')
     return json({ error: 'providerId and modelId required' }, { status: 400 });
+  const providerIdValue = providerId.trim();
+  const modelIdValue = modelId.trim();
+  if (!providerIdValue || !modelIdValue)
+    return json({ error: 'providerId and modelId required' }, { status: 400 });
+
+  if (!(await getModel(providerIdValue, modelIdValue))) {
+    return json(
+      { error: 'Select a supported text chat model and provider.' },
+      { status: 400 },
+    );
+  }
 
   if (
     (config !== undefined &&
@@ -59,7 +89,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       .map(([key, value]) => [key, String(value)]),
   );
 
-  const providerIdValue = String(providerId);
   const db = getDb();
   const existing = db
     .prepare('SELECT id FROM provider_configs WHERE provider_id = ?')
@@ -79,7 +108,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         db.prepare(
           'UPDATE provider_configs SET model_id = ?, api_key_encrypted = ?, api_key_nonce = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
         ).run(
-          String(modelId),
+          modelIdValue,
           encrypted,
           nonce,
           validatedBaseUrl,
@@ -89,7 +118,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       } else {
         db.prepare(
           'UPDATE provider_configs SET model_id = ?, custom_base_url = ?, updated_at = ? WHERE id = ?',
-        ).run(String(modelId), validatedBaseUrl, Date.now(), existing.id);
+        ).run(modelIdValue, validatedBaseUrl, Date.now(), existing.id);
       }
     } else {
       const id = crypto.randomUUID();
@@ -98,7 +127,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ).run(
         id,
         providerIdValue,
-        String(modelId),
+        modelIdValue,
         encrypted || '',
         nonce || '',
         validatedBaseUrl,
@@ -114,6 +143,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     db.prepare(
       "INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_enabled', 'true', ?) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = ?",
     ).run(Date.now(), Date.now());
+    db.prepare(
+      "DELETE FROM app_settings WHERE key = 'provider_cooldown_ai_process'",
+    ).run();
   })();
 
   return json({ success: true });
@@ -130,5 +162,74 @@ export const GET: RequestHandler = async ({ locals }) => {
     )
     .all();
 
-  return json({ configs });
+  const setting = db
+    .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
+    .get() as { value: string } | undefined;
+  const statuses = db
+    .prepare(
+      `SELECT analysis_status, COUNT(*) AS count
+       FROM article_ai_metadata
+       GROUP BY analysis_status`,
+    )
+    .all() as Array<{ analysis_status: string; count: number }>;
+  const analysisCounts = {
+    pending: 0,
+    ready: 0,
+    failed: 0,
+    skipped: 0,
+  };
+  for (const row of statuses) {
+    if (row.analysis_status in analysisCounts) {
+      analysisCounts[row.analysis_status as keyof typeof analysisCounts] =
+        Number(row.count) || 0;
+    }
+  }
+  const activeJobRows = db
+    .prepare(
+      `SELECT status, COUNT(*) AS count
+       FROM jobs
+       WHERE type = 'ai_process' AND status IN ('queued', 'processing')
+       GROUP BY status`,
+    )
+    .all() as Array<{ status: 'queued' | 'processing'; count: number }>;
+  const aiJobCounts = { queued: 0, processing: 0 };
+  for (const row of activeJobRows) {
+    aiJobCounts[row.status] = Number(row.count) || 0;
+  }
+  const recentFailures = db
+    .prepare(
+      `SELECT am.article_id, a.title, f.title AS feed_title,
+              am.analysis_status, am.analysis_error, am.processed_at
+       FROM article_ai_metadata am
+       JOIN articles a ON a.id = am.article_id
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE am.analysis_status IN ('failed', 'skipped')
+         AND COALESCE(am.analysis_error, '') != ''
+       ORDER BY COALESCE(am.processed_at, am.created_at) DESC
+       LIMIT 12`,
+    )
+    .all() as Array<{
+    article_id: string;
+    title: string;
+    feed_title: string;
+    analysis_status: 'failed' | 'skipped';
+    analysis_error: string;
+    processed_at: number | null;
+  }>;
+
+  return json({
+    configs,
+    aiEnabled: setting?.value !== 'false',
+    aiConfigured: configs.some(
+      (config) => (config as { enabled: number }).enabled === 1,
+    ),
+    analysisCounts,
+    aiJobCounts,
+    recentFailures: recentFailures.map((item) => ({
+      ...item,
+      title: String(item.title || 'Untitled article').slice(0, 180),
+      feed_title: String(item.feed_title || 'Unknown feed').slice(0, 100),
+      analysis_error: String(item.analysis_error || '').slice(0, 500),
+    })),
+  });
 };

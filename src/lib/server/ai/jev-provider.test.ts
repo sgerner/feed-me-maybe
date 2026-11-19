@@ -10,6 +10,12 @@ import {
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi.fn().mockResolvedValue([{ address: '8.8.8.8', family: 4 }]),
+  },
+}));
+
 describe('selected ranking provider', () => {
   const testDbPath = join(process.cwd(), 'data', 'test-ranking-provider.db');
   const testSubqKeyPath = `${testDbPath}.subq-key`;
@@ -50,7 +56,7 @@ describe('selected ranking provider', () => {
     db.prepare('DELETE FROM articles').run();
     db.prepare('DELETE FROM feeds').run();
     db.prepare(
-      "DELETE FROM app_settings WHERE key IN ('ranking_provider_revision', 'ranking_feedback_revision')",
+      "DELETE FROM app_settings WHERE key IN ('ranking_provider_revision', 'ranking_feedback_revision', 'provider_cooldown_jev_process')",
     ).run();
     db.prepare(
       `INSERT INTO app_settings (key, value, updated_at)
@@ -195,6 +201,128 @@ describe('selected ranking provider', () => {
     ).toEqual({ jev_score: 0.82 });
   });
 
+  it('deduplicates source preferences and ignores automatic hides', async () => {
+    await insertArticle('profile-candidate');
+    const { getDb } = await import('$lib/server/db');
+    const { scoreArticleWithJev } = await import('./jev');
+    const db = getDb();
+    const now = Date.now();
+    const insertFeed = db.prepare(
+      'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    );
+    const insertSourceArticle = db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const insertInteraction = db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    );
+
+    insertFeed.run(
+      'automatic-hide-feed',
+      'https://example.com/automatic-hide.xml',
+      'Automatic Hide Feed',
+      now,
+      now,
+    );
+    insertFeed.run(
+      'manual-hide-feed',
+      'https://example.com/manual-hide.xml',
+      'Manual Hide Feed',
+      now,
+      now,
+    );
+    insertSourceArticle.run(
+      'profile-opened',
+      'provider-feed',
+      'https://example.com/profile-opened',
+      'Opened article',
+      now,
+      now,
+      now,
+    );
+    insertSourceArticle.run(
+      'profile-auto-hidden',
+      'automatic-hide-feed',
+      'https://example.com/profile-auto-hidden',
+      'Auto hidden article',
+      now,
+      now,
+      now,
+    );
+    insertSourceArticle.run(
+      'profile-manually-hidden',
+      'manual-hide-feed',
+      'https://example.com/profile-manually-hidden',
+      'Manually hidden article',
+      now,
+      now,
+      now,
+    );
+    insertInteraction.run(
+      'profile-open-1',
+      'profile-opened',
+      'open',
+      now,
+      '{}',
+    );
+    insertInteraction.run(
+      'profile-open-2',
+      'profile-opened',
+      'open',
+      now + 1,
+      '{}',
+    );
+    insertInteraction.run(
+      'profile-read',
+      'profile-opened',
+      'read',
+      now + 2,
+      '{}',
+    );
+    insertInteraction.run(
+      'profile-auto-hide',
+      'profile-auto-hidden',
+      'hide',
+      now,
+      '{"auto":true,"reason":"hide_on_open"}',
+    );
+    insertInteraction.run(
+      'profile-manual-hide',
+      'profile-manually-hidden',
+      'hide',
+      now,
+      '{}',
+    );
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ answers: { would_open: { noul: 0.82 } } }),
+          { status: 200 },
+        ),
+      );
+    await scoreArticleWithJev('profile-candidate');
+
+    const payload = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+    const profile = payload.state.reader_profile as {
+      preferred_sources: Array<{ source: string; interactions: number }>;
+      avoided_sources: Array<{ source: string; interactions: number }>;
+    };
+    expect(profile.preferred_sources).toContainEqual({
+      source: 'Provider feed',
+      interactions: 1,
+    });
+    expect(profile.avoided_sources).not.toContainEqual({
+      source: 'Automatic Hide Feed',
+      interactions: 1,
+    });
+    expect(profile.avoided_sources).toContainEqual({
+      source: 'Manual Hide Feed',
+      interactions: 1,
+    });
+  });
+
   it.each(['jev', 'subq'] as const)(
     'rejects a null score from %s without overwriting the cached score',
     async (provider) => {
@@ -226,6 +354,30 @@ describe('selected ranking provider', () => {
     },
   );
 
+  it.each([-0.1, 1.1])(
+    'rejects out-of-range ranking score %s without saving it',
+    async (score) => {
+      await insertArticle(`out-of-range-${score}`, 0.45);
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({ answers: { would_open: { noul: score } } }),
+          { status: 200 },
+        ),
+      );
+      const { scoreArticleWithJev } = await import('./jev');
+      const { getDb } = await import('$lib/server/db');
+
+      await expect(
+        scoreArticleWithJev(`out-of-range-${score}`),
+      ).rejects.toThrow('no usable would_open score');
+      expect(
+        getDb()
+          .prepare('SELECT jev_score FROM articles WHERE id = ?')
+          .get(`out-of-range-${score}`),
+      ).toEqual({ jev_score: 0.45 });
+    },
+  );
+
   it('invalidates cached scores on switch and rejects in-flight results after switching back', async () => {
     await insertArticle('provider-race', 0.74);
     const { applySettingsMutation } = await import('$lib/server/settings');
@@ -233,6 +385,11 @@ describe('selected ranking provider', () => {
     const { getRankingProviderSnapshot } =
       await import('$lib/server/ranking-provider');
     const { scoreArticleWithJev } = await import('./jev');
+    getDb()
+      .prepare(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES ('provider_cooldown_jev_process', ?, ?)",
+      )
+      .run(String(Date.now() + 60_000), Date.now());
     let resolveFetch!: (response: Response) => void;
     vi.spyOn(globalThis, 'fetch').mockImplementation(
       () =>
@@ -242,9 +399,17 @@ describe('selected ranking provider', () => {
     );
 
     const pendingScore = scoreArticleWithJev('provider-race');
+    await vi.waitFor(() => expect(resolveFetch).toBeTypeOf('function'));
     expect(applySettingsMutation('ranking_provider', 'subq').changed).toBe(
       true,
     );
+    expect(
+      getDb()
+        .prepare(
+          "SELECT value FROM app_settings WHERE key = 'provider_cooldown_jev_process'",
+        )
+        .get(),
+    ).toBeUndefined();
     expect(applySettingsMutation('ranking_provider', 'jev').changed).toBe(true);
     expect(getRankingProviderSnapshot()).toEqual({
       provider: 'jev',

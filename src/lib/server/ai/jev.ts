@@ -1,3 +1,9 @@
+import {
+  fetchSafe,
+  MAX_JSON_RESPONSE_BYTES,
+  readResponseText,
+} from '$lib/server/network';
+import { ProviderHttpError, retryAtFromHeader } from './provider-error';
 import fs from 'node:fs';
 import { buildRankingPreferenceInput } from '$lib/server/ai/preference-input';
 import { getDb } from '$lib/server/db';
@@ -36,6 +42,8 @@ type ArticleJevRow = {
   feed_title: string | null;
   feed_category: string | null;
   ai_summary: string | null;
+  ai_analysis_status: string | null;
+  ai_processed_at: number | null;
   ai_topics: string | null;
   ai_entities: string | null;
   ai_content_type: string | null;
@@ -192,11 +200,18 @@ function getReaderProfile(): Record<string, unknown> {
     .prepare(
       `
         SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source,
-               COUNT(*) AS interaction_count
+               COUNT(DISTINCT a.id) AS interaction_count
         FROM user_interactions ui
         JOIN articles a ON a.id = ui.article_id
         JOIN feeds f ON f.id = a.feed_id
         WHERE ui.interaction_type IN ('open', 'read')
+          AND COALESCE(
+            json_extract(
+              CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+              '$.undone_at'
+            ),
+            0
+          ) = 0
         GROUP BY f.id
         ORDER BY interaction_count DESC
         LIMIT 5
@@ -207,11 +222,28 @@ function getReaderProfile(): Record<string, unknown> {
     .prepare(
       `
         SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source,
-               COUNT(*) AS interaction_count
+               COUNT(DISTINCT a.id) AS interaction_count
         FROM user_interactions ui
         JOIN articles a ON a.id = ui.article_id
         JOIN feeds f ON f.id = a.feed_id
         WHERE ui.interaction_type IN ('thumbs_down', 'hide')
+          AND COALESCE(
+            json_extract(
+              CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+              '$.undone_at'
+            ),
+            0
+          ) = 0
+          AND (
+            ui.interaction_type = 'thumbs_down'
+            OR COALESCE(
+              json_extract(
+                CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                '$.auto'
+              ),
+              0
+            ) = 0
+          )
         GROUP BY f.id
         ORDER BY interaction_count DESC
         LIMIT 5
@@ -240,7 +272,8 @@ function getArticle(articleId: string): ArticleJevRow | undefined {
         SELECT a.title, a.summary, a.content, a.author, a.categories,
                a.published_at, a.fetched_at,
                f.title AS feed_title, f.category AS feed_category,
-               am.summary AS ai_summary, am.topics AS ai_topics,
+               am.summary AS ai_summary, am.analysis_status AS ai_analysis_status,
+               am.processed_at AS ai_processed_at, am.topics AS ai_topics,
                am.entities AS ai_entities, am.content_type AS ai_content_type,
                am.signals AS ai_signals
         FROM articles a
@@ -253,14 +286,21 @@ function getArticle(articleId: string): ArticleJevRow | undefined {
 }
 
 function buildState(article: ArticleJevRow): Record<string, unknown> {
+  const hasReadyAnalysis = article.ai_analysis_status === 'ready';
   const publishedAt = Number(article.published_at || article.fetched_at || 0);
   const ageHours = publishedAt
     ? Math.max(0, (Date.now() - publishedAt) / (60 * 60 * 1000))
     : null;
   const categories = parseJsonTextArray(article.categories, 8);
-  const topics = parseJsonTextArray(article.ai_topics, 8);
-  const entities = parseJsonTextArray(article.ai_entities, 8);
-  const signals = parseJsonTextArray(article.ai_signals, 8);
+  const topics = hasReadyAnalysis
+    ? parseJsonTextArray(article.ai_topics, 8)
+    : [];
+  const entities = hasReadyAnalysis
+    ? parseJsonTextArray(article.ai_entities, 8)
+    : [];
+  const signals = hasReadyAnalysis
+    ? parseJsonTextArray(article.ai_signals, 8)
+    : [];
 
   return buildRankingPreferenceInput(
     buildSafeDecisionInput({
@@ -270,12 +310,17 @@ function buildState(article: ArticleJevRow): Record<string, unknown> {
         author: compactText(article.author, 120),
         source: compactText(article.feed_title, 120),
         source_category: compactText(article.feed_category, 80),
-        summary: compactText(article.ai_summary || article.summary, 1400),
+        summary: compactText(
+          (hasReadyAnalysis && article.ai_summary) || article.summary,
+          1400,
+        ),
         content_excerpt: compactText(article.content, 2200),
         categories,
         topics,
         entities,
-        content_type: compactText(article.ai_content_type, 50),
+        content_type: hasReadyAnalysis
+          ? compactText(article.ai_content_type, 50)
+          : '',
         signals,
         age_hours: ageHours == null ? null : Number(ageHours.toFixed(1)),
       },
@@ -298,37 +343,48 @@ async function requestRankingScore(
   const endpoint = provider === 'jev' ? JEV_ENDPOINT : SUBQ_ENDPOINT;
   const model = provider === 'jev' ? JEV_MODEL : SUBQ_MODEL;
   const providerName = provider === 'jev' ? 'TypeSafe' : 'SubQ';
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      state,
-      model,
-      questions: {
-        would_open: JEV_DECISION_QUESTIONS.would_open,
+  const { response } = await fetchSafe(
+    endpoint,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
       },
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
+      body: JSON.stringify({
+        state,
+        model,
+        questions: { would_open: JEV_DECISION_QUESTIONS.would_open },
+      }),
+      signal: AbortSignal.timeout(20_000),
+    },
+    { maxRedirects: 0, maxBytes: MAX_JSON_RESPONSE_BYTES },
+  );
 
   if (!response.ok) {
-    const detail = (await response.text()).slice(0, 300).replace(/\s+/g, ' ');
-    throw new Error(
-      `${providerName} API returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
+    await response.body?.cancel();
+    throw new ProviderHttpError(
+      `${providerName} API returned HTTP ${response.status}`,
+      response.status,
+      retryAtFromHeader(response.headers.get('retry-after')),
     );
   }
 
-  const data = (await response.json()) as {
+  const data = JSON.parse(
+    await readResponseText(response, MAX_JSON_RESPONSE_BYTES),
+  ) as {
     answers?: { would_open?: { noul?: unknown } };
   };
   const rawScore = data.answers?.would_open?.noul;
-  if (typeof rawScore !== 'number' || !Number.isFinite(rawScore)) {
+  if (
+    typeof rawScore !== 'number' ||
+    !Number.isFinite(rawScore) ||
+    rawScore < 0 ||
+    rawScore > 1
+  ) {
     throw new Error(`${providerName} API returned no usable would_open score`);
   }
-  return Math.max(0, Math.min(1, rawScore));
+  return rawScore;
 }
 
 /**
@@ -347,6 +403,14 @@ export async function scoreArticleWithJev(
 
   const db = getDb();
   const profileRevision = getRankingFeedbackRevision();
+  const readAnalysisVersion = db
+    .prepare(
+      'SELECT processed_at FROM article_ai_metadata WHERE article_id = ?',
+    )
+    .pluck();
+  const analysisChanged = () =>
+    (readAnalysisVersion.get(articleId) ?? null) !== article.ai_processed_at;
+
   try {
     const score = await requestRankingScore(
       providerSnapshot.provider,
@@ -358,6 +422,7 @@ export async function scoreArticleWithJev(
         const currentRevision = getRankingFeedbackRevision();
         const currentProvider = getRankingProviderSnapshot();
         if (
+          analysisChanged() ||
           currentRevision !== profileRevision ||
           currentProvider.provider !== providerSnapshot.provider ||
           currentProvider.revision !== providerSnapshot.revision
@@ -394,6 +459,7 @@ export async function scoreArticleWithJev(
         const currentRevision = getRankingFeedbackRevision();
         const currentProvider = getRankingProviderSnapshot();
         if (
+          analysisChanged() ||
           currentRevision !== profileRevision ||
           currentProvider.provider !== providerSnapshot.provider ||
           currentProvider.revision !== providerSnapshot.revision

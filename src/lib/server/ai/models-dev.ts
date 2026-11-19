@@ -2,8 +2,47 @@ import { type AiProvider, type AiModel } from './types';
 
 const MODELS_DEV_URL = 'https://models.dev/api.json';
 const CACHE_TTL = 1000 * 60 * 60; // 1 hour
+const OPENAI_API_URL = 'https://api.openai.com/v1';
+const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
 
 let cache: { data: any; timestamp: number } | null = null;
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function compatibleBaseUrl(id: string, provider: Record<string, any>): string {
+  const npm = provider.npm;
+  if (id === 'openai' && npm === '@ai-sdk/openai') return OPENAI_API_URL;
+
+  const hasCompatibleAdapter =
+    npm === OPENAI_COMPATIBLE_NPM ||
+    npm === '@ai-sdk/openai' ||
+    (id === 'openrouter' && npm === '@openrouter/ai-sdk-provider');
+  const api = typeof provider.api === 'string' ? provider.api.trim() : '';
+  if (!hasCompatibleAdapter || !api || api.includes('${')) return '';
+
+  try {
+    const url = new URL(api);
+    if (url.protocol !== 'https:' || !url.hostname) return '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function isTextChatModel(model: Record<string, any>): boolean {
+  const modalities = model.modalities;
+  return (
+    model.status !== 'deprecated' &&
+    Number(model.limit?.context) > 0 &&
+    isRecord(modalities) &&
+    Array.isArray(modalities.input) &&
+    modalities.input.includes('text') &&
+    Array.isArray(modalities.output) &&
+    modalities.output.includes('text')
+  );
+}
 
 async function fetchModelsDev() {
   if (cache && Date.now() - cache.timestamp < CACHE_TTL) {
@@ -29,30 +68,44 @@ async function fetchModelsDev() {
 
 export async function getProviders(): Promise<AiProvider[]> {
   const data = await fetchModelsDev();
+  if (!isRecord(data)) throw new Error('Invalid models.dev catalog');
 
-  return Object.entries(data).map(([id, provider]: [string, any]) => {
-    const models: AiModel[] = Object.entries(provider.models || {}).map(
-      ([modelId, model]: [string, any]) => ({
+  return Object.entries(data).flatMap(([id, rawProvider]) => {
+    if (!isRecord(rawProvider)) return [];
+    const baseUrl = compatibleBaseUrl(id, rawProvider);
+    if (!baseUrl) return [];
+
+    const models: AiModel[] = Object.entries(
+      isRecord(rawProvider.models) ? rawProvider.models : {},
+    )
+      .filter(([, model]) => isRecord(model) && isTextChatModel(model))
+      .map(([modelId, model]) => ({
         id: modelId,
         name: model.name || modelId,
         family: model.family,
-        contextWindow: model.limit?.context || 0,
-        inputPrice: model.cost?.input || 0,
-        outputPrice: model.cost?.output || 0,
-        reasoning: model.reasoning,
-        toolCall: model.tool_call,
-        structuredOutput: model.structured_output,
-      }),
-    );
+        contextWindow: Number(model.limit?.context),
+        inputPrice: Number(model.cost?.input) || 0,
+        outputPrice: Number(model.cost?.output) || 0,
+        reasoning: Boolean(model.reasoning),
+        toolCall: Boolean(model.tool_call),
+        structuredOutput: Boolean(model.structured_output),
+        temperature: model.temperature !== false,
+      }));
+
+    if (models.length === 0) return [];
 
     return {
       id,
-      name: provider.name || id,
-      description: provider.description || '',
-      baseUrl: provider.api || '',
-      docsUrl: provider.doc,
-      npm: provider.npm,
-      requiredEnvVars: provider.env || [],
+      name: rawProvider.name || id,
+      description: rawProvider.description || '',
+      baseUrl,
+      docsUrl: rawProvider.doc,
+      npm: rawProvider.npm,
+      requiredEnvVars: Array.isArray(rawProvider.env)
+        ? rawProvider.env.filter(
+            (name: unknown): name is string => typeof name === 'string',
+          )
+        : [],
       models,
     };
   });

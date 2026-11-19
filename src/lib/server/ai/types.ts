@@ -19,6 +19,7 @@ export interface AiModel {
   reasoning?: boolean;
   toolCall?: boolean;
   structuredOutput?: boolean;
+  temperature?: boolean;
 }
 
 export interface ArticleAnalysisInput {

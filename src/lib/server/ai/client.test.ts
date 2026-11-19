@@ -1,6 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAiClient } from './client';
 
+const validAnalysis = {
+  summary: 'A concise article summary.',
+  topics: ['testing'],
+  entities: ['Example'],
+  contentType: 'news',
+  relevanceScore: 0.7,
+  noveltyScore: 0.5,
+  qualityScore: 0.8,
+  likelyUserInterest: 'medium',
+  signals: ['specific_details'],
+  explanation: 'It contains concrete details.',
+};
+
 describe('AI provider network restrictions', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -73,7 +86,8 @@ describe('AI provider network restrictions', () => {
           choices: [
             {
               message: {
-                content: '{"summary":"Text with ,}", "topics":["test",],}',
+                content:
+                  '{"summary":"Text with ,}", "topics":["test",], "entities":[], "contentType":"news", "relevanceScore":0.7, "noveltyScore":0.5, "qualityScore":0.8, "likelyUserInterest":"medium", "signals":["specific_details"], "explanation":"Concrete details",}',
               },
             },
           ],
@@ -85,11 +99,84 @@ describe('AI provider network restrictions', () => {
       apiKey: 'secret',
       model: 'test',
     });
-    await expect(
-      client.analyzeArticle({ title: 'Test' }),
-    ).resolves.toMatchObject({
+    const response = await client.analyzeArticle({ title: 'Test' });
+    expect(response).toMatchObject({
       summary: 'Text with ,}',
       topics: ['test'],
     });
+  });
+
+  it('rejects article analysis scores outside the supported range', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ ...validAnalysis, qualityScore: 8 }),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const client = createAiClient({
+      baseUrl: 'https://1.1.1.1/v1',
+      apiKey: 'secret',
+      model: 'test',
+    });
+
+    await expect(client.analyzeArticle({ title: 'Test' })).rejects.toThrow(
+      'AI provider returned invalid article analysis',
+    );
+  });
+
+  it('rejects unexpected article analysis labels', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  ...validAnalysis,
+                  signals: ['buy_now'],
+                }),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const client = createAiClient({
+      baseUrl: 'https://1.1.1.1/v1',
+      apiKey: 'secret',
+      model: 'test',
+    });
+
+    await expect(client.analyzeArticle({ title: 'Test' })).rejects.toThrow(
+      'AI provider returned invalid article analysis',
+    );
+  });
+
+  it('omits temperature for models that do not support it', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ choices: [{ message: { content: 'Summary.' } }] }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createAiClient({
+      baseUrl: 'https://1.1.1.1/v1',
+      apiKey: 'secret',
+      model: 'test',
+      supportsTemperature: false,
+    });
+
+    await client.summarizeArticle('article text');
+    const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(request).not.toHaveProperty('temperature');
   });
 });

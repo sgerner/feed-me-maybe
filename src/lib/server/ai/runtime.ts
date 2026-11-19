@@ -47,12 +47,14 @@ export async function getConfiguredAiClient() {
     }
   })();
 
-  const providerInfo = config.custom_base_url
-    ? undefined
-    : await getProvider(config.provider_id);
-  const baseUrl = config.custom_base_url || providerInfo?.baseUrl || '';
+  const providerInfo = await getProvider(config.provider_id);
+  const modelInfo = providerInfo?.models.find(
+    (model) => model.id === config.model_id,
+  );
+  if (!providerInfo || !modelInfo) return null;
+  const baseUrl = config.custom_base_url || providerInfo.baseUrl;
 
-  const apiKey = providerInfo?.requiredEnvVars?.length
+  const apiKey = providerInfo.requiredEnvVars.length
     ? decryptedConfig[providerInfo.requiredEnvVars[0]] ||
       Object.values(decryptedConfig)[0] ||
       ''
@@ -65,5 +67,6 @@ export async function getConfiguredAiClient() {
     apiKey,
     model: config.model_id,
     providerId: config.provider_id,
+    supportsTemperature: modelInfo.temperature !== false,
   });
 }
