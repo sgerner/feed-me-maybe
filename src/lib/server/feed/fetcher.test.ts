@@ -109,6 +109,91 @@ describe('Feed Fetcher', () => {
     );
   });
 
+  it('reads Atom summary metadata and skips malformed entry dates', async () => {
+    const xml = `<?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom" xml:base="https://example.com/releases/">
+        <title>Releases</title><author><name>Feed author</name></author>
+        <entry><id>urn:release:first</id><title>First</title>
+          <link href="self" rel="self"/><link href="#first"/>
+          <summary type="html">&lt;p&gt;First release&lt;/p&gt;</summary>
+          <category term="alpha"/><published>yesterday-ish</published><updated>2026-01-15T08:00:00Z</updated>
+        </entry>
+        <entry><id>urn:release:second</id><title>Second</title>
+          <link href="#second" rel="alternate"/><updated>bad</updated>
+        </entry>
+      </feed>`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(xml, {
+          headers: { 'content-type': 'application/atom+xml' },
+        }),
+      ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/feed');
+    expect(result.items).toMatchObject([
+      {
+        guid: 'urn:release:first',
+        url: 'https://example.com/releases/#first',
+        author: 'Feed author',
+        summary: '<p>First release</p>',
+        content: '<p>First release</p>',
+        categories: ['alpha'],
+        publishedAt: new Date('2026-01-15T08:00:00Z'),
+      },
+      {
+        guid: 'urn:release:second',
+        url: 'https://example.com/releases/#second',
+        publishedAt: undefined,
+      },
+    ]);
+  });
+
+  it.each([
+    ['latin1', 'text/plain', 'windows-1252'],
+    ['utf16le', 'application/octet-stream', 'UTF-16'],
+    ['utf8', 'application/rdf+xml', 'UTF-8'],
+  ] as const)(
+    'decodes %s feeds served as %s',
+    async (encoding, mimeType, declaration) => {
+      const xml = `<?xml version="1.0" encoding="${declaration}"?><rss version="2.0"><channel><title>Café</title></channel></rss>`;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(Buffer.from(xml, encoding), {
+            headers: { 'content-type': mimeType },
+          }),
+        ),
+      );
+      const { fetchFeed } = await import('./fetcher');
+      expect(await fetchFeed('https://example.com/feeds')).toMatchObject({
+        success: true,
+        title: 'Café',
+      });
+    },
+  );
+
+  it('forwards Retry-After even when the server returns a problem document', async () => {
+    const before = Date.now();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('{}', {
+          status: 429,
+          headers: {
+            'content-type': 'application/problem+json',
+            'retry-after': '120',
+          },
+        }),
+      ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/feeds');
+    expect(result.httpStatus).toBe(429);
+    expect(result.retryAt).toBeGreaterThanOrEqual(before + 120_000);
+  });
+
   it('rejects non-feed content types', async () => {
     vi.stubGlobal(
       'fetch',

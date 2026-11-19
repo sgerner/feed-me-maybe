@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { scheduleNextPoll } from '$lib/server/poller';
 import {
   enqueueFeedFetch,
   getLatestFeedFetchJob,
@@ -47,15 +48,17 @@ export const POST: RequestHandler = async ({ params, locals }) => {
   const job = enqueueFeedFetch(feed.id, { force: true });
   // The job is persisted before this worker is kicked. If the process stops,
   // the poller will recover and retry it on the next cycle.
-  void runDueJobs({ maxJobs: 1 }).catch((error) => {
-    recordAppError({
-      source: 'api.feed.refresh.worker',
-      error,
-      details: { feedId: feed.id, jobId: job.id },
-      path: `/api/feeds/${feed.id}/refresh`,
-      method: 'POST',
-    });
-  });
+  void runDueJobs({ maxJobs: 1 })
+    .catch((error) => {
+      recordAppError({
+        source: 'api.feed.refresh.worker',
+        error,
+        details: { feedId: feed.id, jobId: job.id },
+        path: `/api/feeds/${feed.id}/refresh`,
+        method: 'POST',
+      });
+    })
+    .finally(() => scheduleNextPoll());
 
   return json(
     {

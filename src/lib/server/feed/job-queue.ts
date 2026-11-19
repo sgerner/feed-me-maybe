@@ -354,19 +354,24 @@ function enqueueJob(
   const enqueueTx = db.transaction(() => {
     const existing = readActiveJob(type, key, value);
     if (existing) {
-      // A manual refresh should wake an already queued retry immediately.
-      if (scheduledAt !== null && existing.status === 'queued') {
-        const forceRefresh =
-          type === FEED_FETCH_JOB_TYPE &&
-          (payload as FeedFetchJobPayload).force === true;
-        const explicitJevRefresh = type === JEV_PROCESS_JOB_TYPE;
+      const forceRefresh =
+        type === FEED_FETCH_JOB_TYPE &&
+        (payload as FeedFetchJobPayload).force === true;
+      const explicitJevRefresh = type === JEV_PROCESS_JOB_TYPE;
+      // Polls should leave retry delays intact. A manual refresh may wake a
+      // transient error, but must still honor an upstream Retry-After deadline.
+      if (
+        scheduledAt !== null &&
+        existing.status === 'queued' &&
+        (forceRefresh || explicitJevRefresh)
+      ) {
         db.prepare(
           `
             UPDATE jobs
-            SET scheduled_at = MIN(COALESCE(scheduled_at, ?), ?),
+            SET scheduled_at = MAX(MIN(COALESCE(scheduled_at, ?), ?), COALESCE(json_extract(result, '$.retryAt'), 0)),
                 error_message = '',
                 payload = CASE
-                  WHEN ? = 1 THEN json_set(payload, '$.force', 1)
+                  WHEN ? = 1 THEN json_set(payload, '$.force', json('true'))
                   WHEN ? = 1 THEN json_remove(payload, '$.backfill')
                   ELSE payload
                 END
@@ -664,7 +669,11 @@ export function getNextQueuedJobAt(): number | null {
 
 function claimNextJob(
   now: number,
-  options: { allowJev?: boolean; allowFeed?: boolean } = {},
+  options: {
+    allowJev?: boolean;
+    allowFeed?: boolean;
+    allowScoring?: boolean;
+  } = {},
 ): JobRecord | null {
   const db = getDb();
   const claimTx = db.transaction(() => {
@@ -677,6 +686,7 @@ function claimNextJob(
             AND attempts < max_attempts
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
+            AND (? = 1 OR type = ?)
             AND (type != ? OR NOT EXISTS (
               SELECT 1 FROM ranking_refresh_queue q
               WHERE q.article_id = CASE WHEN json_valid(jobs.payload) = 1
@@ -684,10 +694,11 @@ function claimNextJob(
                 AND q.not_before > ?
             ))
           ORDER BY CASE
+                     WHEN type = ? THEN 0
                      WHEN type = ? AND json_valid(payload) = 1
-                       AND json_extract(payload, '$.feedback') = 1 THEN 0
-                     WHEN type = ? THEN 1
-                     ELSE 0
+                       AND json_extract(payload, '$.feedback') = 1 THEN 1
+                     WHEN type = ? THEN 2
+                     ELSE 1
                    END ASC,
                    COALESCE(scheduled_at, created_at) ASC, created_at ASC
           LIMIT 1
@@ -699,8 +710,11 @@ function claimNextJob(
         JEV_PROCESS_JOB_TYPE,
         options.allowFeed === false ? 0 : 1,
         FEED_FETCH_JOB_TYPE,
+        options.allowScoring === false ? 0 : 1,
+        FEED_FETCH_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         now,
+        FEED_FETCH_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
       ) as RawJobRow | undefined;
@@ -740,6 +754,16 @@ function completeJob(
     .run(JSON.stringify(result), now, job.id);
 }
 
+class FeedJobError extends Error {
+  constructor(
+    message: string,
+    readonly permanent = false,
+    readonly retryAt?: number,
+  ) {
+    super(message);
+  }
+}
+
 function failOrRetryJob(
   job: JobRecord,
   error: unknown,
@@ -750,7 +774,9 @@ function failOrRetryJob(
     error instanceof Error
       ? error.message
       : String(error || 'Unknown job error');
-  const exhausted = job.attempts >= job.maxAttempts;
+  const exhausted =
+    job.attempts >= job.maxAttempts ||
+    (error instanceof FeedJobError && error.permanent);
   if (exhausted) {
     db.prepare(
       `
@@ -766,17 +792,19 @@ function failOrRetryJob(
   const rateLimit = error instanceof AiRateLimitError ? error : cause;
   const retryAt =
     rateLimit instanceof AiRateLimitError ? rateLimit.retryAt : null;
+  const feedRetryAt = error instanceof FeedJobError ? error.retryAt : undefined;
   const scheduledAt = Math.max(
     now + getRetryDelayMs(job.attempts),
     retryAt ?? 0,
+    feedRetryAt ?? 0,
   );
   db.prepare(
     `
       UPDATE jobs
-      SET status = 'queued', error_message = ?, scheduled_at = ?, started_at = NULL
+      SET status = 'queued', error_message = ?, scheduled_at = ?, started_at = NULL, result = ?
       WHERE id = ? AND status = 'processing'
     `,
-  ).run(message, scheduledAt, job.id);
+  ).run(message, scheduledAt, JSON.stringify({ retryAt: feedRetryAt }), job.id);
   return 'retried';
 }
 
@@ -785,14 +813,20 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
 
   if (job.type === FEED_FETCH_JOB_TYPE) {
     const feedId = typeof payload.feedId === 'string' ? payload.feedId : '';
-    if (!feedId) throw new Error('Feed fetch job is missing feedId');
+    if (!feedId)
+      throw new FeedJobError('Feed fetch job is missing feedId', true);
     const { ingestFeed } = await import('$lib/server/feed/ingester');
     const result = await ingestFeed({
       feedId,
-      force: payload.force === true,
+      force: payload.force === true || payload.force === 1,
+      countFailure: job.attempts === 1,
     });
     if (!result.success && !result.skipped) {
-      throw new Error(result.error || 'Feed ingestion failed');
+      throw new FeedJobError(
+        result.error || 'Feed ingestion failed',
+        result.permanentFailure,
+        result.retryAt,
+      );
     }
     return result as unknown as Record<string, unknown>;
   }
@@ -834,12 +868,14 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
 }
 
 let activeRun: Promise<RunJobsResult> | null = null;
+type JobRunControl = { budget: number; processed: number; wake?: () => void };
+let runControl: JobRunControl | null = null;
 
 async function runDueJobsInternal(
   options: RunJobsOptions,
+  control: JobRunControl,
 ): Promise<RunJobsResult> {
   const now = options.now ?? Date.now();
-  const maxJobs = Math.max(1, Math.floor(options.maxJobs ?? 16));
   const recovered = recoverAbandonedJobs(now);
   const { flushRankingRefreshQueue } =
     await import('$lib/server/ranking-freshness');
@@ -877,43 +913,53 @@ async function runDueJobsInternal(
     }
   }
 
-  const feedJobs = new Set<Promise<void>>();
-  const startedFeedJobs: Promise<void>[] = [];
-  let feedResults: PromiseSettledResult<void>[];
+  const pending = new Set<Promise<void>>();
+  let activeFeeds = 0;
+  let scoring = false;
+  let workerFailure: { error: unknown } | undefined;
   try {
-    while (result.processed < maxJobs) {
-      await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
-      const job = claimNextJob(Date.now(), {
-        allowFeed: feedJobs.size < MAX_CONCURRENT_FEED_FETCHES,
-        allowJev:
-          isRankingProviderConfigured() &&
-          jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
-      });
+    while (!workerFailure) {
+      let job: JobRecord | null = null;
+      if (result.processed < control.budget) {
+        await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
+        job = claimNextJob(Date.now(), {
+          allowFeed: activeFeeds < MAX_CONCURRENT_FEED_FETCHES,
+          allowScoring: !scoring,
+          allowJev:
+            isRankingProviderConfigured() &&
+            jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
+        });
+      }
       if (!job) {
-        if (!feedJobs.size) break;
-        await Promise.race(feedJobs);
+        if (!pending.size) break;
+        const wake = new Promise<void>((resolve) => {
+          control.wake = resolve;
+        });
+        await Promise.race([wake, ...pending]);
+        control.wake = undefined;
         continue;
       }
       result.processed += 1;
+      control.processed = result.processed;
       if (job.type === JEV_PROCESS_JOB_TYPE) jevExecutions += 1;
-
-      if (job.type === FEED_FETCH_JOB_TYPE) {
-        const running = processJob(job);
-        startedFeedJobs.push(running);
-        feedJobs.add(running);
-        void running.then(
-          () => feedJobs.delete(running),
-          () => feedJobs.delete(running),
-        );
-      } else {
-        await processJob(job);
-      }
+      const isFeed = job.type === FEED_FETCH_JOB_TYPE;
+      if (isFeed) activeFeeds += 1;
+      else scoring = true;
+      const work = processJob(job)
+        .catch((error: unknown) => {
+          workerFailure ??= { error };
+        })
+        .finally(() => {
+          if (isFeed) activeFeeds -= 1;
+          else scoring = false;
+          pending.delete(work);
+        });
+      pending.add(work);
     }
   } finally {
-    feedResults = await Promise.allSettled(startedFeedJobs);
+    await Promise.all(pending);
   }
-  const failed = feedResults.find((entry) => entry.status === 'rejected');
-  if (failed) throw failed.reason;
+  if (workerFailure) throw workerFailure.error;
 
   return result;
 }
@@ -926,9 +972,19 @@ async function runDueJobsInternal(
 export function runDueJobs(
   options: RunJobsOptions = {},
 ): Promise<RunJobsResult> {
-  if (activeRun) return activeRun;
-  activeRun = runDueJobsInternal(options).finally(() => {
+  const budget = Math.max(1, Math.floor(options.maxJobs ?? 16));
+  if (activeRun && runControl) {
+    runControl.budget = Math.max(
+      runControl.budget,
+      runControl.processed + budget,
+    );
+    runControl.wake?.();
+    return activeRun;
+  }
+  runControl = { budget, processed: 0 };
+  activeRun = runDueJobsInternal(options, runControl).finally(() => {
     activeRun = null;
+    runControl = null;
   });
   return activeRun;
 }

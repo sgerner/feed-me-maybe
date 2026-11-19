@@ -1,6 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { enqueueFeedFetch } from '$lib/server/feed/job-queue';
+import { wakePoller } from '$lib/server/poller';
 import {
   isRedditUrl,
   normalizeRedditUrl,
@@ -127,19 +129,22 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   try {
-    db.prepare(
-      'INSERT INTO feeds (id, url, title, category, source_type, source_metadata, use_proxy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(
-      id,
-      normalizedUrl,
-      title || '',
-      category || '',
-      sourceType,
-      sourceMetadata,
-      useProxy ? 1 : 0,
-      now.getTime(),
-      now.getTime(),
-    );
+    db.transaction(() => {
+      db.prepare(
+        'INSERT INTO feeds (id, url, title, category, source_type, source_metadata, use_proxy, poll_interval_mins, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
+      ).run(
+        id,
+        normalizedUrl,
+        title || '',
+        category || '',
+        sourceType,
+        sourceMetadata,
+        useProxy ? 1 : 0,
+        now.getTime(),
+        now.getTime(),
+      );
+      enqueueFeedFetch(id, { now: now.getTime() });
+    }).immediate();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     if (msg.includes('UNIQUE constraint')) {
@@ -148,6 +153,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return json({ error: 'Failed to create feed' }, { status: 500 });
   }
 
+  wakePoller();
   const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(id);
   return json({ feed }, { status: 201 });
 };

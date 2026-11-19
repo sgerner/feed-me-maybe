@@ -1,11 +1,12 @@
 export function normalizeSourceUrl(
   value: string,
   stripTracking = false,
+  preserveFragment = false,
 ): string {
   if (!value) return '';
   try {
     const url = new URL(value.trim());
-    url.hash = '';
+    if (!preserveFragment) url.hash = '';
     url.hostname = url.hostname.toLowerCase();
     if (url.protocol === 'http:' && url.port === '80') url.port = '';
     if (url.protocol === 'https:' && url.port === '443') url.port = '';

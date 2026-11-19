@@ -1,3 +1,4 @@
+import { wakePoller } from '$lib/server/poller';
 import type { PageServerLoad, Actions } from './$types';
 import { getDb } from '$lib/server/db';
 import { fail } from '@sveltejs/kit';
@@ -48,6 +49,7 @@ export const actions: Actions = {
     db.prepare(
       "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'poll_interval_mins'",
     ).run(String(intervalVal), Date.now());
+    wakePoller();
 
     return { success: true };
   },

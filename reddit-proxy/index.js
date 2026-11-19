@@ -7,6 +7,8 @@ const ALLOWED_CONTENT_TYPES = [
   'application/json',
   'application/ld+json',
   'application/rss+xml',
+  'application/rdf+xml',
+  'application/octet-stream',
   'application/xml',
   'text/atom',
   'text/html',
@@ -147,7 +149,7 @@ async function fetchTarget(targetUrl, request) {
     if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
       throw new Error('Response too large');
     }
-    if (!contentTypeIsAllowed(response))
+    if (response.ok && !contentTypeIsAllowed(response))
       throw new Error('Unsupported content type');
     return response;
   }

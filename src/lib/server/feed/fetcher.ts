@@ -1,3 +1,4 @@
+import { DOMParser } from 'linkedom';
 import Parser from 'rss-parser';
 import { sanitizeHtml } from '$lib/utils/format';
 import {
@@ -18,6 +19,7 @@ export interface FetchResult {
   items: FetchedItem[];
   error?: string;
   httpStatus?: number;
+  retryAt?: number;
   etag?: string;
   lastModified?: string;
   notModified?: boolean;
@@ -57,6 +59,115 @@ function safeHttpUrl(value: unknown, baseUrl: string): string {
   } catch {
     return '';
   }
+}
+
+export function readRetryAt(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const time = /^\d+$/.test(value)
+    ? Date.now() + Number(value) * 1000
+    : Date.parse(value);
+  return Number.isSafeInteger(time) ? time : undefined;
+}
+
+function decodeFeed(bytes: Buffer, contentType: string): string {
+  const first = bytes.subarray(0, 384);
+  let encoding: string | undefined;
+  if (
+    (first[0] === 0xff && first[1] === 0xfe) ||
+    (first[0] === 0x3c && first[1] === 0)
+  ) {
+    encoding = 'utf-16le';
+  } else if (
+    (first[0] === 0xfe && first[1] === 0xff) ||
+    (first[0] === 0 && first[1] === 0x3c)
+  ) {
+    encoding = 'utf-16be';
+  } else if (first[0] === 0xef && first[1] === 0xbb && first[2] === 0xbf) {
+    encoding = 'utf-8';
+  }
+  encoding ??= /charset\s*=\s*["']?([^;"'\s]+)/i.exec(contentType)?.[1];
+  encoding ??= /^\s*<\?xml[^>]*encoding\s*=\s*["']([^"']+)/i.exec(
+    first.toString('ascii'),
+  )?.[1];
+  try {
+    return new TextDecoder(encoding || 'utf-8').decode(bytes);
+  } catch {
+    // Unknown charset labels are common in hand-written feeds.
+    return bytes.toString('utf8');
+  }
+}
+
+function parseAtom(xml: string, baseUrl: string) {
+  const root = new DOMParser().parseFromString(xml, 'text/xml')
+    .documentElement as unknown as Element | null;
+  if (root?.localName.split(':').at(-1) !== 'feed') return null;
+  const children = (node: Element, name: string) =>
+    Array.from(node.children).filter(
+      (child) => child.localName.split(':').at(-1) === name,
+    );
+  const text = (node: Element, name: string) =>
+    children(node, name)[0]?.textContent?.trim();
+  const atomText = (node: Element, name: string) => {
+    const element = children(node, name)[0];
+    if (!element) return undefined;
+    const type = element.getAttribute('type');
+    if (type === 'xhtml') return element.innerHTML;
+    const content = element.textContent?.trim() || '';
+    return type === 'html'
+      ? content
+      : content
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+  };
+  const link = (node: Element) => {
+    for (const element of children(node, 'link')) {
+      const relation = element.getAttribute('rel');
+      if (relation && relation !== 'alternate') continue;
+      let resolvedBase = baseUrl;
+      const chain = [];
+      for (
+        let ancestor: Element | null = element;
+        ancestor;
+        ancestor = ancestor.parentElement
+      )
+        chain.unshift(ancestor);
+      for (const ancestor of chain) {
+        const declared = ancestor.getAttribute('xml:base');
+        if (declared)
+          resolvedBase = safeHttpUrl(declared, resolvedBase) || resolvedBase;
+      }
+      const href = safeHttpUrl(element.getAttribute('href'), resolvedBase);
+      if (href) return href;
+    }
+    return '';
+  };
+  return {
+    title: text(root, 'title'),
+    description: text(root, 'subtitle'),
+    link: link(root),
+    image: { url: text(root, 'logo') || text(root, 'icon') },
+    items: children(root, 'entry').map((entry): Record<string, unknown> => {
+      const authors = [
+        ...children(entry, 'author'),
+        ...children(root, 'author'),
+      ];
+      return {
+        id: text(entry, 'id'),
+        title: text(entry, 'title'),
+        link: link(entry),
+        author: authors.map((author) => text(author, 'name')).find(Boolean),
+        summary: atomText(entry, 'summary'),
+        content: atomText(entry, 'content'),
+        categories: children(entry, 'category').map((category) =>
+          category.getAttribute('term'),
+        ),
+        pubDate: [text(entry, 'published'), text(entry, 'updated')].find(
+          (value) => value && Number.isFinite(Date.parse(value)),
+        ),
+      };
+    }),
+  };
 }
 
 export async function fetchFeed(
@@ -102,6 +213,9 @@ export async function fetchFeed(
           'text/xml',
           'text/rss',
           'text/atom',
+          'application/rdf+xml',
+          'application/octet-stream',
+          'text/plain',
         ],
       },
     );
@@ -117,11 +231,22 @@ export async function fetchFeed(
         items: [],
         error: `HTTP error ${response.status}`,
         httpStatus: response.status,
+        retryAt: readRetryAt(response.headers.get('retry-after')),
       };
     }
 
-    const xml = await readResponseText(response, MAX_FEED_RESPONSE_BYTES);
-    const result = await parser.parseString(xml);
+    const xml = await readResponseText(
+      response,
+      MAX_FEED_RESPONSE_BYTES,
+      (bytes) => decodeFeed(bytes, response.headers.get('content-type') || ''),
+    );
+    const isAtom =
+      /^\s*(?:<\?xml[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:[\w.-]+:)?feed[\s>]/i.test(
+        xml,
+      );
+    const result =
+      (isAtom ? parseAtom(xml, finalUrl) : null) ??
+      (await parser.parseString(xml));
 
     const newEtag = response.headers.get('etag') || undefined;
     const newLastModified = response.headers.get('last-modified') || undefined;
@@ -147,14 +272,16 @@ export async function fetchFeed(
           imageUrl = mediaThumbnail.url;
         }
 
+        const summary =
+          coerceText(item.summary) || coerceText(item.contentSnippet);
+        const content =
+          coerceText(item['content:encoded']) ||
+          coerceText(item.content) ||
+          summary;
+
         // Fallback: extract first img src from HTML content
         if (!imageUrl) {
-          const fullContent =
-            (item['content:encoded'] as string) ||
-            (item.content as string) ||
-            (item.contentSnippet as string) ||
-            '';
-          const imgMatch = fullContent.match(/<img[^>]+src=["']([^"']+)["']/i);
+          const imgMatch = content.match(/<img[^>]+src=["']([^"']+)["']/i);
           if (imgMatch) {
             imageUrl = imgMatch[1];
             // Handle potential HTML entities in URL
@@ -172,23 +299,16 @@ export async function fetchFeed(
         const safeImageUrl = safeHttpUrl(imageUrl, finalUrl);
 
         return {
-          guid: coerceText(item.guid || item.link),
+          guid: coerceText(item.guid || item.id || item.link),
           url: safeUrl,
           title: coerceText(item.title) || 'Untitled',
           author:
             coerceText(item.creator) ||
+            coerceText(item.author) ||
             coerceText(item['dc:creator']) ||
             undefined,
-          summary:
-            sanitizeHtml(
-              (item.contentSnippet as string)?.trim()?.substring(0, 500),
-            ) || undefined,
-          content:
-            sanitizeHtml(
-              (item['content:encoded'] as string)?.trim() ||
-                (item.content as string)?.trim() ||
-                (item.contentSnippet as string)?.trim(),
-            ) || undefined,
+          summary: sanitizeHtml(summary.slice(0, 500)) || undefined,
+          content: sanitizeHtml(content) || undefined,
           imageUrl: safeImageUrl || undefined,
           categories: normalizeTextArray(item.categories),
           publishedAt: item.pubDate

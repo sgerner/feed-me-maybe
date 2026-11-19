@@ -1,5 +1,6 @@
 import {
   fetchFeed,
+  readRetryAt,
   type FetchResult,
   type FetchedItem,
 } from '$lib/server/feed/fetcher';
@@ -355,11 +356,16 @@ function parseRedditJson(json: any): { items: FetchedItem[]; title?: string } {
 
 export async function fetchRedditSource(
   source: RedditNormalizedSource,
-  options: { proxyBaseUrl?: string } = {},
+  options: { proxyBaseUrl?: string; etag?: string; lastModified?: string } = {},
 ): Promise<FetchResult> {
   // Try RSS first as it is more reliable (less likely to be 403'd)
   const rssResult = await fetchFeed(source.fetchUrl, options);
-  if (rssResult.success && rssResult.items.length > 0) {
+  if (
+    rssResult.notModified ||
+    (rssResult.success && rssResult.items.length > 0) ||
+    rssResult.httpStatus === 429 ||
+    rssResult.httpStatus === 410
+  ) {
     return rssResult;
   }
 
@@ -402,6 +408,7 @@ export async function fetchRedditSource(
         error:
           'Reddit is rate limiting requests right now. Try again later or reduce refresh frequency for this source.',
         httpStatus: 429,
+        retryAt: readRetryAt(response.headers.get('retry-after')),
       };
     }
 
@@ -432,6 +439,7 @@ export async function fetchRedditSource(
         items: [],
         error: `HTTP error ${response.status}`,
         httpStatus: response.status,
+        retryAt: readRetryAt(response.headers.get('retry-after')),
       };
     }
 
