@@ -8,6 +8,7 @@ import {
   validateSession,
   getSessionCookieName,
 } from '$lib/server/auth/session';
+import { safeReturnTo } from '$lib/server/auth/redirect';
 import { startPolling, stopPolling } from '$lib/server/poller';
 import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
@@ -130,7 +131,10 @@ export const handle: Handle = async ({ event, resolve }) => {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    throw redirect(302, '/login');
+    const returnTo = safeReturnTo(`${event.url.pathname}${event.url.search}`);
+    const loginUrl = new URL('/login', event.url);
+    loginUrl.searchParams.set('returnTo', returnTo);
+    throw redirect(302, `${loginUrl.pathname}${loginUrl.search}`);
   }
 
   // First-run detection: if logged in but setup not complete, redirect to onboarding

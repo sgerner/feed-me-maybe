@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
   import BrandMark from '$lib/components/BrandMark.svelte';
-  let { form } = $props();
+  let { data, form } = $props();
 </script>
 
 <svelte:head>
@@ -23,7 +23,14 @@
 
     <!-- Login card -->
     <div class="glass-card p-7" in:fly={{ y: 18, duration: 400, delay: 100 }}>
-      <form method="POST" class="space-y-4">
+      <form
+        method="POST"
+        class="space-y-4"
+        aria-describedby={form?.error && form?.field !== 'password'
+          ? 'login-error'
+          : undefined}
+      >
+        <input type="hidden" name="returnTo" value={data.returnTo} />
         <label class="label">
           <span
             class="mb-1 block text-sm font-medium"
@@ -33,14 +40,20 @@
             class="input glass-input w-full"
             type="password"
             name="password"
+            id="login-password"
             placeholder="Enter your password"
             autocomplete="current-password"
             required
+            aria-invalid={form?.field === 'password' ? 'true' : undefined}
+            aria-describedby={form?.field === 'password' && form?.error
+              ? 'login-error'
+              : undefined}
           />
         </label>
 
         {#if form?.error}
           <div
+            id="login-error"
             class="flex items-center gap-2 px-3 py-2 text-sm"
             style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent); border-radius: 2px;"
             role="alert"
@@ -61,7 +74,12 @@
                 y2="12"
               /><line x1="12" y1="16" x2="12.01" y2="16" /></svg
             >
-            {form.error}
+            {#if form && 'retryAfterSeconds' in form && typeof form.retryAfterSeconds === 'number'}
+              Too many attempts. Wait {form.retryAfterSeconds} seconds before trying
+              again.
+            {:else}
+              {form.error}
+            {/if}
           </div>
         {/if}
 

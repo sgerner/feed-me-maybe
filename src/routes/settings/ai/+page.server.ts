@@ -1,12 +1,13 @@
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
+import { hasProviderCredentials } from '$lib/server/ai/credentials';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};
   const db = getDb();
   const configs = db
     .prepare(
-      'SELECT id, provider_id, model_id, api_key_encrypted, api_key_nonce, custom_base_url FROM provider_configs',
+      'SELECT id, provider_id, model_id, api_key_encrypted, api_key_nonce, custom_base_url FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
     )
     .all() as Array<{
     id: string;
@@ -23,7 +24,7 @@ export const load: PageServerLoad = async ({ locals }) => {
       provider_id: c.provider_id,
       model_id: c.model_id,
       custom_base_url: c.custom_base_url,
-      has_api_key: Boolean(c.api_key_encrypted && c.api_key_nonce),
+      has_api_key: hasProviderCredentials(c.api_key_encrypted, c.api_key_nonce),
     };
   });
 

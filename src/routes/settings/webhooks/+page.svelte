@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
+  import { tick } from 'svelte';
   import { addToast } from '$lib/stores/toast.svelte';
   import { fly, fade } from 'svelte/transition';
   import { fetchWithCsrf } from '$lib/client/csrf';
@@ -10,18 +11,45 @@
   let url = $state('');
   let secret = $state('');
   let selectedEvents = $state(['article.saved']);
+  let addError = $state('');
+  let addErrorField = $state<'name' | 'url' | 'events' | 'form' | null>(null);
 
   let isSubmitting = $state(false);
 
-  async function handleAdd() {
-    if (!name || !url) return;
+  async function handleAdd(event: SubmitEvent) {
+    event.preventDefault();
+    if (isSubmitting) return;
+
+    addError = '';
+    addErrorField = null;
+    if (!name.trim()) {
+      addError = 'Enter a name for this webhook.';
+      addErrorField = 'name';
+      return;
+    }
+    if (!url.trim()) {
+      addError = 'Enter a target URL.';
+      addErrorField = 'url';
+      return;
+    }
+    if (selectedEvents.length === 0) {
+      addError = 'Choose at least one event.';
+      addErrorField = 'events';
+      return;
+    }
+
     isSubmitting = true;
 
     try {
       const res = await fetchWithCsrf('/api/webhooks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, url, secret, events: selectedEvents }),
+        body: JSON.stringify({
+          name: name.trim(),
+          url: url.trim(),
+          secret,
+          events: selectedEvents,
+        }),
       });
 
       if (res.ok) {
@@ -29,14 +57,21 @@
         url = '';
         secret = '';
         selectedEvents = ['article.saved'];
+        addError = '';
+        addErrorField = null;
         addToast('Webhook added successfully', 'success');
         await invalidateAll();
       } else {
         const err = await res.json();
-        addToast(err.error || 'Failed to add webhook', 'error');
+        addError = err.error || 'Failed to add webhook';
+        addErrorField = ['name', 'url', 'events'].includes(err.field)
+          ? err.field
+          : 'form';
       }
-    } catch (err) {
-      addToast('An error occurred', 'error');
+    } catch {
+      addError =
+        'Could not add this webhook. Check your connection and try again.';
+      addErrorField = 'form';
     } finally {
       isSubmitting = false;
     }
@@ -64,6 +99,7 @@
 
   async function deleteHook(id: string) {
     if (!confirm('Are you sure you want to delete this webhook?')) return;
+    const index = data.webhooks.findIndex((hook: any) => hook.id === id);
 
     try {
       const res = await fetchWithCsrf('/api/webhooks', {
@@ -75,6 +111,14 @@
       if (res.ok) {
         addToast('Webhook deleted', 'success');
         await invalidateAll();
+        await tick();
+        const deleteButtons = Array.from(
+          document.querySelectorAll<HTMLButtonElement>('[data-webhook-delete]'),
+        );
+        (
+          deleteButtons[Math.min(index, deleteButtons.length - 1)] ||
+          document.getElementById('active-webhooks-heading')
+        )?.focus();
       }
     } catch (err) {
       addToast('Failed to delete webhook', 'error');
@@ -89,6 +133,8 @@
 <div class="space-y-6">
   <section class="glass-card p-5 md:p-6" in:fly={{ y: 12, duration: 320 }}>
     <h2
+      id="active-webhooks-heading"
+      tabindex="-1"
       class="mb-4 flex items-center gap-2 text-sm font-semibold"
       style="color: var(--color-surface-100);"
     >
@@ -109,25 +155,61 @@
       Register New Webhook
     </h2>
 
-    <div class="grid gap-4">
+    <form
+      class="grid gap-4"
+      onsubmit={handleAdd}
+      aria-describedby={addError && addErrorField === 'form'
+        ? 'webhook-add-error'
+        : undefined}
+    >
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <label class="label">
           <span class="mb-1 block font-medium opacity-80">Name</span>
           <input
+            id="webhook-name"
             type="text"
             bind:value={name}
+            oninput={() => {
+              if (addErrorField === 'name' || addErrorField === 'form') {
+                addError = '';
+                addErrorField = null;
+              }
+            }}
             placeholder="e.g. OpenCCLaw Research"
             class="input glass-input text-sm"
+            aria-invalid={addErrorField === 'name' ? 'true' : undefined}
+            aria-describedby={addErrorField === 'name'
+              ? 'webhook-name-help webhook-add-error'
+              : 'webhook-name-help'}
+            required
           />
+          <span id="webhook-name-help" class="mt-1 block text-xs opacity-60">
+            Required. Use a label you will recognize later.
+          </span>
         </label>
         <label class="label">
           <span class="mb-1 block font-medium opacity-80">Target URL</span>
           <input
+            id="webhook-url"
             type="url"
             bind:value={url}
+            oninput={() => {
+              if (addErrorField === 'url' || addErrorField === 'form') {
+                addError = '';
+                addErrorField = null;
+              }
+            }}
             placeholder="https://your-api.com/webhook"
             class="input glass-input text-sm"
+            aria-invalid={addErrorField === 'url' ? 'true' : undefined}
+            aria-describedby={addErrorField === 'url'
+              ? 'webhook-url-help webhook-add-error'
+              : 'webhook-url-help'}
+            required
           />
+          <span id="webhook-url-help" class="mt-1 block text-xs opacity-60">
+            Required. Use a public HTTP or HTTPS endpoint.
+          </span>
         </label>
       </div>
 
@@ -136,20 +218,36 @@
           >Signing Secret (Optional)</span
         >
         <input
+          id="webhook-secret"
           type="password"
           bind:value={secret}
           placeholder="A secret key for HMAC-SHA256"
           class="input glass-input text-sm"
+          aria-describedby="webhook-secret-help"
         />
-        <p class="mt-1 text-sm opacity-50">
+        <p id="webhook-secret-help" class="mt-1 text-sm opacity-50">
           If provided, payloads will be signed with HMAC-SHA256 in the <code
             >X-Feed-Me-Maybe-Signature</code
           > header.
         </p>
       </label>
 
-      <div class="space-y-2">
-        <span class="font-medium opacity-80">Events</span>
+      <fieldset
+        class="space-y-2"
+        onchange={() => {
+          if (addErrorField === 'events' || addErrorField === 'form') {
+            addError = '';
+            addErrorField = null;
+          }
+        }}
+        aria-describedby={addErrorField === 'events'
+          ? 'webhook-events-help webhook-add-error'
+          : 'webhook-events-help'}
+      >
+        <legend class="font-medium opacity-80">Events (required)</legend>
+        <p id="webhook-events-help" class="text-xs opacity-60">
+          Choose at least one event to receive.
+        </p>
         <div class="flex flex-wrap gap-4">
           <label class="flex items-center gap-2 text-sm">
             <input
@@ -157,6 +255,10 @@
               value="article.saved"
               bind:group={selectedEvents}
               class="checkbox"
+              aria-invalid={addErrorField === 'events' ? 'true' : undefined}
+              aria-describedby={addErrorField === 'events'
+                ? 'webhook-events-help webhook-add-error'
+                : 'webhook-events-help'}
             />
             <span class="opacity-70">Article Saved</span>
           </label>
@@ -166,6 +268,10 @@
               value="article.ingested"
               bind:group={selectedEvents}
               class="checkbox"
+              aria-invalid={addErrorField === 'events' ? 'true' : undefined}
+              aria-describedby={addErrorField === 'events'
+                ? 'webhook-events-help webhook-add-error'
+                : 'webhook-events-help'}
             />
             <span class="opacity-70">Article Ingested</span>
           </label>
@@ -175,6 +281,10 @@
               value="article.thumbs_up"
               bind:group={selectedEvents}
               class="checkbox"
+              aria-invalid={addErrorField === 'events' ? 'true' : undefined}
+              aria-describedby={addErrorField === 'events'
+                ? 'webhook-events-help webhook-add-error'
+                : 'webhook-events-help'}
             />
             <span class="opacity-70">Article Liked</span>
           </label>
@@ -184,16 +294,26 @@
               value="article.read"
               bind:group={selectedEvents}
               class="checkbox"
+              aria-invalid={addErrorField === 'events' ? 'true' : undefined}
+              aria-describedby={addErrorField === 'events'
+                ? 'webhook-events-help webhook-add-error'
+                : 'webhook-events-help'}
             />
             <span class="opacity-70">Article Read</span>
           </label>
         </div>
-      </div>
+      </fieldset>
+
+      {#if addError}
+        <p id="webhook-add-error" class="text-sm text-error-300" role="alert">
+          {addError}
+        </p>
+      {/if}
 
       <div class="pt-2">
         <button
-          onclick={handleAdd}
-          disabled={isSubmitting || !name || !url}
+          type="submit"
+          disabled={isSubmitting}
           class="btn preset-filled-primary-500 flex items-center gap-2 text-sm"
         >
           {#if isSubmitting}
@@ -215,7 +335,7 @@
           {/if}
         </button>
       </div>
-    </div>
+    </form>
   </section>
 
   <section in:fly={{ y: 12, duration: 320, delay: 100 }}>
@@ -275,6 +395,7 @@
               </button>
               <button
                 onclick={() => deleteHook(hook.id)}
+                data-webhook-delete={hook.id}
                 class="btn variant-soft-error btn-sm"
               >
                 Delete

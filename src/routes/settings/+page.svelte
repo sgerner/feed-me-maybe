@@ -7,7 +7,7 @@
   import { fly } from 'svelte/transition';
   import { fetchWithCsrf } from '$lib/client/csrf';
 
-  let { data } = $props();
+  let { data, form } = $props();
   let rankingProvider = $state<'jev' | 'subq'>('jev');
   let savedRankingProvider = $state<'jev' | 'subq'>('jev');
   let rankingProviderAvailability = $derived(
@@ -122,7 +122,8 @@
       </h2>
       <p class="mt-1 text-xs leading-5 text-surface-300">
         Choose which model produces personalized article scores. Changing the
-        provider clears old model scores and queues articles for rescoring.
+        provider clears old model scores and queues articles for rescoring. The
+        app combines provider scores with local heuristic scores.
       </p>
     </div>
     <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -213,6 +214,9 @@
       action="?/updateArticleSettings"
       use:enhance
       class="space-y-4"
+      aria-describedby={form?.action === 'updateArticleSettings' && form?.error
+        ? 'article-settings-error'
+        : undefined}
     >
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <label class="label">
@@ -220,9 +224,19 @@
             >Default article open mode</span
           >
           <select
+            id="article-open-mode"
             name="openMode"
             class="select glass-input text-sm"
             value={data.articleOpenMode}
+            required
+            aria-invalid={form?.action === 'updateArticleSettings' &&
+            form?.field === 'openMode'
+              ? 'true'
+              : undefined}
+            aria-describedby={form?.action === 'updateArticleSettings' &&
+            form?.error
+              ? 'article-settings-error'
+              : undefined}
           >
             {#each ARTICLE_OPEN_MODES as option (option.value)}
               <option value={option.value}>{option.label}</option>
@@ -242,6 +256,15 @@
           >
         </label>
       </div>
+      {#if form?.action === 'updateArticleSettings' && form?.error}
+        <p
+          id="article-settings-error"
+          class="text-sm text-error-300"
+          role="alert"
+        >
+          {form.error}
+        </p>
+      {/if}
       <button
         type="submit"
         class="btn preset-filled-primary-500 inline-flex min-h-11 items-center gap-2 text-sm"
@@ -286,19 +309,38 @@
         action="?/updatePolling"
         use:enhance
         class="flex flex-col gap-4 sm:flex-row sm:items-end"
+        aria-describedby={form?.action === 'updatePolling' && form?.error
+          ? 'poll-interval-error'
+          : undefined}
       >
         <label class="label flex-1">
           <span class="mb-1 block text-xs text-surface-300"
             >Global poll interval (minutes)</span
           >
           <input
+            id="poll-interval"
             name="interval"
             type="number"
             min="1"
             max="1440"
+            step="1"
             value={data.pollInterval}
             class="input glass-input text-sm"
+            required
+            aria-invalid={form?.action === 'updatePolling' &&
+            form?.field === 'interval'
+              ? 'true'
+              : undefined}
+            aria-describedby={form?.action === 'updatePolling' && form?.error
+              ? 'poll-interval-help poll-interval-error'
+              : 'poll-interval-help'}
           />
+          <span
+            id="poll-interval-help"
+            class="mt-1 block text-xs text-surface-300"
+          >
+            Enter a whole number from 1 to 1440 minutes.
+          </span>
         </label>
         <button
           type="submit"
@@ -321,6 +363,15 @@
           >
           Save
         </button>
+        {#if form?.action === 'updatePolling' && form?.error}
+          <p
+            id="poll-interval-error"
+            class="text-sm text-error-300"
+            role="alert"
+          >
+            {form.error}
+          </p>
+        {/if}
       </form>
       <p class="mt-3 text-xs leading-5 text-surface-300">
         Feeds are polled every {data.pollInterval} minutes. Feeds that have not changed
@@ -361,9 +412,13 @@
           Privacy
         </h3>
         <p class="mt-1 text-xs leading-5 text-surface-300">
-          This app stores all data locally in SQLite. No data is sent to
-          external services except the AI provider you configure and RSS/Atom
-          feed fetches. Your reading habits remain private to your server.
+          The app stores its data in SQLite on this server. RSS/Atom sources are
+          contacted to fetch feeds. If configured, Jev or SubQ receives article
+          details and reader preference signals to produce personalized scores;
+          your AI model provider receives article text for enrichment. Webhook
+          destinations receive the event payloads you select. The model catalog
+          and provider logos load from models.dev. Review these services and
+          destinations before configuring them.
         </p>
       </section>
 
