@@ -361,7 +361,8 @@ export async function fetchRedditSource(
   // Try RSS first as it is more reliable (less likely to be 403'd)
   const rssResult = await fetchFeed(source.fetchUrl, options);
   if (
-    rssResult.success ||
+    rssResult.notModified ||
+    (rssResult.success && rssResult.items.length > 0) ||
     rssResult.httpStatus === 429 ||
     rssResult.httpStatus === 410
   ) {
