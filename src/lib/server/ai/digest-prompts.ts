@@ -14,6 +14,9 @@ export type WeeklyDigestArticleContext = {
   relatedArticleIds: string[];
 };
 
+export const WEEKLY_DIGEST_PROMPT_MAX_ARTICLES = 60;
+export const WEEKLY_DIGEST_PROMPT_MAX_CHARS = 24_000;
+
 function clipText(value: string, limit: number): string {
   const text = value.trim();
   if (text.length <= limit) return text;
@@ -26,7 +29,7 @@ function formatList(values: string[]): string {
 
 export const WEEKLY_DIGEST_SYSTEM_PROMPT = `You write a calm daily briefing for a personal reader.
 Return valid JSON only. Never invent facts, links, quotes, or article IDs.
-Use the complete eligible corpus supplied below, including read and unread items.
+Use the complete article list supplied below, including read and unread items. The list may be a bounded sample of the eligible corpus; do not imply it covers articles that are not listed.
 The briefing should be concise, source-grounded, and useful without creating urgency or anxiety.
 Deduplicate related coverage: each cluster has one representative article; do not select multiple IDs from the same cluster in a section.
 Use the provided source URL and feed name as provenance. Reasons must summarize only the supplied article metadata.
@@ -51,58 +54,64 @@ export function buildWeeklyDigestPrompt(
   windowStartLabel: string,
   windowEndLabel: string,
   articles: WeeklyDigestArticleContext[],
+  eligibleArticleCount = articles.length,
 ): string {
-  const lines: string[] = [];
-  lines.push(`Window: ${windowStartLabel} to ${windowEndLabel}`);
-  lines.push(`Articles in scope: ${articles.length}`);
-  lines.push('');
-  lines.push(
-    'Article list. Every eligible article is included. Use these IDs exactly when selecting themes and stories:',
-  );
+  const eligibleCount = Number.isFinite(eligibleArticleCount)
+    ? Math.max(0, Math.floor(eligibleArticleCount))
+    : articles.length;
+  const headerLines = (includedCount: number) => [
+    `Window: ${windowStartLabel} to ${windowEndLabel}`,
+    `Eligible articles in window: ${eligibleCount}`,
+    `Articles included below: ${includedCount}`,
+    '',
+    `Article list. Use only these ${includedCount} IDs when selecting themes and stories:`,
+  ];
+  const footerLines = [
+    '',
+    'Organize the briefing as Top signal, Worth your time, and What changed. Focus on the main storylines and what a reader should know at a glance.',
+    'Themes should group related articles across feeds, not just repeat feed names.',
+    'Pick representative articles that cover the supplied list, not necessarily the highest score alone.',
+    'Prefer unread or saved items for Worth your time, while still considering important read items.',
+    'Distinguish new developments from ongoing coverage and surface uncertainty or disagreement when the metadata supports it.',
+  ];
+  const promptArticles: string[] = [];
 
-  for (const article of articles) {
+  for (const article of articles.slice(0, WEEKLY_DIGEST_PROMPT_MAX_ARTICLES)) {
     const categoryText = formatList(article.categories);
     const flags = [
       article.read ? 'read' : 'unread',
       article.saved ? 'saved' : 'not_saved',
     ].join(', ');
-    lines.push(
-      [
-        `- ID: ${article.id}`,
-        `Title: ${clipText(article.title, 180)}`,
-        `Feed: ${clipText(article.feedTitle, 80)}`,
-        `Source: ${clipText(article.sourceUrl, 240)}`,
-        `Published: ${article.publishedAtLabel}`,
-        `Score: ${Math.round(article.score)}`,
-        `Flags: ${flags}`,
-        `Coverage cluster: ${article.clusterId} (${article.clusterSize} related item${article.clusterSize === 1 ? '' : 's'})`,
-        article.relatedArticleIds.length > 1
-          ? `Related IDs: ${article.relatedArticleIds.join(', ')}`
-          : '',
-        categoryText ? `Categories: ${clipText(categoryText, 140)}` : '',
-        article.summary ? `Summary: ${clipText(article.summary, 220)}` : '',
-      ]
-        .filter(Boolean)
-        .join(' | '),
-    );
+    const line = [
+      `- ID: ${article.id}`,
+      `Title: ${clipText(article.title, 160)}`,
+      `Feed: ${clipText(article.feedTitle, 60)}`,
+      `Source: ${clipText(article.sourceUrl, 180)}`,
+      `Published: ${article.publishedAtLabel}`,
+      `Score: ${Math.round(article.score)}`,
+      `Flags: ${flags}`,
+      `Coverage cluster: ${article.clusterId} (${article.clusterSize} related item${article.clusterSize === 1 ? '' : 's'})`,
+      article.relatedArticleIds.length > 1
+        ? `Related IDs: ${article.relatedArticleIds.slice(0, 4).join(', ')}`
+        : '',
+      categoryText ? `Categories: ${clipText(categoryText, 100)}` : '',
+      article.summary ? `Summary: ${clipText(article.summary, 180)}` : '',
+    ]
+      .filter(Boolean)
+      .join(' | ');
+    const candidate = [
+      ...headerLines(promptArticles.length + 1),
+      ...promptArticles,
+      line,
+      ...footerLines,
+    ].join('\n');
+    if (candidate.length > WEEKLY_DIGEST_PROMPT_MAX_CHARS) break;
+    promptArticles.push(line);
   }
 
-  lines.push('');
-  lines.push(
-    'Organize the briefing as Top signal, Worth your time, and What changed. Focus on the main storylines and what a reader should know at a glance.',
-  );
-  lines.push(
-    'Themes should group related articles across feeds, not just repeat feed names.',
-  );
-  lines.push(
-    'Pick representative articles that cover the corpus, not necessarily the highest score alone.',
-  );
-  lines.push(
-    'Prefer unread or saved items for Worth your time, while still considering important read items.',
-  );
-  lines.push(
-    'Distinguish new developments from ongoing coverage and surface uncertainty or disagreement when the metadata supports it.',
-  );
-
-  return lines.join('\n');
+  return [
+    ...headerLines(promptArticles.length),
+    ...promptArticles,
+    ...footerLines,
+  ].join('\n');
 }

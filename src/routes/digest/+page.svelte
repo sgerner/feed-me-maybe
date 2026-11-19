@@ -310,7 +310,7 @@
   function handleWindowChange(event: Event) {
     selectedDays =
       Number((event.currentTarget as HTMLSelectElement).value) || 7;
-    void loadDigest({ force: true });
+    void loadDigest();
   }
 </script>
 
