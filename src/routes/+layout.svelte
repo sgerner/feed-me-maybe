@@ -88,10 +88,7 @@
 
     try {
       const status = await getOfflineSyncStatus(scope);
-      applyOfflineStatus(
-        status.pendingCount,
-        status.state === 'blocked' || Boolean(status.lastError),
-      );
+      applyOfflineStatus(status.pendingCount, status.state === 'blocked');
     } catch {
       applyOfflineStatus(0);
     }

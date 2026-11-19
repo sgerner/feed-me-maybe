@@ -56,7 +56,7 @@
   function resetTraining() {
     if (
       confirm(
-        'Reset all training data? This will clear all interactions and preferences.',
+        'Reset learned preferences and ranking feedback? This clears interaction history used for learning, while reading status, saved articles, and article reactions stay.',
       )
     ) {
       void updateTraining('reset_training');

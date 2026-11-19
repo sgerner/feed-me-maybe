@@ -15,6 +15,12 @@ const originalDbUrl = process.env.DATABASE_URL;
 const originalJevKey = process.env.JEV_API_KEY;
 const originalTypesafeKey = process.env.TYPESAFE_API_KEY;
 
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi.fn().mockResolvedValue([{ address: '8.8.8.8', family: 4 }]),
+  },
+}));
+
 describe('ranking freshness after explicit feedback', () => {
   beforeAll(async () => {
     process.env.DATABASE_URL = testDbPath;
@@ -402,6 +408,7 @@ describe('ranking freshness after explicit feedback', () => {
       const { recordInteraction } = await import('./interactions');
       const { getDb } = await import('$lib/server/db');
       const pending = scoreArticleWithJev('implicit-race');
+      await vi.waitFor(() => expect(resolveFetch).toBeTypeOf('function'));
       recordInteraction('implicit-race', type);
       resolveFetch(
         new Response(
@@ -487,6 +494,7 @@ describe('ranking freshness after explicit feedback', () => {
       const { recordInteraction } = await import('./interactions');
       const { getDb } = await import('$lib/server/db');
       const pending = scoreArticleWithJev('racing');
+      await vi.waitFor(() => expect(resolveFetch).toBeTypeOf('function'));
       recordInteraction('racing', 'thumbs_up');
       if (fail) rejectFetch(new Error('old request failed'));
       else

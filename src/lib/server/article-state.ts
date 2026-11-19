@@ -7,6 +7,8 @@ import {
 import {
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
+  reversePreferenceMemoryDeltas,
+  type PreferenceMemoryDelta,
 } from '$lib/server/preferences';
 import { dispatchWebhookEvent } from '$lib/server/webhooks';
 
@@ -107,6 +109,133 @@ type HistoryRow = {
   created_at: number;
   undone_at: number | null;
 };
+
+type InteractionFeedbackRow = {
+  id: string;
+  timestamp: number;
+  metadata: string | null;
+};
+
+function interactionMetadata(
+  operationId: string,
+  idempotencyKey: string,
+  extra: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({
+    operation_id: operationId,
+    idempotency_key: idempotencyKey,
+    ...extra,
+  });
+}
+
+function parseInteractionMetadata(
+  value: string | null,
+): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value || '{}') as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function activeOperationForAction(
+  articleId: string,
+  action: 'hide' | 'reject',
+): string | null {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT operation_id, before_state, after_state
+       FROM article_state_history
+       WHERE article_id = ? AND action = ? AND undone_at IS NULL
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all(articleId, action) as Array<{
+    operation_id: string;
+    before_state: string;
+    after_state: string;
+  }>;
+  const hasActiveInteraction = db.prepare(
+    `SELECT 1 FROM user_interactions
+     WHERE article_id = ?
+       AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.operation_id') = ?
+       AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.undone_at') IS NULL
+       AND interaction_type = ?
+     LIMIT 1`,
+  );
+
+  for (const row of rows) {
+    const before = parseState(row.before_state);
+    const after = parseState(row.after_state);
+    const changedFlag =
+      action === 'hide'
+        ? !before.hidden && after.hidden
+        : !before.rejected && after.rejected;
+    if (!changedFlag) continue;
+    const interactionType = action === 'hide' ? 'hide' : 'thumbs_down';
+    if (
+      hasActiveInteraction.get(articleId, row.operation_id, interactionType)
+    ) {
+      return row.operation_id;
+    }
+  }
+  return null;
+}
+
+function markOperationInteractionsUndone(
+  articleId: string,
+  operationId: string,
+  undoOperationId: string,
+  now: number,
+): boolean {
+  const db = getDb();
+  const events = db
+    .prepare(
+      `SELECT id, timestamp, metadata FROM user_interactions
+       WHERE article_id = ?
+         AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.operation_id') = ?
+         AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.undone_at') IS NULL`,
+    )
+    .all(articleId, operationId) as InteractionFeedbackRow[];
+  if (!events.length) return false;
+
+  const update = db.prepare(
+    `UPDATE user_interactions
+     SET metadata = json_set(
+       CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+       '$.undone_at', ?, '$.undo_operation_id', ?
+     ) WHERE id = ?`,
+  );
+  for (const event of events) {
+    const metadata = parseInteractionMetadata(event.metadata);
+    reversePreferenceMemoryDeltas(
+      metadata.preference_deltas,
+      Number(event.timestamp),
+    );
+    update.run(now, undoOperationId, event.id);
+  }
+  return true;
+}
+
+function undoOperationsForAction(
+  articleId: string,
+  action: ArticleStateAction,
+  before: ArticleState,
+): string[] {
+  const actions: Array<'hide' | 'reject'> = [];
+  if ((action === 'unhide' || action === 'restore') && before.hidden) {
+    actions.push('hide');
+  }
+  if ((action === 'unreject' || action === 'restore') && before.rejected) {
+    actions.push('reject');
+  }
+  return actions
+    .map((priorAction) => activeOperationForAction(articleId, priorAction))
+    .filter((operationId): operationId is string => Boolean(operationId));
+}
 
 function toState(row: RawArticleState): ArticleState {
   return {
@@ -478,6 +607,32 @@ export function applyArticleState(
       });
     }
 
+    const undoneOperations = new Map<string, string[]>();
+    for (const change of output) {
+      if (
+        !change.changed ||
+        !ARTICLE_STATE_ACTIONS.includes(change.action as ArticleStateAction)
+      ) {
+        continue;
+      }
+      const undoOperationIds = undoOperationsForAction(
+        change.articleId,
+        change.action as ArticleStateAction,
+        change.before,
+      );
+      for (const priorOperationId of undoOperationIds) {
+        markOperationInteractionsUndone(
+          change.articleId,
+          priorOperationId,
+          operationId,
+          now,
+        );
+      }
+      if (undoOperationIds.length) {
+        undoneOperations.set(change.articleId, undoOperationIds);
+      }
+    }
+
     const feedbackType =
       input.action === 'reject'
         ? 'thumbs_down'
@@ -495,6 +650,8 @@ export function applyArticleState(
           articleIds: changedArticleIds,
           type: feedbackType,
           visibleArticleIds: input.visibleArticleIds,
+          operationId,
+          idempotencyKey,
         });
       }
     }
@@ -504,26 +661,36 @@ export function applyArticleState(
       input.action === 'hide'
     ) {
       const insertInteraction = db.prepare(
-        "INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, '{}')",
+        'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
       );
       for (const change of output) {
         if (!change.changed) continue;
+        const preferenceDeltas: PreferenceMemoryDelta[] = [];
+        updatePreferenceMemoryFromInteraction(
+          change.articleId,
+          input.action,
+          preferenceDeltas,
+        );
         insertInteraction.run(
           crypto.randomUUID(),
           change.articleId,
           input.action,
           now,
+          interactionMetadata(operationId, idempotencyKey, {
+            preference_deltas: preferenceDeltas,
+          }),
         );
-        updatePreferenceMemoryFromInteraction(change.articleId, input.action);
         refreshRankingAfterProfileMutation(change.articleId);
       }
     } else if (
       input.action === 'unread' ||
       input.action === 'unsave' ||
-      input.action === 'unhide'
+      input.action === 'unhide' ||
+      input.action === 'unreject' ||
+      input.action === 'restore'
     ) {
       const insertInteraction = db.prepare(
-        "INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, '{}')",
+        'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
       );
       for (const change of output) {
         if (!change.changed) continue;
@@ -532,8 +699,59 @@ export function applyArticleState(
           change.articleId,
           input.action,
           now,
+          interactionMetadata(operationId, idempotencyKey, {
+            undo_of_operation_ids: undoneOperations.get(change.articleId) || [],
+          }),
         );
-        updateHeuristicScore(change.articleId);
+        if (
+          input.action === 'unhide' ||
+          input.action === 'unreject' ||
+          input.action === 'restore'
+        ) {
+          refreshRankingAfterProfileMutation(change.articleId);
+        } else {
+          updateHeuristicScore(change.articleId);
+        }
+      }
+    } else if (input.action === 'state_change') {
+      for (const change of output) {
+        if (!change.changed) continue;
+        if (change.before.hidden && !change.after.hidden) {
+          for (const priorOperationId of undoOperationsForAction(
+            change.articleId,
+            'unhide',
+            change.before,
+          )) {
+            markOperationInteractionsUndone(
+              change.articleId,
+              priorOperationId,
+              operationId,
+              now,
+            );
+          }
+        }
+        if (change.before.rejected && !change.after.rejected) {
+          for (const priorOperationId of undoOperationsForAction(
+            change.articleId,
+            'unreject',
+            change.before,
+          )) {
+            markOperationInteractionsUndone(
+              change.articleId,
+              priorOperationId,
+              operationId,
+              now,
+            );
+          }
+        }
+        if (
+          (change.before.hidden && !change.after.hidden) ||
+          (change.before.rejected && !change.after.rejected)
+        ) {
+          refreshRankingAfterProfileMutation(change.articleId);
+        } else {
+          updateHeuristicScore(change.articleId);
+        }
       }
     }
     return output;
@@ -597,6 +815,7 @@ export function undoArticleState(
     };
   }
 
+  const undoOperationId = crypto.randomUUID();
   const restoredArticleIds = db.transaction(() => {
     const restored: string[] = [];
     const markUndone = db.prepare(
@@ -634,6 +853,12 @@ export function undoArticleState(
         row.article_id,
       );
       markUndone.run(Date.now(), row.id);
+      markOperationInteractionsUndone(
+        row.article_id,
+        row.operation_id,
+        undoOperationId,
+        Date.now(),
+      );
       refreshRankingAfterProfileMutation(row.article_id);
       restored.push(row.article_id);
     }

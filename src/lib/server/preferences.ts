@@ -28,6 +28,19 @@ type PreferenceState = {
   totalNegativeEvidence: number;
 };
 
+export type PreferenceMemoryDelta = {
+  preferenceId: string;
+  type: string;
+  label: string;
+  polarity: 'positive' | 'negative';
+  delta: number;
+};
+
+type PreferenceUpsertResult = {
+  preferenceId: string;
+  delta: number;
+};
+
 const TITLE_PHRASE_LIMIT = 8;
 const DECAY_HALF_LIFE_DAYS = 45;
 const SIGNAL_WEIGHTS: Record<string, number> = {
@@ -383,7 +396,7 @@ function upsertPreference(
   label: string,
   polarity: 'positive' | 'negative',
   delta: number,
-): void {
+): PreferenceUpsertResult {
   const db = getDb();
   const now = Date.now();
   const existing = db
@@ -408,27 +421,21 @@ function upsertPreference(
     db.prepare(
       'UPDATE user_preference_memory SET strength = ?, evidence_count = ?, last_reinforced = ? WHERE id = ?',
     ).run(strength, (existing.evidence_count || 0) + 1, now, existing.id);
-    return;
+    return { preferenceId: existing.id, delta: strength - decayed };
   }
 
+  const strength = Math.max(0.02, Math.min(1, delta));
+  const preferenceId = crypto.randomUUID();
   db.prepare(
     'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(
-    crypto.randomUUID(),
-    label,
-    type,
-    polarity,
-    Math.max(0.02, Math.min(1, delta)),
-    1,
-    now,
-    '',
-    now,
-  );
+  ).run(preferenceId, label, type, polarity, strength, 1, now, '', now);
+  return { preferenceId, delta: strength };
 }
 
 export function updatePreferenceMemoryFromInteraction(
   articleId: string,
   type: InteractionType,
+  capturedDeltas?: PreferenceMemoryDelta[],
 ): string[] {
   const positiveDelta =
     type === 'boost'
@@ -456,23 +463,109 @@ export function updatePreferenceMemoryFromInteraction(
     if (isImplicitFeedback && feature.type === 'phrase') continue;
     changedFeatureKeys.push(`${feature.type}|${feature.label}`);
     if (negativeDelta) {
-      upsertPreference(
+      const update = upsertPreference(
         feature.type,
         feature.label,
         'negative',
         negativeDelta * feature.weight,
       );
+      capturedDeltas?.push({
+        preferenceId: update.preferenceId,
+        type: feature.type,
+        label: feature.label,
+        polarity: 'negative',
+        delta: update.delta,
+      });
     }
     if (positiveDelta) {
-      upsertPreference(
+      const update = upsertPreference(
         feature.type,
         feature.label,
         'positive',
         positiveDelta * feature.weight,
       );
+      capturedDeltas?.push({
+        preferenceId: update.preferenceId,
+        type: feature.type,
+        label: feature.label,
+        polarity: 'positive',
+        delta: update.delta,
+      });
     }
   }
   return changedFeatureKeys;
+}
+
+/** Remove the preference contribution captured on one operation's interaction. */
+export function reversePreferenceMemoryDeltas(
+  value: unknown,
+  interactionTimestamp: number,
+): void {
+  if (!Array.isArray(value)) return;
+
+  const db = getDb();
+  const now = Date.now();
+  const ageDays = Math.max(
+    0,
+    (now - interactionTimestamp) / (24 * 60 * 60 * 1000),
+  );
+  const decayFactor = Math.pow(0.5, ageDays / DECAY_HALF_LIFE_DAYS);
+  const find = db.prepare(
+    `SELECT id, strength, evidence_count, last_reinforced
+     FROM user_preference_memory
+     WHERE id = ? AND type = ? AND label = ? AND polarity = ?`,
+  );
+  const remove = db.prepare('DELETE FROM user_preference_memory WHERE id = ?');
+  const update = db.prepare(
+    `UPDATE user_preference_memory
+     SET strength = ?, evidence_count = ?, last_reinforced = ? WHERE id = ?`,
+  );
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const delta = item as Partial<PreferenceMemoryDelta>;
+    if (
+      typeof delta.preferenceId !== 'string' ||
+      typeof delta.type !== 'string' ||
+      typeof delta.label !== 'string' ||
+      (delta.polarity !== 'positive' && delta.polarity !== 'negative') ||
+      typeof delta.delta !== 'number' ||
+      !Number.isFinite(delta.delta) ||
+      delta.delta < 0
+    ) {
+      continue;
+    }
+
+    const existing = find.get(
+      delta.preferenceId,
+      delta.type,
+      delta.label,
+      delta.polarity,
+    ) as
+      | {
+          id: string;
+          strength: number;
+          evidence_count: number;
+          last_reinforced: number;
+        }
+      | undefined;
+    if (!existing) continue;
+
+    const remainingEvidence = Math.max(0, existing.evidence_count - 1);
+    const currentStrength = getDecayedStrength(
+      existing.strength || 0,
+      existing.last_reinforced,
+    );
+    const remainingStrength = Math.max(
+      0,
+      currentStrength - delta.delta * decayFactor,
+    );
+    if (remainingEvidence === 0 || remainingStrength === 0) {
+      remove.run(existing.id);
+    } else {
+      update.run(remainingStrength, remainingEvidence, now, existing.id);
+    }
+  }
 }
 
 export function getPreferenceStateForArticle(
@@ -562,11 +655,33 @@ function hasExplicitHide(articleId: string): boolean {
         SUM(
           CASE
             WHEN interaction_type = 'hide'
-              AND (metadata IS NULL OR json_extract(metadata, '$.auto') IS NULL)
+              AND json_extract(
+                CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+                '$.auto'
+              ) IS NULL
+              AND COALESCE(
+                json_extract(
+                  CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+                  '$.undone_at'
+                ),
+                0
+              ) = 0
             THEN 1 ELSE 0
           END
         ) as explicit_hides,
-        SUM(CASE WHEN interaction_type = 'unhide' THEN 1 ELSE 0 END) as unhides
+        SUM(
+          CASE
+            WHEN interaction_type = 'unhide'
+              AND COALESCE(
+                json_extract(
+                  CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+                  '$.undone_at'
+                ),
+                0
+              ) = 0
+            THEN 1 ELSE 0
+          END
+        ) as unhides
       FROM user_interactions
       WHERE article_id = ?
     `,

@@ -4,6 +4,7 @@ import {
   getPreferenceFeatureKeysForArticles,
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
+  type PreferenceMemoryDelta,
 } from '$lib/server/preferences';
 import type { InteractionType } from '$lib/server/interactions';
 
@@ -88,6 +89,7 @@ function getFeedbackTargets(
       `SELECT json_extract(payload, '$.articleId') AS article_id
        FROM jobs
        WHERE type = 'jev_process' AND status = 'processing'
+         AND started_at IS NOT NULL
          AND json_valid(payload) = 1
          AND json_type(payload, '$.articleId') = 'text'
        ORDER BY started_at ASC LIMIT 4`,
@@ -232,6 +234,8 @@ export function refreshRankingAfterFeedback(input: {
   type: FeedbackType;
   visibleArticleIds?: unknown;
   interactionAlreadyRecorded?: boolean;
+  operationId?: string;
+  idempotencyKey?: string;
 }): { revision: number; refreshedArticleIds: string[] } {
   const db = getDb();
   const now = Date.now();
@@ -245,16 +249,30 @@ export function refreshRankingAfterFeedback(input: {
   const learnedFeatures = new Set<string>();
   const updateMemory = db.transaction(() => {
     for (const articleId of articleIds) {
-      if (!input.interactionAlreadyRecorded) {
-        db.prepare(
-          'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
-        ).run(crypto.randomUUID(), articleId, input.type, now, '{}');
-      }
+      const preferenceDeltas: PreferenceMemoryDelta[] = [];
       for (const featureKey of updatePreferenceMemoryFromInteraction(
         articleId,
         input.type,
+        preferenceDeltas,
       )) {
         learnedFeatures.add(featureKey);
+      }
+      if (!input.interactionAlreadyRecorded) {
+        db.prepare(
+          'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+        ).run(
+          crypto.randomUUID(),
+          articleId,
+          input.type,
+          now,
+          JSON.stringify({
+            ...(input.operationId ? { operation_id: input.operationId } : {}),
+            ...(input.idempotencyKey
+              ? { idempotency_key: input.idempotencyKey }
+              : {}),
+            preference_deltas: preferenceDeltas,
+          }),
+        );
       }
     }
     return learnedFeatures.size
@@ -338,6 +356,22 @@ export async function flushRankingRefreshQueue(
   let queued = 0;
   for (const row of rows) {
     const revision = Number(row.requested_revision || 0);
+    const activeArticle = db
+      .prepare(
+        `SELECT 1 FROM articles
+         WHERE id = ?
+           AND COALESCE(hidden, 0) = 0
+           AND COALESCE(rejected, 0) = 0
+           AND COALESCE(thumbs_down, 0) = 0`,
+      )
+      .get(row.article_id);
+    if (!activeArticle) {
+      db.prepare(
+        'DELETE FROM ranking_refresh_queue WHERE article_id = ? AND requested_revision = ?',
+      ).run(row.article_id, revision);
+      continue;
+    }
+
     if (Number(row.heuristic_revision) !== revision) {
       const transaction = db.transaction(() => {
         const current = db
@@ -375,7 +409,12 @@ export async function flushRankingRefreshQueue(
     ) {
       continue;
     }
-    if (!rankingProviderConfigured) continue;
+    if (!rankingProviderConfigured) {
+      db.prepare(
+        'DELETE FROM ranking_refresh_queue WHERE article_id = ? AND requested_revision = ? AND heuristic_revision = ?',
+      ).run(row.article_id, revision, revision);
+      continue;
+    }
 
     const job = enqueueJevProcess(row.article_id, {
       feedId: row.feed_id,
@@ -392,4 +431,100 @@ export async function flushRankingRefreshQueue(
     if (deleted.changes === 1) queued += 1;
   }
   return queued;
+}
+
+/** Invalidate every cached score after the reader-wide preference profile changes. */
+export function refreshRankingAfterGlobalProfileMutation(): {
+  revision: number;
+  articleCount: number;
+} {
+  const db = getDb();
+  const now = Date.now();
+  const activeCutoff = now - RECENT_ARTICLE_WINDOW_MS;
+  return db
+    .transaction(() => {
+      const revision = advanceRankingFeedbackRevision(now);
+
+      // Clear personalized snapshots everywhere, then leave archives on a
+      // single-statement, non-personalized local fallback. Only the bounded
+      // recent visible cohort gets per-article heuristic work and Jev jobs.
+      db.prepare(
+        `UPDATE articles
+         SET jev_score = NULL, jev_processed_at = NULL, jev_error = ''`,
+      ).run();
+      db.prepare(
+        `UPDATE articles AS a
+         SET heuristic_score = MAX(0, MIN(100,
+           50 + (a.read * 2) + (a.saved * 10) + (a.thumbs_up * 25) -
+           (a.thumbs_down * 20) - CASE WHEN (
+             SELECT
+               COALESCE(SUM(CASE
+                 WHEN ui.interaction_type = 'hide'
+                   AND json_extract(
+                     CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                     '$.auto'
+                   ) IS NULL
+                   AND COALESCE(json_extract(
+                     CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                     '$.undone_at'
+                   ), 0) = 0
+                 THEN 1 ELSE 0 END
+               ), 0) -
+               COALESCE(SUM(CASE
+                 WHEN ui.interaction_type = 'unhide'
+                   AND COALESCE(json_extract(
+                     CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                     '$.undone_at'
+                   ), 0) = 0
+                 THEN 1 ELSE 0 END
+               ), 0)
+             FROM user_interactions ui
+             WHERE ui.article_id = a.id
+           ) > 0 THEN 10 ELSE 0 END
+         ))`,
+      ).run();
+      db.prepare(
+        `UPDATE articles AS a
+         SET combined_score = CASE
+           WHEN EXISTS (
+             SELECT 1 FROM article_ai_metadata am
+             WHERE am.article_id = a.id AND am.analysis_status = 'ready'
+           ) THEN ROUND(MAX(0, MIN(100,
+             COALESCE(a.heuristic_score, 50) * 0.6 +
+             (
+               COALESCE((SELECT ai_relevance_score FROM article_ai_metadata WHERE article_id = a.id), 0) * 0.7 +
+               COALESCE((SELECT quality_score FROM article_ai_metadata WHERE article_id = a.id), 0) * 0.2 +
+               COALESCE((SELECT novelty_score FROM article_ai_metadata WHERE article_id = a.id), 0) * 0.1
+             ) * 40
+           )))
+           ELSE NULL
+         END`,
+      ).run();
+      db.prepare('DELETE FROM ranking_refresh_queue').run();
+      db.prepare(
+        "DELETE FROM jobs WHERE type = 'jev_process' AND status = 'queued'",
+      ).run();
+
+      const articles = db
+        .prepare(
+          `SELECT id FROM articles
+           WHERE fetched_at >= ? AND hidden = 0 AND thumbs_down = 0 AND rejected = 0
+           ORDER BY fetched_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(activeCutoff, RECENT_AFFECTED_SCAN_LIMIT) as Array<{ id: string }>;
+
+      for (const { id } of articles) {
+        updateHeuristicScore(id);
+        markArticleForRankingRefresh(id, revision, now);
+        db.prepare(
+          `UPDATE ranking_refresh_queue
+           SET heuristic_revision = ?
+           WHERE article_id = ? AND requested_revision = ?`,
+        ).run(revision, id, revision);
+      }
+
+      return { revision, articleCount: articles.length };
+    })
+    .immediate();
 }
