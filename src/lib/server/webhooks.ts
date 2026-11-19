@@ -52,17 +52,15 @@ export async function dispatchWebhookEvent(event: WebhookEvent) {
       events = [];
     }
     if (Array.isArray(events) && events.includes(event.type)) {
-      sendWebhook({ ...hook, secret: revealSecret(hook.secret) }, event).catch(
-        (err) => {
-          const target = logSafeWebhookTarget(hook.url);
-          console.error(`[webhook] Failed to send to ${target}:`, err);
-          recordAppError({
-            source: 'webhook.dispatch',
-            error: err,
-            details: { target, event: event.type },
-          });
-        },
-      );
+      sendWebhook(hook, event).catch((err) => {
+        const target = logSafeWebhookTarget(hook.url);
+        console.error(`[webhook] Failed to send to ${target}:`, err);
+        recordAppError({
+          source: 'webhook.dispatch',
+          error: err,
+          details: { target, event: event.type },
+        });
+      });
     }
   }
 }
@@ -76,9 +74,15 @@ async function sendWebhook(hook: any, event: WebhookEvent) {
     'X-Feed-Me-Maybe-Delivery': crypto.randomUUID(),
   };
 
-  if (hook.secret) {
+  const secret = revealSecret(hook.secret);
+  if (hook.secret && !secret) {
+    throw new Error(
+      'Webhook signing secret is unreadable. Restore APP_SECRET or replace the signing secret.',
+    );
+  }
+  if (secret) {
     const signature = crypto
-      .createHmac('sha256', hook.secret)
+      .createHmac('sha256', secret)
       .update(body)
       .digest('hex');
     headers['X-Feed-Me-Maybe-Signature'] = `sha256=${signature}`;

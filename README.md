@@ -268,20 +268,24 @@ feed-me-maybe/
 
 ## Development Commands
 
-| Command               | Description                                   |
-| --------------------- | --------------------------------------------- |
-| `npm run dev`         | Start development server with hot reload      |
-| `npm run build`       | Build for production                          |
-| `npm run preview`     | Preview the production build locally          |
-| `npm run check`       | Run TypeScript type checking                  |
-| `npm run check:watch` | TypeScript type checking in watch mode        |
-| `npm run lint`        | Run Prettier and ESLint                       |
-| `npm run format`      | Auto-format code with Prettier                |
-| `npm run test`        | Run test suite with Vitest                    |
-| `npm run test:watch`  | Run tests in watch mode                       |
-| `npm run db:push`     | Push schema changes to database (development) |
-| `npm run db:generate` | Generate Drizzle migration files              |
-| `npm run db:migrate`  | Run pending migrations (production)           |
+| Command               | Description                                                |
+| --------------------- | ---------------------------------------------------------- |
+| `npm run dev`         | Start development server with hot reload                   |
+| `npm run build`       | Build for production                                       |
+| `npm run preview`     | Preview the production build locally                       |
+| `npm run check`       | Run TypeScript type checking                               |
+| `npm run check:watch` | TypeScript type checking in watch mode                     |
+| `npm run lint`        | Run Prettier and ESLint                                    |
+| `npm run format`      | Auto-format code with Prettier                             |
+| `npm run test`        | Run test suite with Vitest                                 |
+| `npm run test:watch`  | Run tests in watch mode                                    |
+| `npm run db:generate` | Generate Drizzle migration files                           |
+| `npm run db:migrate`  | Apply generated migrations to the Drizzle scratch database |
+
+The running app uses its own ordered migrations in `src/lib/server/db/migrate.ts`.
+The Drizzle schema is not a complete representation of the runtime database;
+Drizzle CLI commands target `data/drizzle-scratch.db` and must not be used to
+push schema changes into the app database.
 
 ## Tech Stack
 
