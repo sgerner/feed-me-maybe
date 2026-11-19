@@ -33,3 +33,6 @@ Thumbs.db
 # Python evaluation helpers
 __pycache__/
 *.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/

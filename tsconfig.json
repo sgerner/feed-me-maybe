@@ -4,6 +4,7 @@
     "strict": true,
     "allowJs": true,
     "checkJs": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
@@ -13,6 +14,18 @@
     "module": "esnext",
     "target": "es2022"
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "scripts/**/*.js",
+    "scripts/**/*.mjs",
+    "scripts/**/*.ts",
+    "reddit-proxy/**/*.ts",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "drizzle.config.ts",
+    "svelte.config.js",
+    "eslint.config.js"
+  ],
   "exclude": ["node_modules", ".svelte-kit", "dist", "build"]
 }

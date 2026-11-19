@@ -70,7 +70,8 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
         addresses: list[tuple[int, int, int, tuple[Any, ...]]],
         timeout: float,
     ) -> None:
-        super().__init__(host, port=port, timeout=timeout, context=ssl.create_default_context())
+        self.ssl_context = ssl.create_default_context()
+        super().__init__(host, port=port, timeout=timeout, context=self.ssl_context)
         self.addresses = addresses
 
     def connect(self) -> None:
@@ -80,7 +81,7 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
             sock.settimeout(self.timeout)
             try:
                 sock.connect(sockaddr)
-                self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+                self.sock = self.ssl_context.wrap_socket(sock, server_hostname=self.host)
                 return
             except OSError as error:
                 last_error = error

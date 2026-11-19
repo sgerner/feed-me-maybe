@@ -17,7 +17,7 @@ A self-hosted, AI-powered RSS reader built with SvelteKit, SQLite, and modern we
 
 ## Prerequisites
 
-- **Node.js** 22.12.0 or later (the Docker image uses Node 26)
+- **Node.js** 22.12.0 or later (CI and the Docker image use Node 24)
 - **npm** (or any compatible package manager)
 - **Git**
 
@@ -268,19 +268,31 @@ feed-me-maybe/
 
 ## Development Commands
 
-| Command               | Description                                                |
-| --------------------- | ---------------------------------------------------------- |
-| `npm run dev`         | Start development server with hot reload                   |
-| `npm run build`       | Build for production                                       |
-| `npm run preview`     | Preview the production build locally                       |
-| `npm run check`       | Run TypeScript type checking                               |
-| `npm run check:watch` | TypeScript type checking in watch mode                     |
-| `npm run lint`        | Run Prettier and ESLint                                    |
-| `npm run format`      | Auto-format code with Prettier                             |
-| `npm run test`        | Run test suite with Vitest                                 |
-| `npm run test:watch`  | Run tests in watch mode                                    |
-| `npm run db:generate` | Generate Drizzle migration files                           |
-| `npm run db:migrate`  | Apply generated migrations to the Drizzle scratch database |
+| Command                | Description                                                |
+| ---------------------- | ---------------------------------------------------------- |
+| `npm run dev`          | Start development server with hot reload                   |
+| `npm run build`        | Build for production                                       |
+| `npm run preview`      | Preview the production build locally                       |
+| `npm run check`        | Run TypeScript type checking                               |
+| `npm run check:python` | Run mypy checks for Python scripts                         |
+| `npm run check:watch`  | TypeScript type checking in watch mode                     |
+| `npm run lint`         | Run Prettier and ESLint                                    |
+| `npm run lint:python`  | Run Ruff checks for Python scripts                         |
+| `npm run format`       | Auto-format code with Prettier                             |
+| `npm run test`         | Run Vitest and Python unit tests                           |
+| `npm run test:unit`    | Run JavaScript and TypeScript tests with Vitest            |
+| `npm run test:python`  | Run Python unit tests                                      |
+| `npm run test:watch`   | Run tests in watch mode                                    |
+| `npm run db:generate`  | Generate Drizzle migration files                           |
+| `npm run db:migrate`   | Apply generated migrations to the Drizzle scratch database |
+
+Install the Python check tools in a virtual environment:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+```
 
 The running app uses its own ordered migrations in `src/lib/server/db/migrate.ts`.
 The Drizzle schema is not a complete representation of the runtime database;
@@ -297,10 +309,10 @@ push schema changes into the app database.
 | ORM          | Drizzle ORM                                       |
 | Feed Parsing | rss-parser                                        |
 | Validation   | Zod                                               |
-| Testing      | Vitest                                            |
+| Testing      | Vitest + Python unittest                          |
 | PWA          | @vite-pwa/sveltekit                               |
 | Deployment   | @sveltejs/adapter-node                            |
-| Linting      | ESLint 9 + Prettier 3                             |
+| Linting      | ESLint 10 + Prettier 3 + Ruff                     |
 
 ## License
 
