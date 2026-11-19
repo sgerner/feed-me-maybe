@@ -16,6 +16,7 @@
 
   let pullDistance = $state(0);
   let isPulling = $state(false);
+  let syncAnnouncement = $state('');
   let touchStartY = 0;
 
   function isAtTop() {
@@ -23,9 +24,12 @@
   }
 
   async function sync() {
+    syncAnnouncement = 'Syncing feeds.';
     try {
       await onSync();
+      syncAnnouncement = 'Feed sync finished.';
     } catch {
+      syncAnnouncement = 'Feed sync failed.';
       addToast('Sync failed', 'error');
     }
   }
@@ -69,6 +73,10 @@
     isPulling = false;
   }
 </script>
+
+<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+  {syncAnnouncement}
+</p>
 
 <div
   class="mx-auto max-w-7xl"

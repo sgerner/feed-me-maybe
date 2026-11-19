@@ -57,7 +57,7 @@
     <p>Choose a preview to apply it instantly.</p>
   </div>
 
-  <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+  <div id="theme-collection" class="grid grid-cols-2 gap-3 sm:grid-cols-3">
     {#each themes as { name, label } (name)}
       {#if showAllThemes || featuredThemeNames.includes(name)}
         <button
@@ -127,6 +127,7 @@
     type="button"
     class="flex min-h-11 w-full items-center justify-between gap-3 border-t border-white/10 pt-4 text-left text-sm text-surface-300 hover:text-surface-100"
     aria-expanded={showAllThemes}
+    aria-controls="theme-collection"
     onclick={() => (showAllThemes = !showAllThemes)}
   >
     <span>

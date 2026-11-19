@@ -2,6 +2,7 @@ type ArticleImageSource = 'hero' | 'content';
 
 export type ArticleImage = {
   src: string;
+  alt: string;
   source: ArticleImageSource;
 };
 
@@ -37,21 +38,28 @@ function normalizeImageUrl(candidate: string, baseUrl: string): string | null {
   }
 }
 
-function extractImageCandidates(text: string): string[] {
-  const decoded = decodeHtmlEntities(text);
-  const candidates: string[] = [];
-
-  const htmlImgRegex = /<img\b[^>]*src=["']([^"']+)["']/gi;
-  let match: RegExpExecArray | null;
-  while ((match = htmlImgRegex.exec(decoded)) !== null) {
-    candidates.push(match[1]);
+function extractImageCandidates(text: string): { src: string; alt: string }[] {
+  const candidates: { src: string; alt: string }[] = [];
+  const html = text.replace(/&lt;img\b.*?&gt;/gi, (tag) =>
+    decodeHtmlEntities(tag),
+  );
+  for (const [tag] of html.matchAll(/<img\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+    const attrs = new Map<string, string>();
+    for (const [, name, doubleQuoted, singleQuoted] of tag.matchAll(
+      /\s([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g,
+    )) {
+      attrs.set(name.toLowerCase(), doubleQuoted ?? singleQuoted);
+    }
+    const src = attrs.get('src');
+    if (src)
+      candidates.push({ src, alt: decodeHtmlEntities(attrs.get('alt') ?? '') });
   }
 
-  const markdownImgRegex = /!\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  while ((match = markdownImgRegex.exec(decoded)) !== null) {
-    candidates.push(match[1]);
+  for (const [, alt, src] of text.matchAll(
+    /!\[([^\]]*)]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+  )) {
+    candidates.push({ src, alt: decodeHtmlEntities(alt) });
   }
-
   return candidates;
 }
 
@@ -61,24 +69,31 @@ export function extractArticleImages(options: {
   content?: string | null;
 }): ArticleImage[] {
   const images: ArticleImage[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, ArticleImage>();
 
   const push = (
     candidate: string | null | undefined,
     source: ArticleImageSource,
+    alt = '',
   ) => {
     if (!candidate) return;
     const normalized = normalizeImageUrl(candidate, options.articleUrl);
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    images.push({ src: normalized, source });
+    if (!normalized) return;
+    const existing = seen.get(normalized);
+    if (existing) {
+      if (!existing.alt) existing.alt = alt;
+      return;
+    }
+    const image = { src: normalized, source, alt };
+    seen.set(normalized, image);
+    images.push(image);
   };
 
   push(options.heroUrl, 'hero');
 
   if (options.content) {
     for (const candidate of extractImageCandidates(options.content)) {
-      push(candidate, 'content');
+      push(candidate.src, 'content', candidate.alt);
     }
   }
 

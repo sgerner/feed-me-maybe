@@ -149,6 +149,7 @@
   let hasLoaded = $state(false);
   let refreshing = $state(false);
   let errorMessage = $state('');
+  let statusAnnouncement = $state('');
   let selectedDays = $state(7);
   let showAll = $state(false);
   let allQuery = $state('');
@@ -248,6 +249,9 @@
     abortController = new AbortController();
     if (!hasLoaded) loading = true;
     else refreshing = true;
+    statusAnnouncement = hasLoaded
+      ? 'Refreshing briefing.'
+      : 'Loading briefing.';
     errorMessage = '';
     try {
       if (options.sync) await syncFeeds({ silent: true });
@@ -266,6 +270,7 @@
       digest = data;
       selectedDays = data.windowDays || selectedDays;
       hasLoaded = true;
+      statusAnnouncement = `Briefing ready. ${data.totalArticles} eligible stories from ${data.totalFeeds} feeds.`;
       void cacheDigest('admin', {
         id: `briefing-${data.windowDays || selectedDays}-${data.generatedAt}`,
         generatedAt: data.generatedAt,
@@ -287,10 +292,12 @@
           selectedDays = digest.windowDays || selectedDays;
           hasLoaded = true;
           errorMessage = '';
+          statusAnnouncement = `Loaded cached briefing. ${digest.totalArticles} eligible stories.`;
           return;
         }
       }
       errorMessage = formatError(err);
+      statusAnnouncement = '';
     } finally {
       if (currentRequest === requestId) {
         loading = false;
@@ -322,7 +329,11 @@
   />
 </svelte:head>
 
-<div class="mx-auto max-w-6xl pb-12">
+<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+  {statusAnnouncement}
+</p>
+
+<div class="mx-auto max-w-6xl pb-12" aria-busy={refreshing || loading}>
   {#if loading && !hasLoaded}
     <div class="space-y-6" aria-busy="true" aria-label="Loading briefing">
       <div class="animate-pulse space-y-3 pt-2">
@@ -346,7 +357,7 @@
       <p class="mb-2 text-lg font-medium text-surface-100">
         Briefing unavailable
       </p>
-      <p class="section-subtitle">{errorMessage}</p>
+      <p class="section-subtitle" role="alert">{errorMessage}</p>
       <button
         type="button"
         class="btn preset-filled-surface-200-800 mt-6"
@@ -394,6 +405,7 @@
           class="btn preset-filled-surface-200-800"
           onclick={handleRefresh}
           disabled={refreshing}
+          aria-busy={refreshing}
           aria-label="Refresh briefing"
           >{#if refreshing}<span
               class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
@@ -607,7 +619,7 @@
             </div>{/if}
         </section>
 
-        <aside class="space-y-8">
+        <aside class="space-y-8" aria-label="Themes and source coverage">
           <details
             class="rounded-2xl border border-surface-200/10 bg-surface-900/20 p-5"
           >

@@ -1,9 +1,14 @@
 <script lang="ts">
   import { addToast } from '$lib/stores/toast.svelte';
-  import { formatContent } from '$lib/utils/format';
+  import { formatContent, sanitizeHtml } from '$lib/utils/format';
   import { getContext, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { afterNavigate, goto, invalidateAll } from '$app/navigation';
+  import {
+    afterNavigate,
+    goto,
+    invalidate,
+    invalidateAll,
+  } from '$app/navigation';
   import { page as pageStore } from '$app/stores';
   import { fetchWithCsrf } from '$lib/client/csrf';
   import {
@@ -37,10 +42,14 @@
     url: string;
     title: string;
     summary?: string | null;
+    title_highlight?: string | null;
+    summary_highlight?: string | null;
+    content_highlight?: string | null;
     image_url?: string | null;
     published_at?: number | null;
     fetched_at?: number | null;
     feed_title?: string | null;
+    feed_title_highlight?: string | null;
     feed_open_mode?: string | null;
     feed_url?: string | null;
     read?: boolean | null;
@@ -171,6 +180,19 @@
   async function openArticle(article: Article) {
     if (navigator.onLine === false && openCachedArticle) {
       await openCachedArticle(article);
+      try {
+        if (!article.read) {
+          await enqueueOfflineMutation(offlineScope(), {
+            articleId: article.id,
+            type: 'read',
+          });
+          articles = articles.map((item: Article) =>
+            item.id === article.id ? { ...item, read: true } : item,
+          );
+        }
+      } catch {
+        addToast('Could not queue this article as read', 'error');
+      }
       return;
     }
 
@@ -186,6 +208,19 @@
       shouldMarkOpened && articleIndex >= 0 ? articles[articleIndex] : null;
 
     writeScrollRestoreState();
+    if (mode !== 'tab') {
+      try {
+        sessionStorage.setItem(
+          'feed-me-maybe:reader-queue',
+          JSON.stringify({
+            ids: articles.map((item: Article) => item.id),
+            source: $pageStore.url.pathname + $pageStore.url.search,
+          }),
+        );
+      } catch {
+        // Direct reader navigation still works without session storage.
+      }
+    }
 
     if (shouldMarkOpened && previousArticle) {
       articles = articles.filter((a: Article) => a.id !== article.id);
@@ -197,31 +232,32 @@
       label: mode === 'tab' ? 'Opening in new tab...' : 'Loading article...',
     };
 
-    void (
-      navigator.onLine === false
-        ? enqueueOfflineMutation(offlineScope(), {
-            articleId: article.id,
-            type: 'read',
-          })
-        : fetchWithCsrf('/api/interactions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ articleId: article.id, type: 'open' }),
-            keepalive: true,
-          })
-    ).catch((err) => {
-      console.error('Failed to record open interaction', err);
+    if (mode === 'tab')
+      void (
+        navigator.onLine === false
+          ? enqueueOfflineMutation(offlineScope(), {
+              articleId: article.id,
+              type: 'read',
+            })
+          : fetchWithCsrf('/api/interactions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ articleId: article.id, type: 'open' }),
+              keepalive: true,
+            })
+      ).catch((err) => {
+        console.error('Failed to record open interaction', err);
 
-      if (
-        shouldMarkOpened &&
-        previousArticle &&
-        !articles.some((a: Article) => a.id === article.id)
-      ) {
-        const next = [...articles];
-        next.splice(Math.min(articleIndex, next.length), 0, previousArticle);
-        articles = next;
-      }
-    });
+        if (
+          shouldMarkOpened &&
+          previousArticle &&
+          !articles.some((a: Article) => a.id === article.id)
+        ) {
+          const next = [...articles];
+          next.splice(Math.min(articleIndex, next.length), 0, previousArticle);
+          articles = next;
+        }
+      });
 
     if (mode === 'tab') {
       window.open(article.url, '_blank', 'noopener,noreferrer');
@@ -250,6 +286,7 @@
   }
 
   let page = $state(1);
+  let removedFromPage = $state(0);
   let loadingMore = $state(false);
   let hasMore = $state(false);
   let pendingArticleIds = $state<Record<string, boolean>>({});
@@ -340,6 +377,7 @@
 
   let articleIds = $derived(articles.map((a: Article) => a.id));
   let focusedIndex = $state(0);
+  let emptyState = $state<HTMLDivElement>();
   let singleKeyShortcutsEnabled = true;
   let isBoostReview = $derived(feedbackMode === 'boost');
 
@@ -412,6 +450,8 @@
 
   $effect(() => {
     hasMore = totalPages > 1;
+    page = 1;
+    removedFromPage = 0;
   });
 
   $effect(() => {
@@ -466,19 +506,22 @@
   }
 
   async function interact(articleId: string, requestedType: InteractionType) {
-    const type =
-      savedOnly && requestedType === 'save' ? 'unsave' : requestedType;
     if (pendingArticleIds[articleId]) return;
+    const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
+    const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
+    const type =
+      requestedType === 'save' && (savedOnly || previousArticle?.saved)
+        ? 'unsave'
+        : requestedType;
+    pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
 
     const isReaction =
       type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
     const visibleArticleIds = isReaction
       ? getVisibleArticleContext(articleId)
       : undefined;
-    const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
-    const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
     const shouldRemove =
-      type === 'unsave' ||
+      (type === 'unsave' && savedOnly) ||
       (!savedOnly &&
         (type === 'hide' || type === 'thumbs_down' || type === 'boost')) ||
       (type === 'read' && $pageStore.url.pathname === '/inbox');
@@ -491,7 +534,22 @@
       : null;
 
     if (shouldRemove && previousArticle) {
+      const card = document.getElementById(`article-${articleId}`);
+      const focusedInCard = card?.contains(document.activeElement);
       articles = articles.filter((a: Article) => a.id !== articleId);
+      if (focusedInCard) {
+        await tick();
+        const next = articles[Math.min(articleIndex, articles.length - 1)];
+        const nextLink = next
+          ? document.getElementById(`article-${next.id}`)?.querySelector('a')
+          : emptyState;
+        if (
+          document.activeElement === document.body ||
+          card?.contains(document.activeElement)
+        ) {
+          nextLink?.focus();
+        }
+      }
     }
 
     if (isReaction && previousArticle) {
@@ -514,7 +572,11 @@
       );
     }
 
-    pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
+    if (type === 'save' || type === 'unsave') {
+      articles = articles.map((item: Article) =>
+        item.id === articleId ? { ...item, saved: type === 'save' } : item,
+      );
+    }
 
     try {
       const offlineType = getOfflineMutationType(type);
@@ -534,7 +596,10 @@
       const stateAction =
         type === 'thumbs_down'
           ? 'reject'
-          : type === 'read' || type === 'hide'
+          : type === 'read' ||
+              type === 'hide' ||
+              type === 'save' ||
+              type === 'unsave'
             ? type
             : null;
       const res = await fetchWithCsrf(
@@ -550,6 +615,8 @@
         },
       );
       if (res.ok) {
+        if (shouldRemove) removedFromPage++;
+        void invalidate('app:reader-counts');
         const message = INTERACTION_LABELS[type] || type;
         if (stateAction && previousArticle) {
           const result = (await res.json()) as {
@@ -557,7 +624,7 @@
             changes: Array<{ changed: boolean }>;
           };
           if (result.changes.some((change) => change.changed)) {
-            addToast(message, 'success', 6000, {
+            addToast(message, 'success', 3000, {
               label: 'Undo',
               run: async () => {
                 try {
@@ -589,6 +656,9 @@
                         previousArticle,
                       );
                     articles = next;
+                    if (shouldRemove)
+                      removedFromPage = Math.max(0, removedFromPage - 1);
+                    void invalidate('app:reader-counts');
                     addToast('Action undone', 'success');
                   }
                 } catch {
@@ -632,11 +702,19 @@
         );
       }
 
+      if (previousArticle && (type === 'save' || type === 'unsave')) {
+        articles = articles.map((item: Article) =>
+          item.id === articleId
+            ? { ...item, saved: previousArticle.saved }
+            : item,
+        );
+      }
       console.error('Action failed', err);
       addToast('Action failed', 'error');
     } finally {
       const { [articleId]: _pending, ...rest } = pendingArticleIds;
       pendingArticleIds = rest;
+      if (shouldRemove) void tick().then(maybeLoadMore);
     }
   }
 
@@ -756,12 +834,17 @@
   }
 
   async function loadMore() {
-    if (loadingMore || !hasMore) return;
+    if (loadingMore || !hasMore || Object.keys(pendingArticleIds).length > 0)
+      return;
     loadingMore = true;
     let advanced = false;
     try {
       const url = new URL('/api/articles', window.location.origin);
       url.searchParams.set('page', (page + 1).toString());
+      url.searchParams.set(
+        'offset',
+        String(Math.max(0, page * 25 - removedFromPage)),
+      );
       if (feedId) url.searchParams.set('feedId', feedId);
       for (const [key, value] of Object.entries(loadMoreSearchParams)) {
         url.searchParams.set(key, String(value));
@@ -1055,8 +1138,13 @@
   }
 </script>
 
-{#if articles.length === 0 && !loadingMore}
-  <div class="glass-card mt-16 p-8 text-center" in:fade={{ duration: 300 }}>
+{#if articles.length === 0 && !loadingMore && !hasMore}
+  <div
+    class="glass-card mt-16 p-8 text-center"
+    bind:this={emptyState}
+    tabindex="-1"
+    in:fade={{ duration: 300 }}
+  >
     <div
       class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full"
       style="background: color-mix(in oklch, var(--color-primary-500) 10%, transparent);"
@@ -1109,9 +1197,13 @@
       {@const swipeOffset =
         activeSwipeId === article.id ? activeSwipeOffset : 0}
       {@const articleDate = article.published_at || article.fetched_at}
-      {@const formattedSummary = article.summary
-        ? getFormattedSummary(article)
-        : ''}
+      {@const highlightedSummary =
+        article.summary_highlight || article.content_highlight}
+      {@const formattedSummary = highlightedSummary
+        ? sanitizeHtml(highlightedSummary)
+        : article.summary
+          ? getFormattedSummary(article)
+          : ''}
       <div class="relative overflow-hidden rounded-sm">
         <!-- Swipe Action Indicators -->
         {#if swipeOffset !== 0}
@@ -1177,7 +1269,6 @@
           class="glass-card glass-card-hover article-card group relative flex min-h-[180px] flex-col overflow-visible p-0 md:min-h-[280px]"
           style="touch-action: pan-y; --swipe-offset: {swipeOffset}px;"
           class:article-swiping={activeSwipeId === article.id}
-          class:article-focus-ring={focusedIndex === i}
         >
           <a
             href={articleHref(article)}
@@ -1186,6 +1277,7 @@
               ? 'noopener noreferrer'
               : undefined}
             class="article-card-link relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm no-underline"
+            onfocus={() => (focusedIndex = i)}
             aria-labelledby="article-title-{article.id}"
             style="touch-action: pan-y;"
             onkeydown={(event) => {
@@ -1224,7 +1316,11 @@
                   class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
                   style="background: var(--color-primary-500); border-radius: 2px;"
                 >
-                  {article.feed_title || 'Unknown'}
+                  {#if article.feed_title_highlight}
+                    {@html sanitizeHtml(article.feed_title_highlight)}
+                  {:else}
+                    {article.feed_title || 'Unknown'}
+                  {/if}
                 </span>
                 <span class="flex items-center gap-1">
                   <svg
@@ -1248,10 +1344,14 @@
                 class="article-card-title text-xl font-bold leading-tight transition-colors"
                 style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
               >
-                {article.title}
+                {#if article.title_highlight}
+                  {@html sanitizeHtml(article.title_highlight)}
+                {:else}
+                  {article.title}
+                {/if}
               </h2>
 
-              {#if article.summary}
+              {#if article.summary || article.summary_highlight || article.content_highlight}
                 <div
                   class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
                   style="color: var(--color-surface-300);"
@@ -1310,7 +1410,8 @@
                     : '!inline-flex'} !bg-surface-900/50 lg:backdrop-blur-sm {article.saved
                     ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
                     : ''}"
-                  disabled={isPending || (!savedOnly && Boolean(article.saved))}
+                  disabled={isPending}
+                  aria-pressed={Boolean(article.saved)}
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
@@ -1320,7 +1421,7 @@
                   title={savedOnly
                     ? 'Remove from Saved (s)'
                     : article.saved
-                      ? 'Already saved'
+                      ? 'Remove from Saved (s)'
                       : 'Save (s)'}
                 >
                   <svg
@@ -1335,7 +1436,7 @@
                       d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
                     /></svg
                   >
-                  {savedOnly ? 'Unsave' : article.saved ? 'Saved' : 'Save'}
+                  {savedOnly || article.saved ? 'Unsave' : 'Save'}
                 </button>
                 {#if !isBoostReview && article.read}
                   <span
@@ -1407,13 +1508,13 @@
                       </svg>
                     </summary>
                     <div
-                      role="menu"
                       class="absolute bottom-full right-0 z-40 mb-2 flex min-w-52 flex-col gap-1 rounded-sm border p-2 shadow-2xl backdrop-blur-xl"
+                      role="group"
+                      aria-label="Article actions"
                       style="background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
                     >
                       <button
                         type="button"
-                        role="menuitem"
                         class="article-menu-item"
                         aria-label="Share article"
                         onclick={(e) => {
@@ -1447,7 +1548,6 @@
                       {#if !article.read}
                         <button
                           type="button"
-                          role="menuitem"
                           class="article-menu-item"
                           aria-label="Mark article as read"
                           title="Mark as read (m)"
@@ -1480,13 +1580,12 @@
                       ></div>
                       <button
                         type="button"
-                        role="menuitemcheckbox"
                         class="article-menu-item article-menu-reaction {article.thumbs_up
                           ? 'text-primary-300'
                           : ''}"
                         aria-label="Like article"
                         disabled={isPending}
-                        aria-checked={Boolean(article.thumbs_up)}
+                        aria-pressed={Boolean(article.thumbs_up)}
                         onclick={(e) => {
                           (e.currentTarget as HTMLElement)
                             .closest('details')
@@ -1513,13 +1612,12 @@
                       </button>
                       <button
                         type="button"
-                        role="menuitemcheckbox"
                         class="article-menu-item article-menu-reaction {article.thumbs_down
                           ? 'text-error-300'
                           : ''}"
                         aria-label="Dislike and hide article"
                         disabled={isPending}
-                        aria-checked={Boolean(article.thumbs_down)}
+                        aria-pressed={Boolean(article.thumbs_down)}
                         onclick={(e) => {
                           (e.currentTarget as HTMLElement)
                             .closest('details')
@@ -1643,40 +1741,44 @@
       </div>
     </div>
   {/if}
+{/if}
 
-  <!-- Infinite Scroll Sentinel -->
-  {#if showInfiniteScroll}
-    <div bind:this={sentinelEl} class="flex h-32 items-center justify-center">
-      {#if loadingMore}
-        <div
-          class="flex flex-col items-center gap-3 text-sm"
-          style="color: var(--color-surface-300);"
-        >
-          <div class="flex items-center gap-2">
-            <div
-              class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.2s]"
-            ></div>
-            <div
-              class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.1s]"
-            ></div>
-            <div
-              class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400"
-            ></div>
-          </div>
-          <div class="flex items-center gap-3">
-            <div
-              class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
-            ></div>
-            <span class="font-medium">Loading more articles...</span>
-          </div>
+<!-- Keep the sentinel mounted when the current batch is triaged away. -->
+{#if showInfiniteScroll}
+  <div
+    bind:this={sentinelEl}
+    class="flex h-32 items-center justify-center"
+    aria-busy={loadingMore}
+  >
+    {#if loadingMore}
+      <div
+        class="flex flex-col items-center gap-3 text-sm"
+        style="color: var(--color-surface-300);"
+      >
+        <div class="flex items-center gap-2">
+          <div
+            class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.2s]"
+          ></div>
+          <div
+            class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400 [animation-delay:-0.1s]"
+          ></div>
+          <div
+            class="h-2.5 w-2.5 animate-bounce rounded-full bg-primary-400"
+          ></div>
         </div>
-      {:else if !hasMore && articles.length > 0}
-        <p class="text-sm" style="color: var(--color-surface-400);">
-          No more articles to show.
-        </p>
-      {/if}
-    </div>
-  {/if}
+        <div class="flex items-center gap-3" role="status" aria-live="polite">
+          <div
+            class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+          ></div>
+          <span class="font-medium">Loading more articles...</span>
+        </div>
+      </div>
+    {:else if !hasMore && articles.length > 0}
+      <p class="text-sm" style="color: var(--color-surface-400);" role="status">
+        No more articles to show.
+      </p>
+    {/if}
+  </div>
 {/if}
 
 <style>

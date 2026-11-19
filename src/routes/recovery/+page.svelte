@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { addToast } from '$lib/stores/toast.svelte';
   import { fetchWithCsrf } from '$lib/client/csrf';
 
@@ -19,11 +19,14 @@
   let articles = $state<RecoveryArticle[]>([]);
   let loading = $state(true);
   let errorMessage = $state('');
+  let statusAnnouncement = $state('');
   let restoring = $state<Record<string, boolean>>({});
+  let heading = $state<HTMLHeadingElement>();
   let nextCursor = $state<string | null>(null);
 
   async function loadRecovery(append = false) {
     loading = !append;
+    if (!append) statusAnnouncement = 'Loading hidden and rejected articles.';
     errorMessage = '';
     try {
       const params = new URLSearchParams({ limit: '50' });
@@ -38,15 +41,19 @@
         ? [...articles, ...(payload.articles || [])]
         : payload.articles || [];
       nextCursor = payload.nextCursor ?? null;
+      statusAnnouncement = articles.length
+        ? `${articles.length} hidden or rejected ${articles.length === 1 ? 'article' : 'articles'} loaded.`
+        : '';
     } catch (error) {
       errorMessage =
         error instanceof Error ? error.message : 'Recovery failed.';
+      statusAnnouncement = '';
     } finally {
       loading = false;
     }
   }
 
-  async function restore(article: RecoveryArticle) {
+  async function restore(article: RecoveryArticle, trigger: HTMLButtonElement) {
     if (restoring[article.id]) return;
     restoring = { ...restoring, [article.id]: true };
     try {
@@ -60,7 +67,23 @@
         }),
       });
       if (!response.ok) throw new Error('Could not restore this article.');
+      const index = articles.indexOf(article);
+      const hadFocus =
+        document.activeElement === trigger ||
+        document.activeElement === document.body;
       articles = articles.filter((item) => item.id !== article.id);
+      await tick();
+      if (
+        hadFocus &&
+        (document.activeElement === document.body ||
+          document.activeElement === trigger)
+      ) {
+        const neighbor = articles[Math.min(index, articles.length - 1)];
+        const next = neighbor
+          ? document.getElementById(`restore-${neighbor.id}`)
+          : heading;
+        next?.focus();
+      }
       addToast('Article restored to your feed', 'success');
     } catch (error) {
       addToast(
@@ -92,24 +115,32 @@
   />
 </svelte:head>
 
+<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+  {statusAnnouncement}
+</p>
+
 <div class="mx-auto max-w-5xl">
   <div class="mb-8">
     <p class="eyebrow text-secondary-300">Review hidden and rejected</p>
-    <h1 class="section-title">Recovery</h1>
+    <h1 class="section-title" bind:this={heading} tabindex="-1">Recovery</h1>
     <p class="section-subtitle">
       Restore hidden, rejected, or disliked articles.
     </p>
   </div>
 
   {#if loading}
-    <div class="glass-card flex min-h-48 items-center justify-center p-8">
+    <div
+      class="glass-card flex min-h-48 items-center justify-center p-8"
+      aria-busy="true"
+      aria-label="Loading recovery list"
+    >
       <div
         class="h-8 w-8 animate-spin rounded-full border-2 border-secondary-400 border-t-transparent"
       ></div>
     </div>
   {:else if errorMessage}
     <div class="glass-card p-8 text-center">
-      <p class="text-error-300">{errorMessage}</p>
+      <p class="text-error-300" role="alert">{errorMessage}</p>
       <button
         type="button"
         class="btn preset-tonal mt-4"
@@ -118,7 +149,7 @@
     </div>
   {:else if articles.length === 0}
     <div class="glass-card p-10 text-center">
-      <p class="text-lg font-semibold text-surface-100">
+      <p class="text-lg font-semibold text-surface-100" role="status">
         No hidden or rejected articles
       </p>
       <p class="section-subtitle mt-2">
@@ -158,7 +189,8 @@
             <button
               type="button"
               class="btn preset-filled-secondary-500"
-              onclick={() => void restore(article)}
+              id="restore-{article.id}"
+              onclick={(event) => void restore(article, event.currentTarget)}
               disabled={Boolean(restoring[article.id])}
               >{restoring[article.id] ? 'Restoring…' : 'Restore'}</button
             >

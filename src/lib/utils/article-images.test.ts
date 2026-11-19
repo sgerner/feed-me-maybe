@@ -7,9 +7,10 @@ describe('extractArticleImages', () => {
       articleUrl: 'https://example.com/post',
       heroUrl: 'https://example.com/hero.jpg',
       content:
-        '<p>Text</p><img src="https://example.com/hero.jpg"><img src="https://example.com/second.jpg">',
+        '<p>Text</p><img src="https://example.com/hero.jpg"><img src="https://example.com/second.jpg" alt="An example &amp; illustration">',
     });
 
+    expect(images[1]?.alt).toBe('An example & illustration');
     expect(images.map((image) => image.src)).toEqual([
       'https://example.com/hero.jpg',
       'https://example.com/second.jpg',
@@ -23,6 +24,7 @@ describe('extractArticleImages', () => {
         '![alt](images/one.png) and ![alt](https://cdn.example.com/two.png)',
     });
 
+    expect(images.map((image) => image.alt)).toEqual(['alt', 'alt']);
     expect(images.map((image) => image.src)).toEqual([
       'https://example.com/articles/images/one.png',
       'https://cdn.example.com/two.png',
