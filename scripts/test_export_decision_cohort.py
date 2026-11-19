@@ -52,7 +52,7 @@ class TemporalExportTests(unittest.TestCase):
               id TEXT PRIMARY KEY, article_id TEXT UNIQUE, summary TEXT,
               topics TEXT, entities TEXT, content_type TEXT,
               ai_relevance_score REAL, quality_score REAL, novelty_score REAL,
-              signals TEXT, processed_at INTEGER
+              signals TEXT, processed_at INTEGER, analysis_status TEXT DEFAULT 'ready'
             );
             CREATE TABLE user_preference_memory (
               id TEXT PRIMARY KEY, type TEXT, label TEXT, polarity TEXT,
@@ -199,6 +199,24 @@ class TemporalExportTests(unittest.TestCase):
         expected_age = round((self.cutoff + 300_000 - (self.cutoff + 30_000 - 3_600_000)) / 3_600_000, 1)
         self.assertEqual(by_id["new-mixed"]["state"]["candidate"]["age_hours"], expected_age)
         self.assertNotIn("label", by_id["new-mixed"]["state"])
+
+    def test_ignores_failed_enrichment_auto_hides_and_duplicate_opens(self) -> None:
+        self.connection.execute(
+            "UPDATE article_ai_metadata SET analysis_status = 'failed' WHERE article_id = 'new-open'"
+        )
+        self._interaction("history-early", "open", self.cutoff - 4_000)
+        self.connection.execute(
+            "INSERT INTO user_interactions VALUES (?, ?, ?, ?, ?)",
+            ("auto-hidden", "history-early", "hide", self.cutoff - 3_000, '{"auto":true}'),
+        )
+        self.connection.commit()
+
+        row = next(row for row in self._export()["rows"] if row["id"] == "new-open")
+        self.assertIsNone(row["baseline"]["aiComposite"])
+        self.assertEqual(row["state"]["candidate"]["summary"], "raw open summary")
+        profile = row["state"]["reader_profile"]
+        self.assertEqual(profile["preferred_sources"], [{"source": "Example Wire", "interactions": 3}])
+        self.assertEqual(profile["avoided_sources"], [])
 
     def test_export_does_not_modify_database(self) -> None:
         before = self.db_path.read_bytes()

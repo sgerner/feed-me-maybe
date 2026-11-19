@@ -14,9 +14,11 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import {
   buildDecisionInputVariants,
+  buildSafeDecisionInput,
   JEV_DECISION_QUESTIONS,
   type DecisionState,
 } from '../src/lib/server/ai/decision-input.ts';
+import { buildRankingPreferenceInput } from '../src/lib/server/ai/preference-input.ts';
 
 const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const JEV_MODEL = 'jev-latest';
@@ -33,6 +35,7 @@ type Baseline = {
   jevScore: number | null;
   heuristic: number | null;
   aiComposite: number | null;
+  storedCombinedScore: number | null;
 };
 type CohortRow = {
   id: string;
@@ -204,6 +207,10 @@ function readCohort(path: string): { cohort: Cohort; hash: string } {
           raw.baseline.aiComposite,
           `rows[${index}].baseline.aiComposite`,
         ),
+        storedCombinedScore: numericOrNull(
+          raw.baseline.storedCombinedScore,
+          `rows[${index}].baseline.storedCombinedScore`,
+        ),
       },
     };
   });
@@ -261,10 +268,15 @@ const EXPERIMENT_METADATA = {
     ...config,
     questions: QUESTION_SETS[config.questionSet],
   })),
-  decisionInputSourceSha256: createHash('sha256')
+  productionInputTransformsSha256: createHash('sha256')
     .update(
       readFileSync(
         new URL('../src/lib/server/ai/decision-input.ts', import.meta.url),
+      ),
+    )
+    .update(
+      readFileSync(
+        new URL('../src/lib/server/ai/preference-input.ts', import.meta.url),
       ),
     )
     .digest('hex'),
@@ -602,6 +614,7 @@ function summarize(
         jevScore: finiteScore(baselineRecord.jevScore),
         heuristic: finiteScore(baselineRecord.heuristic),
         aiComposite: finiteScore(baselineRecord.aiComposite),
+        storedCombinedScore: finiteScore(baselineRecord.storedCombinedScore),
       },
       predictions: {},
       signals: {},
@@ -655,6 +668,13 @@ function summarize(
     baseline_aiComposite: rows.map((row) => ({
       label: row.label,
       score: row.baseline.aiComposite,
+    })),
+    baseline_storedCombinedScore: rows.map((row) => ({
+      label: row.label,
+      score:
+        row.baseline.storedCombinedScore === null
+          ? null
+          : row.baseline.storedCombinedScore / 100,
     })),
     jev_full: rows.map((row) => ({
       label: row.label,
@@ -821,6 +841,12 @@ function parseArgs(args: string[]) {
     return { help: false as const, summarizePath: path };
   }
 
+  if (args[0] === '--prepare') {
+    if (args.length !== 2 || args[1].startsWith('--'))
+      throw new Error('--prepare requires a cohort JSON path');
+    return { help: false as const, preparePath: args[1] };
+  }
+
   const positionals: string[] = [];
   let limit: number | null = null;
   let selectedVariants: VariantName[] | null = null;
@@ -864,10 +890,17 @@ function printHelp(): void {
       'Usage:',
       '  node --experimental-strip-types scripts/evaluate-decisions.ts INPUT.json OUTPUT.jsonl [--limit N] [--variants full,compact,minimal]',
       '  node --experimental-strip-types scripts/evaluate-decisions.ts --summarize OUTPUT.jsonl',
+      '  node --experimental-strip-types scripts/evaluate-decisions.ts --prepare INPUT.json',
       '',
       'Set JEV_API_KEY_FILE and SUBQ_API_KEY_FILE to files containing provider keys.',
       'The runner appends one JSONL record per API call and resumes successful calls.',
     ].join('\n') + '\n',
+  );
+}
+
+function buildProductionVariants(state: DecisionState) {
+  return buildDecisionInputVariants(
+    buildRankingPreferenceInput(buildSafeDecisionInput(state)),
   );
 }
 
@@ -883,6 +916,23 @@ async function run(args: string[]): Promise<void> {
     return;
   }
 
+  if ('preparePath' in parsed && typeof parsed.preparePath === 'string') {
+    const { cohort } = readCohort(parsed.preparePath);
+    const requests = cohort.rows.map((row) => {
+      const inputs = buildProductionVariants(row.state);
+      return Object.fromEntries(
+        Object.entries(inputs).map(([variant, input]) => [
+          variant,
+          jsonBytes(input),
+        ]),
+      );
+    });
+    process.stdout.write(
+      `${JSON.stringify({ rows: requests.length, inputBytes: requests }, null, 2)}\n`,
+    );
+    return;
+  }
+
   const inputPath = resolve(parsed.inputPath);
   const outputPath = resolve(parsed.outputPath);
   const { cohort, hash: cohortHash } = readCohort(inputPath);
@@ -894,7 +944,7 @@ async function run(args: string[]): Promise<void> {
   const existing = readJsonl(outputPath);
   const completed = countExistingSuccesses(existing, cohortHash);
   const variants = new Map(
-    rows.map((row) => [row.id, buildDecisionInputVariants(row.state)]),
+    rows.map((row) => [row.id, buildProductionVariants(row.state)]),
   );
 
   appendJsonl(outputPath, {
