@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 interface IngestOptions {
   feedId: string;
   force?: boolean;
+  countFailure?: boolean;
 }
 
 interface IngestResult {
@@ -31,6 +32,8 @@ interface IngestResult {
   skipped?: boolean;
   status?: 'completed' | 'already_running';
   error?: string;
+  retryAt?: number;
+  permanentFailure?: boolean;
   feedTitle?: string;
   feedDescription?: string;
   feedLink?: string;
@@ -38,7 +41,7 @@ interface IngestResult {
 }
 
 export function normalizeArticleUrl(value: string): string {
-  return normalizeSourceUrl(value, true);
+  return normalizeSourceUrl(value, true, true);
 }
 function normalizeGuid(value: string | undefined): string {
   return String(value || '').trim();
@@ -124,6 +127,7 @@ export async function ingestFeed(
       articlesFound: 0,
       articlesNew: 0,
       error: 'Feed not found',
+      permanentFailure: true,
     };
   }
 
@@ -203,6 +207,10 @@ export async function ingestFeed(
         };
     fetchResult = await fetchRedditSource(redditSource, {
       proxyBaseUrl: proxyEnabled ? proxyBaseUrl : undefined,
+      etag: options.force ? undefined : feedRecord.etag || undefined,
+      lastModified: options.force
+        ? undefined
+        : feedRecord.last_modified_header || undefined,
     });
   } else {
     fetchResult = await fetchFeed(canonicalUrl, {
@@ -256,8 +264,13 @@ export async function ingestFeed(
       'UPDATE feed_fetch_logs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?',
     ).run('error', fetchResult.error || 'Unknown error', Date.now(), logId);
     db.prepare(
-      "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, error_count = COALESCE(error_count, 0) + 1, updated_at = ? WHERE id = ?",
-    ).run(fetchResult.error || 'Unknown error', Date.now(), feedId);
+      "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, error_count = COALESCE(error_count, 0) + ?, updated_at = ? WHERE id = ?",
+    ).run(
+      fetchResult.error || 'Unknown error',
+      options.countFailure === false ? 0 : 1,
+      Date.now(),
+      feedId,
+    );
     recordAppError({
       source: 'feed.ingester.fetch',
       error: fetchResult.error || 'Unknown error',
@@ -275,6 +288,8 @@ export async function ingestFeed(
       articlesFound: 0,
       articlesNew: 0,
       error: fetchResult.error,
+      retryAt: fetchResult.retryAt,
+      permanentFailure: fetchResult.httpStatus === 410,
     };
   }
 
@@ -674,8 +689,13 @@ export async function ingestFeed(
       'UPDATE feed_fetch_logs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?',
     ).run('error', errorMessage, Date.now(), logId);
     db.prepare(
-      "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, error_count = COALESCE(error_count, 0) + 1, updated_at = ? WHERE id = ?",
-    ).run(errorMessage, Date.now(), feedId);
+      "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, error_count = COALESCE(error_count, 0) + ?, updated_at = ? WHERE id = ?",
+    ).run(
+      errorMessage,
+      options.countFailure === false ? 0 : 1,
+      Date.now(),
+      feedId,
+    );
     recordAppError({
       source: 'feed.ingester.transaction',
       error: err,

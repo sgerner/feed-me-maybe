@@ -90,7 +90,7 @@ describe('feed job queue', () => {
     expect(woken.id).toBe(first.id);
     expect(row.scheduled_at).toBe(30_000);
     expect(row.error_message).toBe('');
-    expect(JSON.parse(row.payload).force).toBe(1);
+    expect(JSON.parse(row.payload).force).toBe(true);
   });
 
   it('runs a bounded set of feed fetches concurrently', async () => {
@@ -116,6 +116,82 @@ describe('feed job queue', () => {
       ingest.mockRestore();
     }
     expect(await result).toMatchObject({ processed: 4, completed: 4 });
+  });
+
+  it('starts a refresh while an active one-job batch is waiting on scoring', async () => {
+    const { enqueueAiProcess, enqueueFeedFetch, runDueJobs } =
+      await import('./job-queue');
+    const ingester = await import('./ingester');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    aiMocks.processArticle.mockImplementation(() => gate);
+    const ingest = vi.spyOn(ingester, 'ingestFeed').mockResolvedValue({
+      success: true,
+      articlesFound: 0,
+      articlesNew: 0,
+    });
+    enqueueAiProcess('pending-article');
+    const batch = runDueJobs({ maxJobs: 1 });
+    try {
+      await vi.waitFor(() =>
+        expect(aiMocks.processArticle).toHaveBeenCalledTimes(1),
+      );
+      enqueueFeedFetch('critical-refresh');
+      expect(runDueJobs({ maxJobs: 1 })).toBe(batch);
+      await vi.waitFor(() =>
+        expect(ingest).toHaveBeenCalledWith(
+          expect.objectContaining({ feedId: 'critical-refresh' }),
+        ),
+      );
+    } finally {
+      release();
+      await batch;
+      ingest.mockRestore();
+    }
+    expect(await batch).toMatchObject({ processed: 2, completed: 2 });
+  });
+
+  it('keeps an upstream retry deadline and stops permanent feed failures', async () => {
+    const { enqueueFeedFetch, runDueJobs, getJob } =
+      await import('./job-queue');
+    const ingester = await import('./ingester');
+    const retryAt = Date.now() + 120_000;
+    const ingest = vi
+      .spyOn(ingester, 'ingestFeed')
+      .mockResolvedValueOnce({
+        success: false,
+        articlesFound: 0,
+        articlesNew: 0,
+        error: 'Rate limited',
+        retryAt,
+      })
+      .mockResolvedValueOnce({
+        success: false,
+        articlesFound: 0,
+        articlesNew: 0,
+        error: 'Gone',
+        permanentFailure: true,
+      });
+    try {
+      const limited = enqueueFeedFetch('limited');
+      expect((await runDueJobs({ maxJobs: 1 })).retried).toBe(1);
+      expect(enqueueFeedFetch('limited').scheduledAt).toBe(retryAt);
+      expect(enqueueFeedFetch('limited', { force: true }).scheduledAt).toBe(
+        retryAt,
+      );
+      expect(getJob(limited.id)?.status).toBe('queued');
+
+      const removed = enqueueFeedFetch('removed');
+      expect((await runDueJobs({ maxJobs: 1 })).failed).toBe(1);
+      expect(getJob(removed.id)).toMatchObject({
+        status: 'failed',
+        attempts: 1,
+      });
+    } finally {
+      ingest.mockRestore();
+    }
   });
 
   it('recovers abandoned processing jobs and fetch logs', async () => {

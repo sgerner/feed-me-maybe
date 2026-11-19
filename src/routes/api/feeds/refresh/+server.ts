@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
+import { scheduleNextPoll } from '$lib/server/poller';
 import { enqueueFeedFetch, runDueJobs } from '$lib/server/feed/job-queue';
 import { recordAppError } from '$lib/server/logging';
 
@@ -18,15 +19,17 @@ export const POST: RequestHandler = async ({ locals }) => {
   // Queue insertion is the durable operation. The in-process worker provides
   // fast feedback when possible, while the poller remains the restart-safe
   // fallback for queued work.
-  void runDueJobs({ maxJobs: Math.max(1, feeds.length) }).catch((error) => {
-    recordAppError({
-      source: 'api.feeds.refresh.worker',
-      error,
-      details: { feedCount: feeds.length },
-      path: '/api/feeds/refresh',
-      method: 'POST',
-    });
-  });
+  void runDueJobs({ maxJobs: Math.max(1, feeds.length) })
+    .catch((error) => {
+      recordAppError({
+        source: 'api.feeds.refresh.worker',
+        error,
+        details: { feedCount: feeds.length },
+        path: '/api/feeds/refresh',
+        method: 'POST',
+      });
+    })
+    .finally(() => scheduleNextPoll());
 
   return json({
     success: true,

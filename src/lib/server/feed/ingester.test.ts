@@ -65,7 +65,9 @@ describe('feed ingester identity and duplicate handling', () => {
     const first = normalizeArticleUrl(
       'HTTPS://EXAMPLE.COM:443/story/?utm_source=feed&b=2&a=1#comments',
     );
-    const second = normalizeArticleUrl('https://example.com/story?a=1&b=2');
+    const second = normalizeArticleUrl(
+      'https://example.com/story?a=1&b=2#comments',
+    );
 
     expect(first).toBe(second);
     expect(generateArticleId('feed-a', first, 'Title', 'guid-a')).toBe(
@@ -88,7 +90,7 @@ describe('feed ingester identity and duplicate handling', () => {
 
     const baseItem = {
       guid: 'guid-1',
-      url: 'HTTPS://EXAMPLE.COM:443/story/?utm_campaign=test&b=2&a=1#top',
+      url: 'HTTPS://EXAMPLE.COM:443/story/?utm_campaign=test&b=2&a=1',
       title: 'Story',
       summary: 'Short summary',
       content: '<p>Short content</p>',
@@ -163,6 +165,34 @@ describe('feed ingester identity and duplicate handling', () => {
       )
       .get(article.id) as { count: number };
     expect(aiJobs.count).toBe(0);
+  });
+
+  it('keeps separate entries that share a page but use different anchors', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('releases', 'https://example.com/releases.xml', now, now);
+    vi.mocked(fetchFeed).mockResolvedValue({
+      success: true,
+      items: ['v1', 'v2'].map((version) => ({
+        guid: version,
+        url: `https://example.com/releases#${version}`,
+        title: version,
+        categories: [],
+      })),
+    });
+    expect((await ingestFeed({ feedId: 'releases' })).articlesNew).toBe(2);
+    expect((await ingestFeed({ feedId: 'releases' })).articlesNew).toBe(0);
+    expect(
+      db.prepare('SELECT url FROM articles ORDER BY url').pluck().all(),
+    ).toEqual([
+      'https://example.com/releases#v1',
+      'https://example.com/releases#v2',
+    ]);
   });
 
   it('preserves the UTF-16 content upgrade threshold during deduplication', async () => {

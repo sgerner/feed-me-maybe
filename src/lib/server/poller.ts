@@ -44,7 +44,11 @@ export function stopPolling(): void {
   }
 }
 
-function scheduleNextPoll(delayMs?: number): void {
+export function wakePoller(): void {
+  scheduleNextPoll(INITIAL_POLL_DELAY_MS);
+}
+
+export function scheduleNextPoll(delayMs?: number): void {
   if (!pollStarted) return;
   if (pollTimer) clearTimeout(pollTimer);
 

@@ -328,6 +328,7 @@ export function hasAllowedContentType(
 export async function readResponseText(
   response: Response,
   maxBytes: number,
+  decode = (bytes: Buffer) => bytes.toString('utf8'),
 ): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -368,7 +369,7 @@ export async function readResponseText(
   } finally {
     reader.releaseLock();
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return decode(Buffer.concat(chunks));
 }
 
 export type SafeFetchOptions = {
