@@ -144,20 +144,35 @@ describe('personal search engine', () => {
     const { searchArticles } = await import('./search');
     const result = searchArticles({ query: 'quantum', sort: 'relevance' });
 
-    expect(result.total).toBe(3);
-    expect(result.articles.map((article) => article.id)).toEqual(
-      expect.arrayContaining([
-        'article-quantum',
-        'article-hidden',
-        'article-rejected',
-      ]),
-    );
-    expect(result.articles[0]?.titleHighlight).toContain(
+    expect(result.total).toBe(1);
+    expect(result.articles.map((article) => article.id)).toEqual([
+      'article-quantum',
+    ]);
+    expect(result.articles[0]?.titleHighlight?.toLowerCase()).toContain(
       '<mark>quantum</mark>',
     );
     expect(result.articles[0]?.contentHighlight).toContain(
       '<mark>quantum</mark>',
     );
+  });
+
+  it('exposes hidden and rejected articles only through explicit state filters', async () => {
+    const { searchArticles } = await import('./search');
+    const hidden = searchArticles({
+      query: 'quantum is:hidden',
+      sort: 'relevance',
+    });
+    const rejected = searchArticles({
+      query: 'quantum is:rejected',
+      sort: 'relevance',
+    });
+
+    expect(hidden.articles.map((article) => article.id)).toEqual(
+      expect.arrayContaining(['article-hidden', 'article-rejected']),
+    );
+    expect(rejected.articles.map((article) => article.id)).toEqual([
+      'article-rejected',
+    ]);
   });
 
   it('supports safe feed, category, date, and state operators', async () => {
@@ -197,7 +212,7 @@ describe('personal search engine', () => {
       new Set(
         [...first.articles, ...second.articles].map((article) => article.id),
       ).size,
-    ).toBe(4);
+    ).toBe(2);
 
     getDb()
       .prepare('UPDATE articles SET title = ?, content = ? WHERE id = ?')
@@ -215,13 +230,13 @@ describe('personal search engine', () => {
   it('keeps relevance cursor pagination stable across tied scores', async () => {
     const { searchArticles } = await import('./search');
     const first = searchArticles({
-      query: 'quantum',
+      query: 'quantum is:hidden',
       limit: 1,
       sort: 'relevance',
     });
     expect(first.nextCursor).toBeTruthy();
     const second = searchArticles({
-      query: 'quantum',
+      query: 'quantum is:hidden',
       limit: 10,
       sort: 'relevance',
       cursor: first.nextCursor!,
@@ -234,7 +249,7 @@ describe('personal search engine', () => {
       new Set(
         [...first.articles, ...second.articles].map((article) => article.id),
       ).size,
-    ).toBe(3);
+    ).toBe(2);
   });
 
   it('runs the versioned migration idempotently', async () => {

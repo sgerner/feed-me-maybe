@@ -14,6 +14,7 @@
     cacheArticles,
     enqueueOfflineMutation,
     getCachedArticles,
+    matchesOfflineVisibility,
     type OfflineMutationType,
     type OfflineArticle,
   } from '$lib/offline';
@@ -845,7 +846,9 @@
       void getCachedArticles(offlineScope(), { limit: 150, savedOnly })
         .then((cached) => {
           if (articles.length === 0 && cached.length > 0) {
-            articles = cached;
+            articles = savedOnly
+              ? cached
+              : cached.filter((article) => matchesOfflineVisibility(article));
             addToast('Showing your saved offline reading shelf', 'info');
           }
         })

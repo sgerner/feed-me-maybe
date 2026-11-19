@@ -4,7 +4,7 @@
   import { page as pageStore } from '$app/stores';
   import ArticleList from '$lib/components/ArticleList.svelte';
   import { fetchWithCsrf } from '$lib/client/csrf';
-  import { getCachedArticles } from '$lib/offline';
+  import { getCachedArticles, matchesOfflineVisibility } from '$lib/offline';
 
   type Article = {
     id: string;
@@ -135,13 +135,18 @@
         const cached = await getCachedArticles('admin', { limit: 150 });
         const term = query.trim().toLowerCase();
         const filtered = cached.filter((article) => {
+          const visibilityFilter =
+            activeFilter === 'hidden' || activeFilter === 'rejected'
+              ? activeFilter
+              : 'visible';
           const stateMatches =
-            activeFilter === 'all' ||
-            (activeFilter === 'unread' && article.read !== true) ||
-            (activeFilter === 'saved' && article.saved === true) ||
-            (activeFilter === 'read' && article.read === true) ||
-            (activeFilter === 'hidden' && article.hidden === true) ||
-            (activeFilter === 'rejected' && article.thumbs_down === true);
+            matchesOfflineVisibility(article, visibilityFilter) &&
+            (activeFilter === 'all' ||
+              (activeFilter === 'unread' && article.read !== true) ||
+              (activeFilter === 'saved' && article.saved === true) ||
+              (activeFilter === 'read' && article.read === true) ||
+              (activeFilter === 'hidden' && article.hidden === true) ||
+              (activeFilter === 'rejected' && article.thumbs_down === true));
           if (!stateMatches) return false;
           if (!term) return true;
           return `${article.title} ${article.summary || ''} ${article.content || ''} ${article.feed_title || ''}`

@@ -122,17 +122,45 @@ function applyPendingIntent(
 function trimArticles(
   records: CachedArticle[],
   limits: ReturnType<typeof normalizeLimits>,
+  protectedSavedKeys: Set<string> = new Set(),
 ): CachedArticle[] {
-  const saved = records
+  const savedArticles = records
     .filter((article) => article.saved === true)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, limits.savedArticles);
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const protectedSaved = savedArticles.filter((article) =>
+    protectedSavedKeys.has(article.key),
+  );
+  const otherSaved = savedArticles
+    .filter((article) => !protectedSavedKeys.has(article.key))
+    .slice(0, Math.max(0, limits.savedArticles - protectedSaved.length));
+  const saved = [...protectedSaved, ...otherSaved];
   const savedKeys = new Set(saved.map((article) => article.key));
   const recent = records
     .filter((article) => !savedKeys.has(article.key))
     .sort(sortArticles)
     .slice(0, limits.articles);
   return [...saved, ...recent];
+}
+
+function getPendingSaveKeys(
+  scope: string,
+  mutations: OfflineMutation[],
+): Set<string> {
+  const latestByArticle = new Map<string, OfflineMutation>();
+  for (const mutation of mutations
+    .filter(
+      (candidate) =>
+        candidate.scope === scope &&
+        (candidate.type === 'save' || candidate.type === 'unsave'),
+    )
+    .sort((a, b) => a.sequence - b.sequence)) {
+    latestByArticle.set(mutation.articleId, mutation);
+  }
+  return new Set(
+    [...latestByArticle.values()]
+      .filter((mutation) => mutation.type === 'save')
+      .map((mutation) => scopedKey(scope, mutation.articleId)),
+  );
 }
 
 async function getScopedArticles(scope: string): Promise<CachedArticle[]> {
@@ -152,6 +180,7 @@ export async function cacheArticles(
     const scope = await activateOfflineUserInternal(userScope);
     const existing = await getScopedArticles(scope);
     const pending = await getAllRecords<OfflineMutation>('outbox');
+    const pendingSaveKeys = getPendingSaveKeys(scope, pending);
     const merged = new Map(existing.map((article) => [article.key, article]));
     for (const article of articles) {
       if (article.id) {
@@ -171,7 +200,11 @@ export async function cacheArticles(
         );
       }
     }
-    const kept = trimArticles([...merged.values()], normalizeLimits(limits));
+    const kept = trimArticles(
+      [...merged.values()],
+      normalizeLimits(limits),
+      pendingSaveKeys,
+    );
     const keptKeys = new Set(kept.map((article) => article.key));
     const deleteKeys = existing
       .filter((article) => !keptKeys.has(article.key))
@@ -189,10 +222,19 @@ export async function cacheSavedArticles(
     const scope = await activateOfflineUserInternal(userScope);
     const existing = await getScopedArticles(scope);
     const pending = await getAllRecords<OfflineMutation>('outbox');
+    const pendingSaveKeys = getPendingSaveKeys(scope, pending);
     const incomingIds = new Set(articles.map((article) => article.id));
-    const retained = existing.filter(
-      (article) => article.saved !== true || incomingIds.has(article.id),
-    );
+    const retained = existing
+      .map((article) => ({
+        ...article,
+        ...applyPendingIntent(scope, article, pending),
+      }))
+      .filter(
+        (article) =>
+          article.saved !== true ||
+          incomingIds.has(article.id) ||
+          pendingSaveKeys.has(article.key),
+      );
     const merged = new Map(retained.map((article) => [article.key, article]));
     const incoming = articles.map((article) => {
       const previous = merged.get(scopedKey(scope, article.id));
@@ -209,7 +251,11 @@ export async function cacheSavedArticles(
       return makeCachedArticle(scope, withLocalIntent);
     });
     for (const article of incoming) merged.set(article.key, article);
-    const kept = trimArticles([...merged.values()], normalizeLimits(limits));
+    const kept = trimArticles(
+      [...merged.values()],
+      normalizeLimits(limits),
+      pendingSaveKeys,
+    );
     const keptKeys = new Set(kept.map((article) => article.key));
     const deleteKeys = existing
       .filter((article) => !keptKeys.has(article.key))

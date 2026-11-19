@@ -21,6 +21,7 @@
     getCachedArticles,
     type OfflineArticle,
     installOfflineSync,
+    retryBlockedOfflineMutations,
   } from '$lib/offline';
 
   let sidebarOpen = $state(false);
@@ -78,6 +79,10 @@
     }
   }
 
+  function isOffline(): boolean {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
+  }
+
   async function refreshOfflineStatus(scope: string) {
     if (typeof window === 'undefined') return;
 
@@ -101,6 +106,37 @@
     } finally {
       syncing = false;
       void refreshOfflineStatus(String(data.userId || 'admin'));
+    }
+  }
+
+  async function retryOfflineActions() {
+    if (syncing || isOffline()) {
+      return;
+    }
+
+    const scope = String(data.userId || 'admin');
+    syncing = true;
+    offlineState = 'syncing';
+    try {
+      const result = await retryBlockedOfflineMutations(scope);
+      applyOfflineStatus(
+        result.remaining,
+        result.blocked > 0 || result.conflicts > 0,
+      );
+      if (result.synced > 0) {
+        addToast(
+          `${result.synced} offline action${result.synced === 1 ? '' : 's'} synced`,
+          'success',
+        );
+      }
+      if (result.blocked > 0 || result.conflicts > 0) {
+        addToast('An offline action still needs your attention', 'error');
+      }
+    } catch {
+      addToast('Could not retry offline actions.', 'error');
+    } finally {
+      syncing = false;
+      void refreshOfflineStatus(scope);
     }
   }
 
@@ -870,6 +906,16 @@
                 Up to date
               {/if}
             </span>
+            {#if offlineState === 'blocked'}
+              <button
+                class="ml-2 text-xs underline underline-offset-2"
+                type="button"
+                disabled={syncing || isOffline()}
+                onclick={retryOfflineActions}
+              >
+                Retry
+              </button>
+            {/if}
           </div>
         </nav>
       </div>
@@ -893,7 +939,15 @@
       role="status"
     >
       {#if offlineState === 'blocked'}
-        Sync needs attention
+        <span>Sync needs attention</span>
+        <button
+          class="ml-2 underline underline-offset-2"
+          type="button"
+          disabled={syncing || isOffline()}
+          onclick={retryOfflineActions}
+        >
+          Retry
+        </button>
       {:else if offlineState === 'syncing'}
         Syncing…
       {:else}
