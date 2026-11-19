@@ -15,7 +15,7 @@ const jevMocks = vi.hoisted(() => ({
   processJevArticle: vi.fn(async () => undefined),
 }));
 const aiMocks = vi.hoisted(() => ({
-  processArticle: vi.fn(async () => undefined),
+  processArticle: vi.fn(async (): Promise<void> => undefined),
 }));
 
 vi.mock('$lib/server/ai/jev', () => jevMocks);
