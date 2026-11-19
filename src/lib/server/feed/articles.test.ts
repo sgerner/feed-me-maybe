@@ -251,5 +251,27 @@ describe('feed article queries', () => {
     }>;
 
     expect(rows.map((row) => row.id)).toEqual(['a-1', 'b-1', 'a-2', 'a-3']);
+
+    for (let index = 0; index < 6; index += 1) {
+      const id = `read-a-${index}`;
+      insertArticle(id, 'feed-a', 100);
+      db.prepare('UPDATE articles SET read = 1 WHERE id = ?').run(id);
+    }
+    const mixed = queryGlobalArticleRanking(
+      db,
+      'a.hidden = 0',
+      [],
+      10,
+    ) as Array<{
+      id: string;
+      read: number;
+    }>;
+    expect(mixed).toHaveLength(10);
+    expect(mixed.filter((row) => row.read === 0).map((row) => row.id)).toEqual([
+      'a-1',
+      'b-1',
+      'a-2',
+      'a-3',
+    ]);
   });
 });

@@ -266,6 +266,13 @@ def profile_from_current_memory(
     return format_profile(grouped, source_counts(connection, as_of_ms, strict_before=False))
 
 
+def active_interaction_sql(alias: str, timestamp_ms: int) -> str:
+    metadata = f"{alias}.metadata" if alias else "metadata"
+    return f"""COALESCE(CAST(json_extract(
+        CASE WHEN json_valid({metadata}) THEN {metadata} ELSE '{{}}' END,
+        '$.undone_at') AS INTEGER) > {int(timestamp_ms)}, 1)"""
+
+
 def source_counts(
     connection: sqlite3.Connection, before_ms: int, *, strict_before: bool
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -275,6 +282,7 @@ def source_counts(
             FROM user_interactions ui JOIN articles a ON a.id = ui.article_id
             JOIN feeds f ON f.id = a.feed_id
             WHERE ui.interaction_type IN ('open', 'read') AND ui.timestamp {comparator} ?
+              AND {active_interaction_sql('ui', before_ms)}
             GROUP BY f.id ORDER BY interaction_count DESC, source ASC LIMIT 5""",
         (before_ms,),
     ).fetchall()
@@ -283,6 +291,7 @@ def source_counts(
             FROM user_interactions ui JOIN articles a ON a.id = ui.article_id
             JOIN feeds f ON f.id = a.feed_id
             WHERE ui.interaction_type IN ('thumbs_down', 'hide') AND ui.timestamp {comparator} ?
+              AND {active_interaction_sql('ui', before_ms)}
               AND (ui.interaction_type = 'thumbs_down' OR COALESCE(json_extract(
                    CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{{}}' END, '$.auto'), 0) = 0)
             GROUP BY f.id ORDER BY interaction_count DESC, source ASC LIMIT 5""",
@@ -347,6 +356,7 @@ def interaction_features(connection: sqlite3.Connection, tables: dict[str, set[s
               JOIN feeds f ON f.id = a.feed_id
               {ai_join}
               WHERE ui.timestamp < ?
+                AND {active_interaction_sql('ui', cutoff_ms)}
               ORDER BY ui.timestamp ASC, ui.rowid ASC"""
     params = (cutoff_ms, cutoff_ms) if ai_join else (cutoff_ms,)
     return connection.execute(sql, params).fetchall()
@@ -540,7 +550,11 @@ def candidate_select(
                  JOIN feeds f ON f.id = a.feed_id"""
     if cutoff_ms is None:
         # Current mode is a prospective pool; no earlier open/read/down label.
-        where = "a.fetched_at <= ? AND NOT EXISTS (SELECT 1 FROM user_interactions ui WHERE ui.article_id = a.id AND ui.interaction_type IN ('open','read','thumbs_down'))"
+        where = f"""a.fetched_at <= ? AND NOT EXISTS (
+            SELECT 1 FROM user_interactions ui
+            WHERE ui.article_id = a.id AND ui.interaction_type IN ('open','read','thumbs_down')
+              AND {active_interaction_sql('ui', as_of_ms)}
+        )"""
         extra = ""
         if "hidden" in tables["articles"]:
             extra += " AND COALESCE(a.hidden, 0) = 0"
@@ -561,7 +575,7 @@ def candidate_select(
     # Holdout candidates arrived after the frozen profile cutoff and were
     # labelled by a later open/down event no later than the snapshot.
     action_rows = connection.execute(
-        """SELECT a.id, a.feed_id, MIN(ui.timestamp) AS first_action_at,
+        f"""SELECT a.id, a.feed_id, MIN(ui.timestamp) AS first_action_at,
                   MAX(CASE WHEN ui.interaction_type = 'open' THEN 1 ELSE 0 END) AS has_open,
                   MAX(CASE WHEN ui.interaction_type = 'thumbs_down' THEN 1 ELSE 0 END) AS has_down,
                   SUM(CASE WHEN ui.interaction_type = 'open' THEN 1 ELSE 0 END) AS open_count,
@@ -570,10 +584,12 @@ def candidate_select(
                    WHERE ui2.article_id = a.id
                      AND ui2.interaction_type IN ('open', 'thumbs_down')
                      AND ui2.timestamp > ? AND ui2.timestamp <= ?
+                     AND {active_interaction_sql('ui2', as_of_ms)}
                    ORDER BY ui2.timestamp ASC, ui2.rowid ASC LIMIT 1) AS first_action_type
            FROM articles a JOIN user_interactions ui ON ui.article_id = a.id
            WHERE ui.interaction_type IN ('open', 'thumbs_down')
              AND ui.timestamp > ? AND ui.timestamp <= ?
+             AND {active_interaction_sql('ui', as_of_ms)}
              AND a.fetched_at > ? AND a.fetched_at <= ?
            GROUP BY a.id, a.feed_id
            ORDER BY first_action_at DESC, a.id ASC""",
@@ -614,6 +630,7 @@ def candidate_select(
                     WHERE ui2.article_id = a.id
                       AND ui2.interaction_type IN ('open', 'thumbs_down')
                       AND ui2.timestamp > ? AND ui2.timestamp <= ?
+                     AND {active_interaction_sql('ui2', as_of_ms)}
                     ORDER BY ui2.timestamp ASC, ui2.rowid ASC LIMIT 1) AS first_action_type,
                    {ai_select}
             FROM articles a JOIN feeds f ON f.id = a.feed_id
@@ -624,6 +641,7 @@ def candidate_select(
                      SUM(CASE WHEN interaction_type = 'open' THEN 1 ELSE 0 END) AS open_count,
                      SUM(CASE WHEN interaction_type = 'thumbs_down' THEN 1 ELSE 0 END) AS down_count
               FROM user_interactions WHERE interaction_type IN ('open', 'thumbs_down') AND timestamp > ? AND timestamp <= ?
+                AND {active_interaction_sql('', as_of_ms)}
               GROUP BY article_id
             ) ui ON ui.article_id = a.id
             {ai_join}

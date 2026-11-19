@@ -111,4 +111,199 @@ describe('interaction side effects', () => {
     expect(article.thumbs_down).toBe(0);
     expect(interaction.interaction_type).toBe('boost');
   });
+
+  it('learns from an article open only once even when the reader reloads it', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { recordInteraction } = await import('./interactions');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ).run('hide_on_open', 'false', now);
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'feed-duplicate-open',
+      'https://example.com/duplicate.xml',
+      'Duplicate Open Feed',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'article-duplicate-open',
+      'feed-duplicate-open',
+      'https://example.com/duplicate-open',
+      'Repeated open article',
+      'Repeated Open Author',
+      now,
+      now,
+      now,
+    );
+
+    recordInteraction('article-duplicate-open', 'open');
+    recordInteraction('article-duplicate-open', 'unread');
+    const scoreAfterUnread = (
+      db
+        .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+        .get('article-duplicate-open') as { heuristic_score: number }
+    ).heuristic_score;
+    recordInteraction('article-duplicate-open', 'open');
+
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM user_interactions WHERE article_id = ? AND interaction_type = 'open'",
+        )
+        .get('article-duplicate-open'),
+    ).toEqual({ count: 1 });
+    expect(
+      db
+        .prepare(
+          "SELECT evidence_count FROM user_preference_memory WHERE label = 'author:repeated_open_author' AND polarity = 'positive'",
+        )
+        .get(),
+    ).toEqual({ evidence_count: 1 });
+    const article = db
+      .prepare('SELECT read, heuristic_score FROM articles WHERE id = ?')
+      .get('article-duplicate-open') as {
+      read: number;
+      heuristic_score: number;
+    };
+    expect(article.read).toBe(1);
+    expect(article.heuristic_score).toBeGreaterThan(scoreAfterUnread);
+  });
+
+  it('records hide-on-open as automatic state, not repeated negative interaction', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { recordInteraction } = await import('./interactions');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ).run('hide_on_open', 'true', now);
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'feed-auto-hide',
+      'https://example.com/auto-hide.xml',
+      'Auto Hide Feed',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'article-auto-hide',
+      'feed-auto-hide',
+      'https://example.com/auto-hide',
+      'Automatically hidden article',
+      now,
+      now,
+      now,
+    );
+
+    recordInteraction('article-auto-hide', 'open');
+    recordInteraction('article-auto-hide', 'open');
+
+    expect(
+      db
+        .prepare('SELECT hidden FROM articles WHERE id = ?')
+        .get('article-auto-hide'),
+    ).toEqual({ hidden: 1 });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM user_interactions WHERE article_id = ? AND interaction_type = 'hide' AND json_extract(metadata, '$.auto') = 1",
+        )
+        .get('article-auto-hide'),
+    ).toEqual({ count: 1 });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM user_preference_memory WHERE label LIKE 'author:%' AND polarity = 'negative'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it('records an unchanged like or dislike only once', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { recordInteraction } = await import('./interactions');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'feed-repeated-reaction',
+      'https://example.com/reactions.xml',
+      'Reactions',
+      now,
+      now,
+    );
+    const insertArticle = db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    insertArticle.run(
+      'article-repeated-like',
+      'feed-repeated-reaction',
+      'https://example.com/repeated-like',
+      'Repeated like',
+      'Like Author',
+      now,
+      now,
+      now,
+    );
+    insertArticle.run(
+      'article-repeated-dislike',
+      'feed-repeated-reaction',
+      'https://example.com/repeated-dislike',
+      'Repeated dislike',
+      'Dislike Author',
+      now,
+      now,
+      now,
+    );
+
+    recordInteraction('article-repeated-like', 'thumbs_up');
+    recordInteraction('article-repeated-like', 'thumbs_up');
+    recordInteraction('article-repeated-dislike', 'thumbs_down');
+    recordInteraction('article-repeated-dislike', 'thumbs_down');
+
+    expect(
+      db
+        .prepare(
+          "SELECT article_id, interaction_type, COUNT(*) AS count FROM user_interactions WHERE article_id IN ('article-repeated-like', 'article-repeated-dislike') GROUP BY article_id, interaction_type ORDER BY article_id",
+        )
+        .all(),
+    ).toEqual([
+      {
+        article_id: 'article-repeated-dislike',
+        interaction_type: 'thumbs_down',
+        count: 1,
+      },
+      {
+        article_id: 'article-repeated-like',
+        interaction_type: 'thumbs_up',
+        count: 1,
+      },
+    ]);
+    expect(
+      db
+        .prepare(
+          "SELECT label, polarity, evidence_count FROM user_preference_memory WHERE label IN ('author:like_author', 'author:dislike_author') ORDER BY label",
+        )
+        .all(),
+    ).toEqual([
+      {
+        label: 'author:dislike_author',
+        polarity: 'negative',
+        evidence_count: 1,
+      },
+      { label: 'author:like_author', polarity: 'positive', evidence_count: 1 },
+    ]);
+  });
 });

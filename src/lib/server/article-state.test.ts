@@ -18,6 +18,10 @@ describe('article state foundation', () => {
     const { getDb } = await import('$lib/server/db');
     const db = getDb();
     db.prepare('DELETE FROM article_state_history').run();
+    db.prepare('DELETE FROM user_interactions').run();
+    db.prepare('DELETE FROM user_preference_memory').run();
+    db.prepare('DELETE FROM ranking_refresh_queue').run();
+    db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM articles').run();
     db.prepare('DELETE FROM feeds').run();
     const now = Date.now();
@@ -147,6 +151,102 @@ describe('article state foundation', () => {
     expect(undone.restoredArticleIds).toEqual([]);
     expect(undone.conflicts).toEqual(['state-a']);
     expect(getArticleState('state-a')?.read).toBe(false);
+  });
+
+  it('retracts rejection preference deltas and tags the exact interaction on undo', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { applyArticleState, undoArticleState, getArticleState } =
+      await import('./article-state');
+    const db = getDb();
+    const mutation = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'reject',
+      idempotencyKey: 'reject-undo-v1',
+    });
+    expect(
+      (
+        db
+          .prepare('SELECT COUNT(*) AS count FROM user_preference_memory')
+          .get() as { count: number }
+      ).count,
+    ).toBeGreaterThan(0);
+
+    const undone = undoArticleState({ operationId: mutation.operationId });
+    const feedback = db
+      .prepare(
+        `SELECT interaction_type, metadata FROM user_interactions
+         WHERE article_id = 'state-a' AND interaction_type = 'thumbs_down'`,
+      )
+      .get() as { interaction_type: string; metadata: string };
+    const metadata = JSON.parse(feedback.metadata) as Record<string, unknown>;
+
+    expect(undone.restoredArticleIds).toEqual(['state-a']);
+    expect(getArticleState('state-a')).toMatchObject({
+      thumbsDown: false,
+      rejected: false,
+      hidden: false,
+    });
+    expect(metadata).toMatchObject({
+      operation_id: mutation.operationId,
+    });
+    expect(metadata.undone_at).toEqual(expect.any(Number));
+    expect(typeof metadata.undo_operation_id).toBe('string');
+    expect(metadata.undo_operation_id).not.toBe(mutation.operationId);
+    expect(
+      db.prepare('SELECT COUNT(*) AS count FROM user_preference_memory').get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it('retracts an active rejection when an article is explicitly restored', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { applyArticleState, getArticleState } =
+      await import('./article-state');
+    const db = getDb();
+    const rejection = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'reject',
+      idempotencyKey: 'reject-restore-v1',
+    });
+
+    const restore = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'restore',
+      idempotencyKey: 'restore-reject-v1',
+    });
+    const feedback = db
+      .prepare(
+        `SELECT metadata FROM user_interactions
+         WHERE article_id = 'state-a' AND interaction_type = 'thumbs_down'`,
+      )
+      .get() as { metadata: string };
+    const restoredEvent = db
+      .prepare(
+        `SELECT metadata FROM user_interactions
+         WHERE article_id = 'state-a' AND interaction_type = 'restore'`,
+      )
+      .get() as { metadata: string };
+    const feedbackMetadata = JSON.parse(feedback.metadata) as Record<
+      string,
+      unknown
+    >;
+    const restoredMetadata = JSON.parse(restoredEvent.metadata) as Record<
+      string,
+      unknown
+    >;
+
+    expect(restore.operationId).not.toBe(rejection.operationId);
+    expect(getArticleState('state-a')).toMatchObject({
+      thumbsDown: false,
+      rejected: false,
+      hidden: false,
+    });
+    expect(feedbackMetadata.undone_at).toEqual(expect.any(Number));
+    expect(restoredMetadata.undo_of_operation_ids).toEqual([
+      rejection.operationId,
+    ]);
+    expect(
+      db.prepare('SELECT COUNT(*) AS count FROM user_preference_memory').get(),
+    ).toEqual({ count: 0 });
   });
 
   it('reports unread counts by feed and state', async () => {

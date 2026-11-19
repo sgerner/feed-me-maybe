@@ -218,6 +218,31 @@ class TemporalExportTests(unittest.TestCase):
         self.assertEqual(profile["preferred_sources"], [{"source": "Example Wire", "interactions": 3}])
         self.assertEqual(profile["avoided_sources"], [])
 
+    def test_undo_is_applied_as_of_the_profile_or_label_snapshot(self) -> None:
+        vote_at = self.cutoff + 220_000
+        undone_at = vote_at + 60_000
+        self._article("undone-down", self.cutoff + 70_000, "Undo candidate")
+        self._interaction("undone-down", "thumbs_down", vote_at)
+        self.connection.execute(
+            "UPDATE user_interactions SET metadata = ? WHERE article_id = 'undone-down'",
+            (json.dumps({"operation_id": "vote", "undone_at": undone_at}),),
+        )
+        self.connection.commit()
+
+        after = {row["id"]: row for row in self._export()["rows"]}
+        self.assertNotIn("undone-down", after)
+        before = exporter.export_cohort(
+            Namespace(
+                input=str(self.db_path),
+                profile="temporal",
+                cutoff=exporter.iso_timestamp(self.cutoff),
+                as_of=exporter.iso_timestamp(vote_at + 1),
+                max_per_label=40,
+                current_limit=80,
+            )
+        )
+        self.assertEqual(next(row["label"] for row in before["rows"] if row["id"] == "undone-down"), 0)
+
     def test_export_does_not_modify_database(self) -> None:
         before = self.db_path.read_bytes()
         self._export()

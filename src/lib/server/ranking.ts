@@ -40,7 +40,8 @@ const ARTICLE_COLUMNS = `
 /**
  * Keep the window query narrow. Article display fields are joined only after
  * the page IDs have been ranked and selected, reducing the temporary rows
- * SQLite sorts while preserving the existing ranking order.
+ * SQLite sorts while preserving the existing ranking order. Read and
+ * unread articles get separate diversity ranks within each feed.
  */
 function buildGlobalArticleRankingQuery(whereClause: string): string {
   const score = rankingScoreExpression('a');
@@ -49,7 +50,7 @@ function buildGlobalArticleRankingQuery(whereClause: string): string {
       SELECT a.id, a.feed_id, a.published_at, a.fetched_at,
              ${score} AS rank_score,
              ROW_NUMBER() OVER (
-               PARTITION BY a.feed_id
+               PARTITION BY a.feed_id, a.read
                ORDER BY ${score} DESC,
                         COALESCE(a.published_at, a.fetched_at) DESC,
                         a.id DESC
