@@ -32,8 +32,11 @@
   } = $props();
   let articles = $state<Article[]>([]);
 
+  // Count refreshes can replace page data while reusing the loaded articles.
+  const loadedArticles = $derived(data.articles);
+
   $effect(() => {
-    articles = data.articles;
+    articles = loadedArticles;
   });
 
   onMount(() => {
