@@ -6,8 +6,14 @@
   let { data } = $props<{ data: { articles: OfflineArticle[] } }>();
   let articles = $state<OfflineArticle[]>([]);
 
+  // Count refreshes can replace page data while reusing the loaded articles.
+  const loadedArticles = $derived(data.articles);
+
   $effect(() => {
-    articles = data.articles;
+    articles = loadedArticles;
+  });
+
+  $effect(() => {
     if (page.data.sessionId && navigator.onLine !== false) {
       void cacheSavedArticles(
         String(page.data.userId || 'admin'),

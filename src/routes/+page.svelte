@@ -18,8 +18,11 @@
   let articles = $state<Article[]>([]);
   let syncing = $state(false);
 
+  // Count refreshes can replace page data while reusing the loaded articles.
+  const loadedArticles = $derived(pageData.articles);
+
   $effect(() => {
-    articles = pageData.articles;
+    articles = loadedArticles;
   });
 
   async function handleSync() {

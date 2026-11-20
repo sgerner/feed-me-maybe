@@ -102,8 +102,14 @@
     }
   }
 
+  // Count refreshes can replace page data while reusing the loaded articles.
+  const loadedArticles = $derived(pageData.articles);
+
   $effect(() => {
-    articles = pageData.articles;
+    articles = loadedArticles;
+  });
+
+  $effect(() => {
     feed = pageData.feed;
     title = String(pageData.feed.title ?? '');
     feedUrl = pageData.feed.url ?? '';
