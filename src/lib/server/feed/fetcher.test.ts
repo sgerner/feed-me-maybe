@@ -77,6 +77,34 @@ describe('Feed Fetcher', () => {
     });
   });
 
+  it('discovers a JSON Feed from a headless HTML5 document', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            '<!doctype html><link REL="alternate" TYPE="application/json" HREF="feed.json">',
+            { headers: { 'content-type': 'text/html' } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            version: 'https://jsonfeed.org/version/1.1',
+            title: 'Discovered feed',
+            items: [],
+          }),
+        ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    expect(
+      await fetchFeed('https://example.com/blog/', { discover: true }),
+    ).toMatchObject({
+      success: true,
+      subscriptionUrl: 'https://example.com/blog/feed.json',
+    });
+  });
+
   it('proxies requests through a configured worker', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

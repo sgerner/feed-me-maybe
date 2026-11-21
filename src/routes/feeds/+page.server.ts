@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '$lib/server/db';
+import { getAllFeedHealth } from '$lib/server/feed-management';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) throw error(401, 'Unauthorized');
@@ -41,5 +42,14 @@ export const load: PageServerLoad = async ({ locals }) => {
     article_count: number;
   }>;
 
-  return { feeds };
+  const healthStatusByFeed = Object.fromEntries(
+    getAllFeedHealth().map((health) => [health.feedId, health.status]),
+  );
+
+  return {
+    feeds: feeds.map((feed) => ({
+      ...feed,
+      health_status: healthStatusByFeed[feed.id] ?? 'never',
+    })),
+  };
 };

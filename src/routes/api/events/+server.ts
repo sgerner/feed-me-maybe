@@ -14,7 +14,7 @@ export const GET: RequestHandler = ({ locals }) => {
       // Send initial comment to establish connection
       controller.enqueue(new TextEncoder().encode(': connected\n\n'));
 
-      const unregister = registerClient(clientId, controller);
+      const unregister = registerClient(clientId, controller, () => cleanup());
 
       // Keep connection alive with heartbeats every 30 seconds
       const heartbeatInterval = setInterval(() => {

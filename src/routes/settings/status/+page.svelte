@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invalidateAll } from '$app/navigation';
   import { fly } from 'svelte/transition';
   import { syncFeed } from '$lib/feeds';
   type RecentJob = {
@@ -55,7 +56,8 @@
     if (refreshing) return;
     refreshing = id;
     try {
-      await syncFeed(id);
+      const result = await syncFeed(id);
+      if (result) await invalidateAll();
     } finally {
       refreshing = null;
     }

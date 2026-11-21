@@ -155,6 +155,34 @@ describe('feed job queue', () => {
     expect(await result).toMatchObject({ processed: 4, completed: 4 });
   });
 
+  it('claims the requested feed job ahead of older unrelated work', async () => {
+    const { enqueueFeedFetch, getJob, runDueJobs } =
+      await import('./job-queue');
+    const ingester = await import('./ingester');
+    const ingest = vi.spyOn(ingester, 'ingestFeed').mockResolvedValue({
+      success: true,
+      articlesFound: 0,
+      articlesNew: 0,
+    });
+    try {
+      enqueueFeedFetch('older-unrelated', { now: 10_000 });
+      const requested = enqueueFeedFetch('requested-feed', { now: 20_000 });
+
+      await runDueJobs({ now: 30_000, maxJobs: 1, jobId: requested.id });
+
+      expect(ingest).toHaveBeenCalledTimes(1);
+      expect(ingest).toHaveBeenCalledWith(
+        expect.objectContaining({ feedId: 'requested-feed' }),
+      );
+      expect(getJob(requested.id)?.status).toBe('completed');
+      expect(getJob(enqueueFeedFetch('older-unrelated').id)?.status).toBe(
+        'queued',
+      );
+    } finally {
+      ingest.mockRestore();
+    }
+  });
+
   it('starts a refresh while an active one-job batch is waiting on scoring', async () => {
     const { enqueueAiProcess, enqueueFeedFetch, runDueJobs } =
       await import('./job-queue');
