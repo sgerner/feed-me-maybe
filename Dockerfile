@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM node:24-slim AS builder
+FROM node:26-slim AS builder
 WORKDIR /app
 
 # Install build dependencies for better-sqlite3 native module
@@ -17,7 +17,7 @@ RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM node:24-slim AS runner
+FROM node:26-slim AS runner
 WORKDIR /app
 
 # Copy production dependencies and build output from the builder stage.
