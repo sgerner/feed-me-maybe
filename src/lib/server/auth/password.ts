@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
-import { env } from '$env/dynamic/private';
+import { APP_PASSWORD } from '$app/env/private';
 
-const appAuthSecret = process.env.APP_PASSWORD || env.APP_PASSWORD;
+const appAuthSecret = process.env.APP_PASSWORD || APP_PASSWORD;
 
 export function verifyPassword(input: string): boolean {
   if (!appAuthSecret) {
@@ -25,5 +25,5 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 export function isPasswordSet(): boolean {
-  return !!(process.env.APP_PASSWORD || env.APP_PASSWORD);
+  return !!(process.env.APP_PASSWORD || APP_PASSWORD);
 }
