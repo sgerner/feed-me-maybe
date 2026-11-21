@@ -35,6 +35,14 @@
   let liveUnreadArticleIds = $state<string[]>([]);
   let unreadCount = $derived(data.totalArticles + liveUnreadArticleIds.length);
   let unreadSnapshotAt = $state(0);
+  const loadMoreSearchParams = $derived.by(() => {
+    const params: Record<string, string> = {
+      unread: '1',
+      snapshotAt: String(data.snapshotAt),
+    };
+    if (data.category) params.category = data.category;
+    return params;
+  });
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(data.articles);
@@ -109,13 +117,7 @@
       liveUpdates
       onLiveArticlesAdded={addLiveUnreadArticles}
       onLiveArticleVisibilityChanged={updateLiveUnreadVisibility}
-      loadMoreSearchParams={data.category
-        ? {
-            unread: '1',
-            category: data.category,
-            snapshotAt: String(data.snapshotAt),
-          }
-        : { unread: '1', snapshotAt: String(data.snapshotAt) }}
+      {loadMoreSearchParams}
       emptyTitle="No unread stories"
       emptyMessage="You are all caught up."
       emptyCtaHref="/"

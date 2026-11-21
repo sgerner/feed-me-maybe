@@ -22,6 +22,13 @@
 
   let articles = $state<Article[]>([]);
   let syncing = $state(false);
+  const loadMoreSearchParams = $derived.by(() => {
+    const params: Record<string, string> = {
+      snapshotAt: String(pageData.snapshotAt),
+    };
+    if (pageData.category) params.category = pageData.category;
+    return params;
+  });
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(pageData.articles);
@@ -57,10 +64,7 @@
       initialHasMore={pageData.initialHasMore}
       initialPage={pageData.page}
       liveUpdates
-      loadMoreSearchParams={{
-        ...(pageData.category ? { category: pageData.category } : {}),
-        snapshotAt: String(pageData.snapshotAt),
-      }}
+      {loadMoreSearchParams}
     />
   {/key}
 </PullToRefresh>
