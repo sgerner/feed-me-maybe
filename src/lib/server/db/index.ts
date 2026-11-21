@@ -1,14 +1,14 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { env } from '$env/dynamic/private';
+import { DATABASE_URL } from '$app/env/private';
 
 let db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (db) return db;
   const dbPath =
-    process.env.DATABASE_URL || env.DATABASE_URL || './data/feed-me-maybe.db';
+    process.env.DATABASE_URL || DATABASE_URL || './data/feed-me-maybe.db';
   const dbDir = path.dirname(dbPath);
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });

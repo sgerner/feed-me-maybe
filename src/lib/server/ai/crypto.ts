@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
-import { env } from '$env/dynamic/private';
+import { APP_SECRET } from '$app/env/private';
 
 function getAppSecret(): string {
-  const secret = process.env.APP_SECRET || env.APP_SECRET;
+  const secret = process.env.APP_SECRET || APP_SECRET;
   if (!secret || secret.length < 32) {
     throw new Error(
       'APP_SECRET must be set to a random value of at least 32 characters before storing encrypted credentials.',

@@ -267,6 +267,7 @@ feed-me-maybe/
 │   ├── app.css              # Tailwind + Skeleton imports
 │   ├── app.html             # HTML shell
 │   ├── app.d.ts             # TypeScript type declarations
+│   ├── env.ts               # Environment variables the server reads
 │   └── hooks.server.ts      # Server hooks (auth guard, DB init, poller)
 ├── static/                  # Static assets (favicon, PWA icons)
 ├── data/                    # SQLite database (created on first run)

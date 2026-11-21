@@ -1,11 +1,12 @@
-import { env } from '$env/dynamic/private';
+import { PROXY_BASE_URL, REDDIT_BASE_URL } from '$app/env/private';
 import { buildProxyRequestUrl } from '#lib/proxy.ts';
 
 const PROXY_ENV_KEYS = ['PROXY_BASE_URL', 'REDDIT_BASE_URL'] as const;
+const CONFIGURED = { PROXY_BASE_URL, REDDIT_BASE_URL };
 
 export function getConfiguredProxyBaseUrl(): string | undefined {
   for (const key of PROXY_ENV_KEYS) {
-    const value = env[key] || process.env[key];
+    const value = CONFIGURED[key] || process.env[key];
     if (!value) continue;
     try {
       const parsed = new URL(value);
