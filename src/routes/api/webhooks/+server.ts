@@ -4,6 +4,7 @@ import {
   createWebhook,
   updateWebhook,
   deleteWebhook,
+  isWebhookEventList,
 } from '$lib/server/webhooks';
 import { SafeFetchError } from '$lib/server/network';
 
@@ -18,7 +19,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     ? 'name'
     : !url
       ? 'url'
-      : !Array.isArray(events) || events.length === 0
+      : !isWebhookEventList(events)
         ? 'events'
         : null;
 
@@ -51,6 +52,18 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
   const { id, ...updates } = body;
 
   if (!id) return json({ error: 'id is required' }, { status: 400 });
+  if (updates.events !== undefined && !isWebhookEventList(updates.events)) {
+    return json(
+      { error: 'Select at least one supported event', field: 'events' },
+      { status: 400 },
+    );
+  }
+  if (updates.secret !== undefined && typeof updates.secret !== 'string') {
+    return json(
+      { error: 'Signing secret must be text', field: 'secret' },
+      { status: 400 },
+    );
+  }
 
   try {
     updateWebhook(id, updates);

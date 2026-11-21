@@ -31,9 +31,32 @@ function revealSecret(stored: string | null | undefined): string {
   );
 }
 
+const WEBHOOK_EVENTS = [
+  'article.saved',
+  'article.read',
+  'article.thumbs_up',
+  'article.ingested',
+] as const;
+
+export function isWebhookEventList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((event) => WEBHOOK_EVENTS.some((allowed) => allowed === event))
+  );
+}
+
+export function parseWebhookEvents(value: string): string[] {
+  try {
+    const events: unknown = JSON.parse(value);
+    return isWebhookEventList(events) ? events : [];
+  } catch {
+    return [];
+  }
+}
+
 export type WebhookEvent = {
-  type:
-    'article.saved' | 'article.read' | 'article.thumbs_up' | 'article.ingested';
+  type: (typeof WEBHOOK_EVENTS)[number];
   timestamp: number;
   payload: any;
 };
@@ -45,13 +68,7 @@ export async function dispatchWebhookEvent(event: WebhookEvent) {
     .all() as any[];
 
   for (const hook of hooks) {
-    let events: unknown;
-    try {
-      events = JSON.parse(hook.events);
-    } catch {
-      events = [];
-    }
-    if (Array.isArray(events) && events.includes(event.type)) {
+    if (parseWebhookEvents(hook.events).includes(event.type)) {
       sendWebhook(hook, event).catch((err) => {
         const target = logSafeWebhookTarget(hook.url);
         console.error(`[webhook] Failed to send to ${target}:`, err);
@@ -166,7 +183,7 @@ export function updateWebhook(
     sets.push('events = ?');
     params.push(JSON.stringify(updates.events));
   }
-  if (updates.secret !== undefined) {
+  if (updates.secret) {
     sets.push('secret = ?');
     params.push(protectSecret(updates.secret));
   }
