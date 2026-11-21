@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   ArticleStateError,
@@ -7,7 +6,7 @@ import {
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const body: unknown = await request.json();
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -21,12 +20,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       (idempotencyKey !== undefined && typeof idempotencyKey !== 'string') ||
       (typeof operationId !== 'string' && typeof idempotencyKey !== 'string')
     ) {
-      return json(
+      return Response.json(
         { error: 'operationId or idempotencyKey is required' },
         { status: 400 },
       );
     }
-    return json(
+    return Response.json(
       undoArticleState({
         operationId: operationId as string | undefined,
         idempotencyKey: idempotencyKey as string | undefined,
@@ -34,7 +33,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Undo failed';
-    return json(
+    return Response.json(
       { error: message },
       {
         status:

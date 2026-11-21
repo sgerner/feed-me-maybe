@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { fetchFeed } from '#lib/server/feed/fetcher.ts';
@@ -20,7 +19,7 @@ import crypto from 'node:crypto';
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const db = getDb();
@@ -30,7 +29,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     )
     .all();
 
-  return json({
+  return Response.json({
     feeds: (rows as Array<{ id: string }>).map((feed) => ({
       ...feed,
       health: getFeedHealth(feed.id),
@@ -40,7 +39,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let body: Record<string, unknown>;
@@ -49,7 +48,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new Error('Invalid body');
   } catch {
-    return json({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
   const requestedUrl = body.url;
@@ -60,7 +59,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   let title = requestedTitle;
 
   if (!requestedUrl || typeof requestedUrl !== 'string') {
-    return json(
+    return Response.json(
       { error: 'Feed URL is required', field: 'url' },
       { status: 400 },
     );
@@ -72,7 +71,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   try {
     url = normalizeFeedUrl(validatePublicUrl(requestedUrl).href);
   } catch {
-    return json(
+    return Response.json(
       { error: 'Only public http/https feed URLs are supported', field: 'url' },
       { status: 400 },
     );
@@ -113,7 +112,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         path: '/api/feeds',
         method: 'POST',
       });
-      return json(
+      return Response.json(
         {
           error:
             validation.error ||
@@ -143,7 +142,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   } else {
     const existing = db.prepare('SELECT id FROM feeds WHERE url = ?').get(url);
     if (existing)
-      return json(
+      return Response.json(
         { error: 'Feed URL already exists', field: 'url' },
         { status: 409 },
       );
@@ -161,7 +160,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       }
     }
     if (!result.success || !result.subscriptionUrl) {
-      return json(
+      return Response.json(
         {
           error: result.error || 'This URL did not return a readable feed',
           field: 'url',
@@ -194,15 +193,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     if (msg.includes('UNIQUE constraint')) {
-      return json(
+      return Response.json(
         { error: 'Feed URL already exists', field: 'url' },
         { status: 409 },
       );
     }
-    return json({ error: 'Failed to create feed' }, { status: 500 });
+    return Response.json({ error: 'Failed to create feed' }, { status: 500 });
   }
 
   wakePoller();
   const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(id);
-  return json({ feed }, { status: 201 });
+  return Response.json({ feed }, { status: 201 });
 };

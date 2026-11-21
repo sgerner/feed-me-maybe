@@ -1,11 +1,10 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getArticleStateCounts } from '#lib/server/article-state.ts';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
-  return json({
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  return Response.json({
     counts: getArticleStateCounts(url.searchParams.get('feedId') || undefined),
   });
 };

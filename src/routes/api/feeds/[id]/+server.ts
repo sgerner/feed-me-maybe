@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { isArticleOpenMode } from '#lib/constants/article-open-modes.ts';
@@ -18,22 +17,22 @@ import { wakePoller } from '#lib/server/poller.ts';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const db = getDb();
   const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(params.id);
 
   if (!feed) {
-    return json({ error: 'Feed not found' }, { status: 404 });
+    return Response.json({ error: 'Feed not found' }, { status: 404 });
   }
 
-  return json({ feed, health: getFeedHealth(params.id) });
+  return Response.json({ feed, health: getFeedHealth(params.id) });
 };
 
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const db = getDb();
@@ -50,7 +49,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       }
     | undefined;
   if (!existing) {
-    return json({ error: 'Feed not found' }, { status: 404 });
+    return Response.json({ error: 'Feed not found' }, { status: 404 });
   }
 
   let body: Record<string, unknown>;
@@ -59,7 +58,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new Error('Invalid body');
   } catch {
-    return json({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
   // Build update SET clause dynamically
@@ -79,20 +78,29 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
         (field === 'title' || field === 'category') &&
         typeof body[field] !== 'string'
       ) {
-        return json({ error: `${field} must be text` }, { status: 400 });
+        return Response.json(
+          { error: `${field} must be text` },
+          { status: 400 },
+        );
       }
       if (field === 'enabled' && typeof body[field] !== 'boolean') {
-        return json({ error: 'enabled must be a boolean' }, { status: 400 });
+        return Response.json(
+          { error: 'enabled must be a boolean' },
+          { status: 400 },
+        );
       }
       if (field === 'use_proxy' && typeof body[field] !== 'boolean') {
-        return json({ error: 'use_proxy must be a boolean' }, { status: 400 });
+        return Response.json(
+          { error: 'use_proxy must be a boolean' },
+          { status: 400 },
+        );
       }
       if (
         field === 'open_mode' &&
         body[field] !== null &&
         !isArticleOpenMode(body[field])
       ) {
-        return json({ error: 'Invalid open mode' }, { status: 400 });
+        return Response.json({ error: 'Invalid open mode' }, { status: 400 });
       }
       updates.push(`${field === 'open_mode' ? 'open_mode' : field} = ?`);
       let val: string | number | boolean | null = body[field] as any;
@@ -116,7 +124,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       if (typeof body.url !== 'string') throw new Error('Invalid URL');
       url = normalizeFeedUrl(validatePublicUrl(body.url.trim()).href);
     } catch {
-      return json(
+      return Response.json(
         { error: 'Enter a public HTTP or HTTPS feed URL' },
         { status: 400 },
       );
@@ -125,7 +133,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       const isReddit = isRedditUrl(url);
       if (existing.source_type === 'reddit' || isReddit) {
         if (existing.source_type !== 'reddit' || !isReddit) {
-          return json(
+          return Response.json(
             { error: 'The new URL must use the same source type' },
             { status: 422 },
           );
@@ -150,7 +158,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
               : undefined,
         });
         if (!result.success || !result.subscriptionUrl) {
-          return json(
+          return Response.json(
             {
               error: result.error || 'This URL did not return a readable feed',
             },
@@ -177,7 +185,10 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   if (updates.length === 0) {
-    return json({ error: 'No valid fields to update' }, { status: 400 });
+    return Response.json(
+      { error: 'No valid fields to update' },
+      { status: 400 },
+    );
   }
 
   updates.push('updated_at = ?');
@@ -205,34 +216,34 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       })
       .immediate();
     if (!changed)
-      return json(
+      return Response.json(
         { error: 'This feed changed. Reload and try again.' },
         { status: 409 },
       );
   } catch (error) {
     if (error instanceof Error && error.message.includes('UNIQUE constraint')) {
-      return json(
+      return Response.json(
         { error: 'This feed URL is already subscribed' },
         { status: 409 },
       );
     }
-    return json({ error: 'Failed to update feed' }, { status: 500 });
+    return Response.json({ error: 'Failed to update feed' }, { status: 500 });
   }
 
   if (urlChanged) wakePoller();
   const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(params.id);
-  return json({ feed, health: getFeedHealth(params.id) });
+  return Response.json({ feed, health: getFeedHealth(params.id) });
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const db = getDb();
   const result = db.prepare('DELETE FROM feeds WHERE id = ?').run(params.id);
   if (result.changes === 0) {
-    return json({ error: 'Feed not found' }, { status: 404 });
+    return Response.json({ error: 'Feed not found' }, { status: 404 });
   }
-  return json({ success: true });
+  return Response.json({ success: true });
 };

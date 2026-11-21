@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   searchArticles,
@@ -16,7 +15,7 @@ function parseLimit(value: string | null): number | undefined {
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
   try {
     const sortValue = url.searchParams.get('sort');
@@ -31,12 +30,12 @@ export const GET: RequestHandler = async ({ locals, url }) => {
       cursor: url.searchParams.get('cursor') || undefined,
       sort,
     });
-    return json(result);
+    return Response.json(result);
   } catch (error: unknown) {
     if (error instanceof SearchQueryError) {
-      return json({ error: error.message }, { status: 400 });
+      return Response.json({ error: error.message }, { status: 400 });
     }
     console.error('[api/search] failed', error);
-    return json({ error: 'Search failed' }, { status: 500 });
+    return Response.json({ error: 'Search failed' }, { status: 500 });
   }
 };

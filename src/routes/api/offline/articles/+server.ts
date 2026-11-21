@@ -1,4 +1,4 @@
-import { error, json } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { OfflineArticle } from '#lib/offline/types.ts';
 import { getDb } from '#lib/server/db/index.ts';
@@ -43,7 +43,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     )
     .all(MAX_BODY_CHARS, UNREAD_ARTICLE_LIMIT) as OfflineArticle[];
 
-  return json(
+  return Response.json(
     { articles, savedArticles },
     {
       headers: {

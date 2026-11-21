@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { encrypt } from '#lib/server/ai/crypto.ts';
 import crypto from 'node:crypto';
@@ -28,17 +27,17 @@ function isValidCustomModelId(value: string): boolean {
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
   let body: Record<string, unknown>;
   try {
     const parsed: unknown = await request.json();
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return json({ error: 'Invalid body' }, { status: 400 });
+      return Response.json({ error: 'Invalid body' }, { status: 400 });
     }
     body = parsed as Record<string, unknown>;
   } catch {
-    return json({ error: 'Invalid body' }, { status: 400 });
+    return Response.json({ error: 'Invalid body' }, { status: 400 });
   }
 
   if (body.retryFailed === true && Object.keys(body).length === 1) {
@@ -47,7 +46,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
       .get() as { value: string } | undefined;
     if (enabled?.value === 'false') {
-      return json(
+      return Response.json(
         { error: 'Enable background AI processing before retrying.' },
         { status: 409 },
       );
@@ -76,7 +75,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         activeConfig.api_key_nonce,
       )
     ) {
-      return json(
+      return Response.json(
         { error: 'Configure an AI provider before retrying.' },
         { status: 409 },
       );
@@ -94,7 +93,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         provider.models.some((model) => model.id === activeConfig.model_id)),
     );
     if (!currentModelAvailable) {
-      return json(
+      return Response.json(
         {
           error:
             'Choose a supported model or add a custom base URL before retrying.',
@@ -137,7 +136,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ).run(article.article_id);
       queued += 1;
     }
-    return json({ success: true, queued, limit: 25 });
+    return Response.json({ success: true, queued, limit: 25 });
   }
 
   const { providerId, modelId, config, customBaseUrl, enabled, clear } =
@@ -167,7 +166,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       enqueueAiBackfill({ now, limit: 25 });
       wakePoller();
     }
-    return json({ success: true, aiEnabled: enabled });
+    return Response.json({ success: true, aiEnabled: enabled });
   }
 
   if (
@@ -184,15 +183,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         "DELETE FROM app_settings WHERE key = 'provider_cooldown_ai_process'",
       ).run();
     })();
-    return json({ success: true, cleared: true });
+    return Response.json({ success: true, cleared: true });
   }
 
   if (typeof providerId !== 'string' || typeof modelId !== 'string')
-    return json({ error: 'providerId and modelId required' }, { status: 400 });
+    return Response.json(
+      { error: 'providerId and modelId required' },
+      { status: 400 },
+    );
   const providerIdValue = providerId.trim();
   const modelIdValue = modelId.trim();
   if (!providerIdValue || !modelIdValue)
-    return json({ error: 'providerId and modelId required' }, { status: 400 });
+    return Response.json(
+      { error: 'providerId and modelId required' },
+      { status: 400 },
+    );
 
   const provider = await getProvider(providerIdValue);
   const isCustomModel =
@@ -203,7 +208,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ? !isValidCustomModelId(modelIdValue)
       : !provider.models.some((model) => model.id === modelIdValue))
   ) {
-    return json(
+    return Response.json(
       {
         error: isCustomModel
           ? 'Enter a valid model ID for the selected provider.'
@@ -220,7 +225,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         Array.isArray(config))) ||
     (customBaseUrl !== undefined && typeof customBaseUrl !== 'string')
   ) {
-    return json({ error: 'Invalid AI configuration' }, { status: 400 });
+    return Response.json(
+      { error: 'Invalid AI configuration' },
+      { status: 400 },
+    );
   }
 
   let validatedBaseUrl: string | null = null;
@@ -230,7 +238,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         .href;
     } catch (err) {
       if (err instanceof SafeFetchError) {
-        return json(
+        return Response.json(
           { error: 'Custom base URL must resolve to a public HTTP(S) host' },
           { status: 400 },
         );
@@ -268,7 +276,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   );
   const credentialsToStore = { ...existingCredentials, ...safeConfig };
   if (Object.keys(credentialsToStore).length === 0) {
-    return json(
+    return Response.json(
       {
         error: 'Enter a provider credential before saving this configuration.',
       },
@@ -341,12 +349,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   if (enqueueAiBackfill({ limit: 25 }) > 0) wakePoller();
 
-  return json({ success: true });
+  return Response.json({ success: true });
 };
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
   const db = getDb();
   const configRows = db
@@ -486,7 +494,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     processed_at: number | null;
   }>;
 
-  return json({
+  return Response.json({
     configs,
     aiEnabled: setting?.value !== 'false',
     aiConfigured: configs.some(

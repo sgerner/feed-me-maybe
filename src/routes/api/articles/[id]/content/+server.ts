@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { fetchPublisherArticle } from '#lib/server/archive.ts';
@@ -10,7 +9,7 @@ import { wakePoller } from '#lib/server/poller.ts';
 
 export const POST: RequestHandler = async ({ locals, params }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
   const db = getDb();
   const article = db
@@ -29,14 +28,15 @@ export const POST: RequestHandler = async ({ locals, params }) => {
         use_proxy: number;
       }
     | undefined;
-  if (!article) return json({ error: 'Article not found' }, { status: 404 });
+  if (!article)
+    return Response.json({ error: 'Article not found' }, { status: 404 });
 
   const result = await fetchPublisherArticle(
     article.external_url || article.url,
     article.use_proxy ? getConfiguredProxyBaseUrl() : undefined,
   );
   if (!result?.content) {
-    return json(
+    return Response.json(
       { error: 'The publisher did not return readable article text.' },
       { status: 422 },
     );
@@ -51,7 +51,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
     article.content &&
     textLength(result.content) <= textLength(article.content)
   ) {
-    return json(
+    return Response.json(
       {
         error:
           'The publisher did not return more text than is already available.',
@@ -85,11 +85,11 @@ export const POST: RequestHandler = async ({ locals, params }) => {
     return true;
   })();
   if (!updated) {
-    return json(
+    return Response.json(
       { error: 'The article changed while fetching text. Try again.' },
       { status: 409 },
     );
   }
   wakePoller();
-  return json({ content: result.content });
+  return Response.json({ content: result.content });
 };
