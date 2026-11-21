@@ -646,54 +646,30 @@ export function applyPreferenceModelToArticle(articleId: string): void {
   }
 }
 
-function hasExplicitHide(articleId: string): boolean {
+export function hasExplicitHide(articleId: string): boolean {
   const db = getDb();
   const state = db
     .prepare(
       `
-      SELECT
-        SUM(
-          CASE
-            WHEN interaction_type = 'hide'
-              AND json_extract(
-                CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
-                '$.auto'
-              ) IS NULL
-              AND COALESCE(
-                json_extract(
-                  CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
-                  '$.undone_at'
-                ),
-                0
-              ) = 0
-            THEN 1 ELSE 0
-          END
-        ) as explicit_hides,
-        SUM(
-          CASE
-            WHEN interaction_type = 'unhide'
-              AND COALESCE(
-                json_extract(
-                  CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
-                  '$.undone_at'
-                ),
-                0
-              ) = 0
-            THEN 1 ELSE 0
-          END
-        ) as unhides
+      SELECT interaction_type
       FROM user_interactions
       WHERE article_id = ?
+        AND interaction_type IN ('hide', 'unhide', 'restore')
+        AND (interaction_type != 'hide' OR json_extract(
+          CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+          '$.auto'
+        ) IS NULL)
+        AND COALESCE(json_extract(
+          CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+          '$.undone_at'
+        ), 0) = 0
+      ORDER BY timestamp DESC, rowid DESC
+      LIMIT 1
     `,
     )
-    .get(articleId) as
-    | {
-        explicit_hides: number | null;
-        unhides: number | null;
-      }
-    | undefined;
+    .get(articleId) as { interaction_type: string } | undefined;
 
-  return (state?.explicit_hides || 0) - (state?.unhides || 0) > 0;
+  return state?.interaction_type === 'hide';
 }
 
 export function calculateHeuristicScore(articleId: string): number {

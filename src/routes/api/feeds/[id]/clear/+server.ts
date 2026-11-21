@@ -18,5 +18,9 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 
   const result = clearFeedArticles(params.id);
 
-  return json({ success: true, deleted: result });
+  return json({
+    success: true,
+    cleared: result.cleared,
+    preservedSaved: result.preservedSaved,
+  });
 };

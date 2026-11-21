@@ -42,6 +42,17 @@ describe('feed management', () => {
       now,
     );
     db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, saved, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)',
+    ).run(
+      'article-clear-saved',
+      'feed-clear',
+      'https://example.com/saved',
+      'Saved article',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
       'INSERT OR REPLACE INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
     ).run('interaction-clear', 'article-clear', 'hide', now, '{}');
     db.prepare(
@@ -58,7 +69,7 @@ describe('feed management', () => {
       now,
     );
 
-    const deleted = clearFeedArticles('feed-clear');
+    const result = clearFeedArticles('feed-clear');
     const articles = db
       .prepare(
         'SELECT COUNT(*) as c FROM articles WHERE feed_id = ? AND hidden = 0',
@@ -84,9 +95,20 @@ describe('feed management', () => {
       c: number;
     };
 
-    expect(deleted).toBe(1);
-    expect(articles.c).toBe(0); // None are visible
-    expect(totalArticles.c).toBe(1); // Still in DB
+    expect(result).toEqual({ cleared: 1, preservedSaved: 1 });
+    expect(articles.c).toBe(1); // Saved article remains visible
+    expect(totalArticles.c).toBe(2); // Articles remain in DB
+    const cleared = db
+      .prepare('SELECT hidden, cleared_at FROM articles WHERE id = ?')
+      .get('article-clear') as { hidden: number; cleared_at: number | null };
+    expect(cleared.hidden).toBe(1);
+    expect(cleared.cleared_at).toBeTruthy();
+    const recovery = await import('./article-state');
+    expect(
+      recovery
+        .listRecoveryArticles({ feedId: 'feed-clear' })
+        .articles.map((article) => article.id),
+    ).not.toContain('article-clear');
     expect(interactions.c).toBe(1); // Interactions preserved
     expect(pref.c).toBe(1);
   });

@@ -278,18 +278,30 @@ export function getLatestFeedFetchLog(
   };
 }
 
-export function clearFeedArticles(feedId: string): number {
+export function clearFeedArticles(feedId: string): {
+  cleared: number;
+  preservedSaved: number;
+} {
   const db = getDb();
   return db.transaction(() => {
+    const now = Date.now();
+    const preserved = db
+      .prepare(
+        'SELECT COUNT(*) AS count FROM articles WHERE feed_id = ? AND saved = 1 AND hidden = 0',
+      )
+      .get(feedId) as { count: number };
     const result = db
       .prepare(
-        'UPDATE articles SET hidden = 1 WHERE feed_id = ? AND hidden = 0',
+        `UPDATE articles
+         SET hidden = 1, hidden_at = COALESCE(hidden_at, ?),
+             cleared_at = ?, updated_at = ?, state_version = state_version + 1
+         WHERE feed_id = ? AND hidden = 0 AND saved = 0`,
       )
-      .run(feedId);
-    db.prepare('UPDATE feeds SET updated_at = ? WHERE id = ?').run(
-      Date.now(),
-      feedId,
-    );
-    return result.changes;
+      .run(now, now, now, feedId);
+    db.prepare('UPDATE feeds SET updated_at = ? WHERE id = ?').run(now, feedId);
+    return {
+      cleared: result.changes,
+      preservedSaved: Number(preserved.count || 0),
+    };
   })();
 }

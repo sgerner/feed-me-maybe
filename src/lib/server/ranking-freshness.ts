@@ -330,17 +330,32 @@ export async function flushRankingRefreshQueue(
   limit = 8,
 ): Promise<number> {
   const db = getDb();
+  const { isRankingProviderConfigured } = await import('$lib/server/ai/jev');
+  const rankingProviderConfigured = isRankingProviderConfigured();
+  // Normally the foreign key removes these with their articles. Clean up
+  // leftovers from databases where foreign-key enforcement was disabled so
+  // they cannot keep the poller waking on work that can never be processed.
+  db.prepare(
+    `DELETE FROM ranking_refresh_queue
+     WHERE NOT EXISTS (
+       SELECT 1 FROM articles a WHERE a.id = ranking_refresh_queue.article_id
+     )`,
+  ).run();
   const rows = db
     .prepare(
       `SELECT q.article_id, q.requested_revision, q.heuristic_revision,
               q.not_before, a.feed_id
        FROM ranking_refresh_queue q
        JOIN articles a ON a.id = q.article_id
-       WHERE q.not_before <= ?
+       WHERE (? = 0 OR q.not_before <= ?)
        ORDER BY q.created_at ASC, q.article_id ASC
        LIMIT ?`,
     )
-    .all(now, Math.max(1, Math.floor(limit))) as Array<{
+    .all(
+      rankingProviderConfigured ? 1 : 0,
+      now,
+      Math.max(1, Math.floor(limit)),
+    ) as Array<{
     article_id: string;
     requested_revision: number;
     heuristic_revision: number | null;
@@ -349,8 +364,6 @@ export async function flushRankingRefreshQueue(
   }>;
   if (!rows.length) return 0;
 
-  const { isRankingProviderConfigured } = await import('$lib/server/ai/jev');
-  const rankingProviderConfigured = isRankingProviderConfigured();
   const { enqueueJevProcess } = await import('$lib/server/feed/job-queue');
 
   let queued = 0;
@@ -458,29 +471,21 @@ export function refreshRankingAfterGlobalProfileMutation(): {
            50 + (a.read * 2) + (a.saved * 10) + (a.thumbs_up * 25) -
            (a.thumbs_down * 20) - CASE WHEN (
              SELECT
-               COALESCE(SUM(CASE
-                 WHEN ui.interaction_type = 'hide'
-                   AND json_extract(
-                     CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
-                     '$.auto'
-                   ) IS NULL
-                   AND COALESCE(json_extract(
-                     CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
-                     '$.undone_at'
-                   ), 0) = 0
-                 THEN 1 ELSE 0 END
-               ), 0) -
-               COALESCE(SUM(CASE
-                 WHEN ui.interaction_type = 'unhide'
-                   AND COALESCE(json_extract(
-                     CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
-                     '$.undone_at'
-                   ), 0) = 0
-                 THEN 1 ELSE 0 END
-               ), 0)
+               ui.interaction_type
              FROM user_interactions ui
              WHERE ui.article_id = a.id
-           ) > 0 THEN 10 ELSE 0 END
+               AND ui.interaction_type IN ('hide', 'unhide', 'restore')
+               AND (ui.interaction_type != 'hide' OR json_extract(
+                 CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                 '$.auto'
+               ) IS NULL)
+               AND COALESCE(json_extract(
+                 CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                 '$.undone_at'
+               ), 0) = 0
+             ORDER BY ui.timestamp DESC, ui.rowid DESC
+             LIMIT 1
+           ) = 'hide' THEN 10 ELSE 0 END
          ))`,
       ).run();
       db.prepare(

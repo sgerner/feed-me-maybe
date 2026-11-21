@@ -115,12 +115,12 @@ export function recordInteraction(
       break;
     case 'unhide':
       db.prepare(
-        'UPDATE articles SET hidden = 0, hidden_at = NULL, updated_at = ? WHERE id = ?',
+        'UPDATE articles SET hidden = 0, hidden_at = NULL, cleared_at = NULL, updated_at = ? WHERE id = ?',
       ).run(now, articleId);
       break;
     case 'boost': {
       db.prepare(
-        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0, rejected = 0, rejected_at = NULL, hidden = 0, hidden_at = NULL, updated_at = ? WHERE id = ?',
+        'UPDATE articles SET thumbs_up = 1, thumbs_down = 0, rejected = 0, rejected_at = NULL, hidden = 0, hidden_at = NULL, cleared_at = NULL, updated_at = ? WHERE id = ?',
       ).run(now, articleId);
       db.prepare(
         'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
@@ -156,7 +156,7 @@ export function recordInteraction(
     }
     case 'thumbs_down':
       db.prepare(
-        'UPDATE articles SET thumbs_up = 0, thumbs_down = 1, rejected = 1, rejected_at = COALESCE(rejected_at, ?), hidden = 1, hidden_at = COALESCE(hidden_at, ?), updated_at = ? WHERE id = ?',
+        'UPDATE articles SET thumbs_up = 0, thumbs_down = 1, rejected = 1, rejected_at = COALESCE(rejected_at, ?), hidden = 1, hidden_at = COALESCE(hidden_at, ?), cleared_at = NULL, updated_at = ? WHERE id = ?',
       ).run(now, now, now, articleId);
       break;
     case 'open':

@@ -5,6 +5,7 @@ import {
   refreshRankingAfterProfileMutation,
 } from '$lib/server/ranking-freshness';
 import {
+  hasExplicitHide,
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
   reversePreferenceMemoryDeltas,
@@ -172,7 +173,8 @@ function activeOperationForAction(
     const after = parseState(row.after_state);
     const changedFlag =
       action === 'hide'
-        ? !before.hidden && after.hidden
+        ? (!before.hidden && after.hidden) ||
+          (before.hidden && after.hidden && before.hiddenAt !== after.hiddenAt)
         : !before.rejected && after.rejected;
     if (!changedFlag) continue;
     const interactionType = action === 'hide' ? 'hide' : 'thumbs_down';
@@ -556,6 +558,7 @@ export function applyArticleState(
       UPDATE articles SET
         read = ?, read_at = ?, saved = ?, saved_at = ?, hidden = ?, hidden_at = ?,
         thumbs_up = ?, thumbs_down = ?, rejected = ?, rejected_at = ?,
+        cleared_at = CASE WHEN ? = 1 THEN NULL ELSE cleared_at END,
         state_version = state_version + 1, updated_at = ?
       WHERE id = ?
     `);
@@ -568,6 +571,16 @@ export function applyArticleState(
     for (const articleId of articleIds) {
       const before = getState(articleId);
       const next = stateAfterAction(before, input.action, now, input.patch);
+      // A model or hide-on-open may already have set hidden=1. A user's
+      // explicit Hide still needs a reversible state change so its preference
+      // delta and heuristic penalty are recorded independently.
+      if (
+        input.action === 'hide' &&
+        before.hidden &&
+        !hasExplicitHide(articleId)
+      ) {
+        next.hiddenAt = Math.max(now, (before.hiddenAt ?? 0) + 1);
+      }
       update.run(
         next.read ? 1 : 0,
         next.readAt,
@@ -579,6 +592,7 @@ export function applyArticleState(
         next.thumbsDown ? 1 : 0,
         next.rejected ? 1 : 0,
         next.rejectedAt,
+        !next.hidden || input.action === 'reject' ? 1 : 0,
         now,
         articleId,
       );
@@ -825,6 +839,7 @@ export function undoArticleState(
       UPDATE articles SET
         read = ?, read_at = ?, saved = ?, saved_at = ?, hidden = ?, hidden_at = ?,
         thumbs_up = ?, thumbs_down = ?, rejected = ?, rejected_at = ?,
+        cleared_at = CASE WHEN ? = 1 THEN NULL ELSE cleared_at END,
         state_version = state_version + 1, updated_at = ?
       WHERE id = ?
     `);
@@ -849,6 +864,7 @@ export function undoArticleState(
         before.thumbsDown ? 1 : 0,
         before.rejected ? 1 : 0,
         before.rejectedAt,
+        before.hidden ? 0 : 1,
         Date.now(),
         row.article_id,
       );
@@ -1042,7 +1058,8 @@ export function listRecoveryArticles(
 ): { articles: RecoveryArticle[]; nextCursor: string | null } {
   const limit = Math.min(100, Math.max(1, Math.floor(options.limit || 25)));
   const params: Array<string | number> = [];
-  let where = 'WHERE (a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)';
+  let where =
+    'WHERE a.cleared_at IS NULL AND (a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)';
   if (options.feedId) {
     where += ' AND a.feed_id = ?';
     params.push(options.feedId);

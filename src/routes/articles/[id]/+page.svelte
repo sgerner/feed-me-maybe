@@ -8,6 +8,7 @@
   import { addToast } from '$lib/stores/toast.svelte';
   import { fetchWithCsrf } from '$lib/client/csrf';
   import {
+    applyMutationToCachedArticle,
     cacheArticles,
     enqueueOfflineMutation,
     type OfflineMutationType,
@@ -27,12 +28,18 @@
     feed_url?: string | null;
     feed_site_url?: string | null;
     feed_use_proxy?: boolean | number | null;
+    feed_open_mode?: string | null;
     published_at?: number | null;
+    fetched_at?: number | null;
+    feed_id?: string | null;
+    read?: boolean | null;
     ai_summary?: string | null;
     thumbs_up?: boolean | null;
     thumbs_down?: boolean | null;
     saved?: boolean | null;
     hidden?: boolean | null;
+    explicitly_hidden?: boolean | number | null;
+    rejected?: boolean | null;
     archive_url?: string | null;
   };
 
@@ -52,6 +59,8 @@
   let disliked = $state(false);
   let saved = $state(false);
   let hidden = $state(false);
+  let explicitlyHidden = $state(false);
+  let read = $state(false);
   let pendingAction = $state<InteractionType | null>(null);
   let iframeLoading = $state(true);
   let lightboxOpen = $state(false);
@@ -87,13 +96,17 @@
 
   $effect(() => {
     liked = !!article.thumbs_up;
-    disliked = !!article.thumbs_down;
+    disliked = !!article.thumbs_down || !!article.rejected;
     saved = !!article.saved;
     hidden = !!article.hidden;
+    explicitlyHidden = Boolean(article.explicitly_hidden);
+    read = !!article.read;
   });
 
   const isEmbeddedMode = $derived(mode === 'iframe' || mode === 'proxy');
   const isReaderMode = $derived(mode === 'app' || mode === 'archive');
+  const reactionsLocked = $derived(explicitlyHidden || disliked);
+  const canRestore = $derived(explicitlyHidden || disliked);
   const isRedditPost = $derived(
     Boolean(
       article.url?.includes('reddit.com') &&
@@ -135,6 +148,43 @@
 
   function offlineScope(): string {
     return String($page.data.userId || 'admin');
+  }
+
+  type ReaderStateSnapshot = {
+    read: boolean;
+    saved: boolean;
+    hidden: boolean;
+    thumbsUp: boolean;
+    thumbsDown: boolean;
+  };
+
+  async function cacheReaderState(state: ReaderStateSnapshot): Promise<void> {
+    try {
+      await cacheArticles(offlineScope(), [
+        {
+          id: article.id,
+          feed_id: article.feed_id,
+          url: article.url,
+          title: article.title,
+          summary: article.summary?.slice(0, 3000) ?? '',
+          content: String(articleContent || '').slice(0, 30_000),
+          image_url: article.image_url,
+          published_at: article.published_at,
+          fetched_at: article.fetched_at,
+          feed_title: article.feed_title,
+          feed_url: article.feed_url,
+          feed_site_url: article.feed_site_url,
+          feed_open_mode: article.feed_open_mode,
+          read: state.read,
+          saved: state.saved,
+          hidden: state.hidden,
+          thumbs_up: state.thumbsUp,
+          thumbs_down: state.thumbsDown,
+        },
+      ]);
+    } catch {
+      // IndexedDB is a convenience cache; it must not fail an online action.
+    }
   }
 
   // The root layout owns the scrolling <main> element and remains mounted
@@ -474,9 +524,11 @@
     const prevDisliked = disliked;
     const prevSaved = saved;
     const prevHidden = hidden;
+    const prevExplicitlyHidden = explicitlyHidden;
     pendingAction = type;
 
-    const restoring = type === 'hide' && hidden;
+    const restoring = type === 'hide' && (explicitlyHidden || disliked);
+    const restoringRejection = restoring && disliked;
     const shouldHide =
       (!restoring && type === 'hide') || type === 'thumbs_down';
 
@@ -491,23 +543,27 @@
       saved = !saved;
     } else if (restoring) {
       hidden = false;
-      disliked = false;
+      explicitlyHidden = false;
+      if (restoringRejection) disliked = false;
     } else if (shouldHide) {
       hidden = true;
+      if (type === 'hide') explicitlyHidden = true;
     }
 
     try {
       const actualType =
         type === 'save' && prevSaved
           ? 'unsave'
-          : type === 'hide' && prevHidden
-            ? 'unhide'
+          : type === 'hide' && restoring
+            ? restoringRejection
+              ? 'restore'
+              : 'unhide'
             : type;
 
       const offline = navigator.onLine === false;
       if (offline) {
         const queuedType = offlineMutationType(
-          restoring ? 'restore' : actualType,
+          restoring ? (restoringRejection ? 'restore' : 'unhide') : actualType,
         );
         if (!queuedType) throw new Error('This action needs a connection');
         await enqueueOfflineMutation(offlineScope(), {
@@ -520,7 +576,9 @@
         addToast('Action queued — will sync when you’re online', 'info');
       } else {
         const action = restoring
-          ? 'restore'
+          ? restoringRejection
+            ? 'restore'
+            : 'unhide'
           : actualType === 'thumbs_down'
             ? 'reject'
             : actualType;
@@ -536,8 +594,58 @@
         if (!res.ok) throw new Error();
         const result = (await res.json()) as {
           operationId: string;
-          changes: Array<{ changed: boolean }>;
+          changes: Array<{
+            changed: boolean;
+            after?: {
+              read: boolean;
+              saved: boolean;
+              hidden: boolean;
+              thumbsUp: boolean;
+              thumbsDown: boolean;
+            };
+          }>;
         };
+        const after = result.changes[0]?.after;
+        const state = after
+          ? {
+              read: after.read,
+              saved: after.saved,
+              hidden: after.hidden,
+              thumbsUp: after.thumbsUp,
+              thumbsDown: after.thumbsDown,
+            }
+          : {
+              read: article.read === true,
+              saved,
+              hidden,
+              thumbsUp: liked,
+              thumbsDown: disliked,
+            };
+        read = state.read;
+        if (after) {
+          saved = state.saved;
+          hidden = state.hidden;
+          liked = state.thumbsUp;
+          disliked = state.thumbsDown;
+        }
+        if (action === 'hide') explicitlyHidden = true;
+        else if (action === 'restore' || action === 'unhide') {
+          explicitlyHidden = false;
+        }
+        const cacheType = offlineMutationType(actualType);
+        if (cacheType) {
+          void applyMutationToCachedArticle(
+            offlineScope(),
+            article.id,
+            cacheType,
+          ).catch(() => undefined);
+        }
+        if (
+          actualType === 'thumbs_up' ||
+          (actualType === 'save' && state.saved)
+        ) {
+          void cacheReaderState(state);
+        }
         void invalidate('app:reader-counts');
         const labels: Record<string, string> = {
           hide: 'Hidden',
@@ -578,6 +686,14 @@
                     disliked = prevDisliked;
                     saved = prevSaved;
                     hidden = prevHidden;
+                    explicitlyHidden = prevExplicitlyHidden;
+                    void cacheReaderState({
+                      read: article.read === true,
+                      saved: prevSaved,
+                      hidden: prevHidden,
+                      thumbsUp: prevLiked,
+                      thumbsDown: prevDisliked,
+                    });
                     void invalidate('app:reader-counts');
                     addToast('Action undone', 'success');
                   } catch {
@@ -594,6 +710,7 @@
       disliked = prevDisliked;
       saved = prevSaved;
       hidden = prevHidden;
+      explicitlyHidden = prevExplicitlyHidden;
       addToast('Action failed', 'error');
     } finally {
       pendingAction = null;
@@ -618,6 +735,12 @@
           body: JSON.stringify({ articleId: article.id, action: 'read' }),
         });
         if (!response.ok) throw new Error();
+        read = true;
+        void applyMutationToCachedArticle(
+          offlineScope(),
+          article.id,
+          'read',
+        ).catch(() => undefined);
         void invalidate('app:reader-counts');
       }
       addToast('Marked as read', 'success');
@@ -661,14 +784,22 @@
   let touchStartY: number | null = null;
   const SWIPE_ACTION_THRESHOLD = 40;
   const SWIPE_LONG_LEFT_THRESHOLD = 140;
+  const SWIPE_EXCLUDED_SELECTOR =
+    'a, button, input, select, textarea, table, pre, code, [role="dialog"], [contenteditable="true"], [data-no-reader-swipe]';
+
+  function isSwipeExcluded(target: EventTarget | null): boolean {
+    return (
+      target instanceof Element &&
+      Boolean(target.closest(SWIPE_EXCLUDED_SELECTOR))
+    );
+  }
 
   function handlePointerDown(e: PointerEvent) {
     if (
       isEmbeddedMode ||
       e.pointerType === 'mouse' ||
       !e.isPrimary ||
-      (e.target instanceof Element &&
-        e.target.closest('a, button, input, select, textarea'))
+      isSwipeExcluded(e.target)
     )
       return;
     touchStartX = e.clientX;
@@ -682,6 +813,7 @@
     touchStartX = null;
     touchStartY = null;
 
+    if (isSwipeExcluded(e.target)) return;
     if (Math.abs(dx) > Math.abs(dy)) {
       if (dx < -SWIPE_LONG_LEFT_THRESHOLD) interact('thumbs_down');
       else if (dx < -SWIPE_ACTION_THRESHOLD) interact('hide');
@@ -1215,8 +1347,8 @@
             type="button"
             class="action-btn min-h-11 min-w-11 rounded-full !p-0 {liked
               ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
-              : ''} {hidden ? 'opacity-50' : ''}"
-            disabled={Boolean(pendingAction) || hidden}
+              : ''}"
+            disabled={Boolean(pendingAction) || reactionsLocked}
             onclick={() => interact('thumbs_up')}
             aria-label="Like article"
             aria-pressed={liked}
@@ -1239,8 +1371,8 @@
             type="button"
             class="action-btn min-h-11 min-w-11 rounded-full !p-0 {disliked
               ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
-              : ''} {hidden ? 'opacity-50' : ''}"
-            disabled={Boolean(pendingAction) || hidden}
+              : ''}"
+            disabled={Boolean(pendingAction) || reactionsLocked}
             onclick={() => interact('thumbs_down')}
             aria-label="Dislike and hide article"
             aria-pressed={disliked}
@@ -1345,14 +1477,22 @@
 
         <button
           type="button"
-          class="action-btn min-h-11 px-3 rounded-full !inline-flex hover:!text-error-400 {hidden
+          class="action-btn min-h-11 px-3 rounded-full !inline-flex hover:!text-error-400 {canRestore
             ? '!text-success-400'
             : ''}"
           disabled={Boolean(pendingAction)}
           onclick={() => interact('hide')}
-          aria-label={hidden ? 'Restore article' : 'Hide article'}
-          aria-pressed={hidden}
-          title={hidden ? 'Restore Article' : 'Hide Article'}
+          aria-label={canRestore
+            ? 'Restore article'
+            : hidden
+              ? 'Keep article hidden'
+              : 'Hide article'}
+          aria-pressed={explicitlyHidden}
+          title={canRestore
+            ? 'Restore Article'
+            : hidden
+              ? 'Keep Article Hidden'
+              : 'Hide Article'}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
