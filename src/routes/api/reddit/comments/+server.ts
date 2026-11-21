@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import {
@@ -14,30 +13,30 @@ import { recordAppError } from '#lib/server/logging.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let body: { url?: string; useProxy?: boolean };
   try {
     body = await request.json();
   } catch {
-    return json({ error: 'Invalid body' }, { status: 400 });
+    return Response.json({ error: 'Invalid body' }, { status: 400 });
   }
 
   const url = body.url;
   if (!url || typeof url !== 'string') {
-    return json({ error: 'URL is required' }, { status: 400 });
+    return Response.json({ error: 'URL is required' }, { status: 400 });
   }
 
   if (!url.includes('reddit.com')) {
-    return json({ error: 'Not a Reddit URL' }, { status: 400 });
+    return Response.json({ error: 'Not a Reddit URL' }, { status: 400 });
   }
 
   let jsonUrl: string;
   try {
     jsonUrl = normalizeRedditCommentsUrl(url);
   } catch {
-    return json({ error: 'Invalid URL' }, { status: 400 });
+    return Response.json({ error: 'Invalid URL' }, { status: 400 });
   }
 
   const proxyBaseUrl = getConfiguredProxyBaseUrl();
@@ -138,7 +137,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         path: '/api/reddit/comments',
         method: 'POST',
       });
-      return json(
+      return Response.json(
         { error: `Reddit returned HTTP ${response.status}` },
         { status: 502 },
       );
@@ -161,13 +160,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         path: '/api/reddit/comments',
         method: 'POST',
       });
-      return json(
+      return Response.json(
         { error: 'Unexpected Reddit response format' },
         { status: 502 },
       );
     }
 
-    return json({ comments: parseRedditCommentsResponse(data) });
+    return Response.json({ comments: parseRedditCommentsResponse(data) });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Fetch failed';
     recordAppError({
@@ -183,6 +182,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       path: '/api/reddit/comments',
       method: 'POST',
     });
-    return json({ error: msg }, { status: 502 });
+    return Response.json({ error: msg }, { status: 502 });
   }
 };

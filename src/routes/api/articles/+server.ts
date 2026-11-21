@@ -1,4 +1,4 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { getFeedArticles } from '#lib/server/feed/articles.ts';
@@ -32,7 +32,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
   const params: unknown[] = [];
 
   if (feedId && !unreadOnly && !isArticleIdRequest) {
-    return json({
+    return Response.json({
       articles: getFeedArticles({ feedId, page, offset }).articles,
     });
   }
@@ -56,7 +56,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
       new Set(requestedIds.filter((id) => id.length > 0 && id.length <= 128)),
     ).slice(0, 100);
 
-    return json({
+    return Response.json({
       articles: queryGlobalArticleRankingByIds(
         db,
         whereClause,
@@ -83,5 +83,5 @@ export const GET: RequestHandler = async ({ locals, url }) => {
     offset,
   );
 
-  return json({ articles });
+  return Response.json({ articles });
 };

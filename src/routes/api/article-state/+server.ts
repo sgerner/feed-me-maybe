@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   applyArticleState,
@@ -60,26 +59,26 @@ async function bodyObject(request: Request): Promise<Record<string, unknown>> {
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   const articleId = url.searchParams.get('articleId');
   if (articleId) {
     const state = getArticleState(articleId);
     return state
-      ? json({
+      ? Response.json({
           articleId,
           state,
           history: getArticleStateHistory({ articleId }),
         })
-      : json({ error: 'Article not found' }, { status: 404 });
+      : Response.json({ error: 'Article not found' }, { status: 404 });
   }
-  return json({
+  return Response.json({
     counts: getArticleStateCounts(url.searchParams.get('feedId') || undefined),
   });
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const body = await bodyObject(request);
     const key = body.idempotencyKey;
@@ -94,11 +93,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       visibleArticleIds: body.visibleArticleIds,
       idempotencyKey: typeof key === 'string' ? key : undefined,
     });
-    return json(result);
+    return Response.json(result);
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Invalid state change';
-    return json(
+    return Response.json(
       { error: message },
       {
         status:

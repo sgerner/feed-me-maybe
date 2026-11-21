@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   createSavedSearch,
@@ -42,18 +41,18 @@ function inputFromBody(body: Record<string, unknown>): SavedSearchInput {
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
-  return json({ searches: listSavedSearches() });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  return Response.json({ searches: listSavedSearches() });
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const search = createSavedSearch(inputFromBody(await readBody(request)));
-    return json({ search }, { status: 201 });
+    return Response.json({ search }, { status: 201 });
   } catch (error: unknown) {
-    return json(
+    return Response.json(
       {
         error: error instanceof Error ? error.message : 'Invalid saved search',
       },
@@ -64,11 +63,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 export const PATCH: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const body = await readBody(request);
     if (typeof body.id !== 'string' || !body.id.trim()) {
-      return json({ error: 'id is required' }, { status: 400 });
+      return Response.json({ error: 'id is required' }, { status: 400 });
     }
     const search = updateSavedSearch(body.id, {
       name: typeof body.name === 'string' ? body.name : undefined,
@@ -77,11 +76,11 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
         typeof body.description === 'string' ? body.description : undefined,
       pinned: typeof body.pinned === 'boolean' ? body.pinned : undefined,
     });
-    return json({ search });
+    return Response.json({ search });
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Invalid saved search';
-    return json(
+    return Response.json(
       { error: message },
       { status: message.includes('not found') ? 404 : 400 },
     );
@@ -90,17 +89,17 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
 
 export const DELETE: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const body = await readBody(request);
     if (typeof body.id !== 'string' || !body.id.trim()) {
-      return json({ error: 'id is required' }, { status: 400 });
+      return Response.json({ error: 'id is required' }, { status: 400 });
     }
     return deleteSavedSearch(body.id)
-      ? json({ success: true })
-      : json({ error: 'Saved search not found' }, { status: 404 });
+      ? Response.json({ success: true })
+      : Response.json({ error: 'Saved search not found' }, { status: 404 });
   } catch (error: unknown) {
-    return json(
+    return Response.json(
       {
         error: error instanceof Error ? error.message : 'Invalid request body',
       },

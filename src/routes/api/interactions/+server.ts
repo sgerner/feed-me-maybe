@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   recordInteraction,
@@ -46,7 +45,7 @@ function readVisibleArticleIds(value: unknown): string[] {
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let body: Record<string, unknown>;
@@ -57,11 +56,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       typeof parsedBody !== 'object' ||
       Array.isArray(parsedBody)
     ) {
-      return json({ error: 'Invalid request body' }, { status: 400 });
+      return Response.json({ error: 'Invalid request body' }, { status: 400 });
     }
     body = parsedBody as Record<string, unknown>;
   } catch {
-    return json({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
   const rawArticleId = body.articleId;
@@ -91,7 +90,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     typeof type !== 'string' ||
     !validTypes.includes(type as InteractionType)
   ) {
-    return json(
+    return Response.json(
       { error: 'articleId and valid type are required' },
       { status: 400 },
     );
@@ -115,7 +114,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     };
     const action = actions[type as InteractionType];
     if (!action) {
-      return json(
+      return Response.json(
         { error: 'Unsupported offline interaction' },
         { status: 400 },
       );
@@ -127,11 +126,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         idempotencyKey: `offline:${offlineKey}`,
         ...(type === 'thumbs_down' ? { visibleArticleIds } : {}),
       });
-      return json({ success: true, ...result });
+      return Response.json({ success: true, ...result });
     } catch (caught) {
       const message =
         caught instanceof Error ? caught.message : 'State update failed';
-      return json(
+      return Response.json(
         { error: message },
         { status: caught instanceof ArticleStateError ? caught.status : 400 },
       );
@@ -145,5 +144,5 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   } else {
     recordInteraction(articleId, type as InteractionType);
   }
-  return json({ success: true });
+  return Response.json({ success: true });
 };

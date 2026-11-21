@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   applyArticleState,
@@ -9,21 +8,24 @@ import {
 
 function getErrorResponse(caught: unknown): Response {
   if (caught instanceof ArticleStateError) {
-    return json({ error: caught.message }, { status: caught.status });
+    return Response.json({ error: caught.message }, { status: caught.status });
   }
-  return json({ error: 'Failed to update article state' }, { status: 500 });
+  return Response.json(
+    { error: 'Failed to update article state' },
+    { status: 500 },
+  );
 }
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
-    return json({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
   const action = body.action;
@@ -31,7 +33,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     typeof action !== 'string' ||
     !ARTICLE_STATE_ACTIONS.includes(action as ArticleStateAction)
   ) {
-    return json(
+    return Response.json(
       { error: `action must be one of: ${ARTICLE_STATE_ACTIONS.join(', ')}` },
       { status: 400 },
     );
@@ -43,7 +45,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ? [body.articleId]
       : [];
   if (suppliedIds.some((id) => typeof id !== 'string')) {
-    return json(
+    return Response.json(
       { error: 'articleIds must be an array of strings' },
       { status: 400 },
     );
@@ -60,7 +62,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       visibleArticleIds: body.visibleArticleIds,
       idempotencyKey,
     });
-    return json(result, { status: result.idempotent ? 200 : 200 });
+    return Response.json(result, { status: result.idempotent ? 200 : 200 });
   } catch (caught) {
     return getErrorResponse(caught);
   }

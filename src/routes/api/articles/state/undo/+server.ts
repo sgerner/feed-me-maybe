@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
   ArticleStateError,
@@ -7,7 +6,7 @@ import {
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let body: Record<string, unknown> = {};
@@ -17,7 +16,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       body = parsed as Record<string, unknown>;
     }
   } catch {
-    return json({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
   try {
@@ -29,11 +28,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
           ? body.idempotencyKey
           : request.headers.get('idempotency-key') || undefined,
     });
-    return json(result);
+    return Response.json(result);
   } catch (caught) {
     if (caught instanceof ArticleStateError) {
-      return json({ error: caught.message }, { status: caught.status });
+      return Response.json(
+        { error: caught.message },
+        { status: caught.status },
+      );
     }
-    return json({ error: 'Failed to undo article state' }, { status: 500 });
+    return Response.json(
+      { error: 'Failed to undo article state' },
+      { status: 500 },
+    );
   }
 };

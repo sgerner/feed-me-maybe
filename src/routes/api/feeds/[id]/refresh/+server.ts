@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { scheduleNextPoll, wakePoller } from '#lib/server/poller.ts';
@@ -17,14 +16,14 @@ import { recordAppError } from '#lib/server/logging.ts';
 
 export const GET: RequestHandler = async ({ params, locals, url }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const db = getDb();
   const feed = db
     .prepare('SELECT id FROM feeds WHERE id = ?')
     .get(params.id) as { id: string } | undefined;
-  if (!feed) return json({ error: 'Feed not found' }, { status: 404 });
+  if (!feed) return Response.json({ error: 'Feed not found' }, { status: 404 });
 
   const jobId = url.searchParams.get('jobId');
   let job = getLatestFeedFetchJob(feed.id);
@@ -35,12 +34,15 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
       requestedJob.type !== FEED_FETCH_JOB_TYPE ||
       requestedJob.payload.feedId !== feed.id
     ) {
-      return json({ error: 'Feed fetch job not found' }, { status: 404 });
+      return Response.json(
+        { error: 'Feed fetch job not found' },
+        { status: 404 },
+      );
     }
     job = requestedJob;
   }
 
-  return json({
+  return Response.json({
     job,
     fetch: getLatestFeedFetchLog(feed.id),
     health: getFeedHealth(feed.id),
@@ -49,7 +51,7 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (!locals.sessionId) {
-    return json({ error: 'Unauthorized' }, { status: 401 });
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const db = getDb();
@@ -58,7 +60,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     .get(params.id) as { id: string } | undefined;
 
   if (!feed) {
-    return json({ error: 'Feed not found' }, { status: 404 });
+    return Response.json({ error: 'Feed not found' }, { status: 404 });
   }
 
   let force = true;
@@ -70,7 +72,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   }
   if (!force) {
     wakePoller();
-    return json(
+    return Response.json(
       {
         success: true,
         queued: false,
@@ -96,7 +98,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     })
     .finally(() => scheduleNextPoll());
 
-  return json(
+  return Response.json(
     {
       success: true,
       queued: job.status === 'queued',
