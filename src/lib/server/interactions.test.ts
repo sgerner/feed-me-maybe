@@ -10,19 +10,19 @@ describe('interaction side effects', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (existsSync(testDbPath)) unlinkSync(testDbPath);
   });
 
   it('hides an article when it is thumbed down', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { recordInteraction } = await import('./interactions');
     const db = getDb();
     const now = Date.now();
@@ -66,7 +66,7 @@ describe('interaction side effects', () => {
   });
 
   it('restores and strongly boosts an auto-hidden article', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { recordInteraction } = await import('./interactions');
     const db = getDb();
     const now = Date.now();
@@ -113,7 +113,7 @@ describe('interaction side effects', () => {
   });
 
   it('learns from an article open only once even when the reader reloads it', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { recordInteraction } = await import('./interactions');
     const db = getDb();
     const now = Date.now();
@@ -177,7 +177,7 @@ describe('interaction side effects', () => {
   });
 
   it('records hide-on-open as automatic state, not repeated negative interaction', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { recordInteraction } = await import('./interactions');
     const db = getDb();
     const now = Date.now();
@@ -231,7 +231,7 @@ describe('interaction side effects', () => {
   });
 
   it('records an unchanged like or dislike only once', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { recordInteraction } = await import('./interactions');
     const db = getDb();
     const now = Date.now();

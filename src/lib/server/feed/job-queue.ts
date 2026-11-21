@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
-import { ProviderHttpError } from '$lib/server/ai/provider-error';
-import { SafeFetchError } from '$lib/server/network';
-import { getDb } from '$lib/server/db';
-import { recordAppError } from '$lib/server/logging';
-import { isRankingProviderConfigured } from '$lib/server/ai/jev';
+import { ProviderHttpError } from '#lib/server/ai/provider-error.ts';
+import { SafeFetchError } from '#lib/server/network.ts';
+import { getDb } from '#lib/server/db/index.ts';
+import { recordAppError } from '#lib/server/logging.ts';
+import { isRankingProviderConfigured } from '#lib/server/ai/jev.ts';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
@@ -948,7 +948,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     const feedId = typeof payload.feedId === 'string' ? payload.feedId : '';
     if (!feedId)
       throw new FeedJobError('Feed fetch job is missing feedId', true);
-    const { ingestFeed } = await import('$lib/server/feed/ingester');
+    const { ingestFeed } = await import('#lib/server/feed/ingester.ts');
     const result = await ingestFeed({
       feedId,
       force: payload.force === true || payload.force === 1,
@@ -968,7 +968,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     const articleId =
       typeof payload.articleId === 'string' ? payload.articleId : '';
     if (!articleId) throw new Error('AI process job is missing articleId');
-    const { processArticle } = await import('$lib/server/ai/processor');
+    const { processArticle } = await import('#lib/server/ai/processor.ts');
     await processArticle(articleId);
     return { articleId, processed: true };
   }
@@ -992,7 +992,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!isRankingProviderConfigured()) {
       throw new Error('Selected ranking provider is not configured');
     }
-    const { processJevArticle } = await import('$lib/server/ai/jev');
+    const { processJevArticle } = await import('#lib/server/ai/jev.ts');
     await processJevArticle(articleId);
     return { articleId, processed: true };
   }
@@ -1016,7 +1016,7 @@ async function runDueJobsInternal(
   const now = options.now ?? Date.now();
   const recovered = recoverAbandonedJobs(now);
   const { flushRankingRefreshQueue } =
-    await import('$lib/server/ranking-freshness');
+    await import('#lib/server/ranking-freshness.ts');
   // Preference refreshes use their own durable lane and claim Jev capacity
   // before ordinary unscored-article backfill.
   await flushRankingRefreshQueue(now, DEFAULT_JEV_QUEUE_CAPACITY);

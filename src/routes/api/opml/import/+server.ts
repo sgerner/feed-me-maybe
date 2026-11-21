@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { importOpml } from '$lib/server/opml';
+import { importOpml } from '#lib/server/opml.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)

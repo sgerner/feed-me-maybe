@@ -1,6 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getWeeklyDigestArticles, parseDigestQuery } from '$lib/server/digest';
+import {
+  getWeeklyDigestArticles,
+  parseDigestQuery,
+} from '#lib/server/digest.ts';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId) {

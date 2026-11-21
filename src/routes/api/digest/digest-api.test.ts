@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseDigestQuery } from '$lib/server/digest';
+import { parseDigestQuery } from '#lib/server/digest.ts';
 import { GET } from './+server';
 
 describe('digest API query', () => {

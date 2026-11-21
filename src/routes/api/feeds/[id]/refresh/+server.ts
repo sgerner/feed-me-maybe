@@ -1,19 +1,19 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { scheduleNextPoll, wakePoller } from '$lib/server/poller';
+import { getDb } from '#lib/server/db/index.ts';
+import { scheduleNextPoll, wakePoller } from '#lib/server/poller.ts';
 import {
   FEED_FETCH_JOB_TYPE,
   enqueueFeedFetch,
   getJob,
   getLatestFeedFetchJob,
   runDueJobs,
-} from '$lib/server/feed/job-queue';
+} from '#lib/server/feed/job-queue.ts';
 import {
   getFeedHealth,
   getLatestFeedFetchLog,
-} from '$lib/server/feed-management';
-import { recordAppError } from '$lib/server/logging';
+} from '#lib/server/feed-management.ts';
+import { recordAppError } from '#lib/server/logging.ts';
 
 export const GET: RequestHandler = async ({ params, locals, url }) => {
   if (!locals.sessionId) {

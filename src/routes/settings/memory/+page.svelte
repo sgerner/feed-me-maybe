@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
   let { data: pageData } = $props();
   let msg = $state('');
   let pending = $state(false);

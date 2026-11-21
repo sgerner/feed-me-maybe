@@ -1,15 +1,18 @@
 /// <reference lib="webworker" />
 
-import { clientsClaim, setCacheNameDetails } from 'workbox-core';
-import { CacheableResponsePlugin } from 'workbox-cacheable-response';
-import { ExpirationPlugin } from 'workbox-expiration';
+import {
+  clientsClaim,
+  setCacheNameDetails,
+} from '@vite-pwa/workbox-swkit/core';
+import { CacheableResponsePlugin } from '@vite-pwa/workbox-swkit/cacheable-response';
+import { ExpirationPlugin } from '@vite-pwa/workbox-swkit/expiration';
 import {
   cleanupOutdatedCaches,
   matchPrecache,
   precacheAndRoute,
-} from 'workbox-precaching';
-import { registerRoute } from 'workbox-routing';
-import { CacheFirst } from 'workbox-strategies';
+} from '@vite-pwa/workbox-swkit/precaching';
+import { registerRoute } from '@vite-pwa/workbox-swkit/routing';
+import { CacheFirst } from '@vite-pwa/workbox-swkit/strategies';
 import { getMetaValue } from './lib/offline/db';
 import { replayOfflineMutations } from './lib/offline/outbox';
 

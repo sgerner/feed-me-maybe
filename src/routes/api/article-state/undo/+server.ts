@@ -1,6 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { ArticleStateError, undoArticleState } from '$lib/server/article-state';
+import {
+  ArticleStateError,
+  undoArticleState,
+} from '#lib/server/article-state.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)

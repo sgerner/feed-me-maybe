@@ -11,12 +11,12 @@ describe('feed article queries', () => {
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM user_interactions').run();
     db.prepare('DELETE FROM article_ai_metadata').run();
@@ -25,14 +25,14 @@ describe('feed article queries', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (existsSync(testDbPath)) unlinkSync(testDbPath);
   });
 
   it('returns only preference-model auto-hidden articles in hidden mode', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getFeedArticles } = await import('./articles');
     const db = getDb();
     const now = Date.now();
@@ -98,7 +98,7 @@ describe('feed article queries', () => {
   });
 
   it('limits hidden content to the 30 most recent model-hidden articles', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getFeedArticles } = await import('./articles');
     const db = getDb();
     const now = Date.now();
@@ -146,7 +146,7 @@ describe('feed article queries', () => {
   });
 
   it('falls back to heuristic scores when AI has not produced a score', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getFeedArticles } = await import('./articles');
     const db = getDb();
     const now = Date.now();
@@ -204,8 +204,9 @@ describe('feed article queries', () => {
   });
 
   it('diversifies the cross-feed ranking after the top story', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { queryGlobalArticleRanking } = await import('$lib/server/ranking');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { queryGlobalArticleRanking } =
+      await import('#lib/server/ranking.ts');
     const db = getDb();
     const now = Date.now();
 

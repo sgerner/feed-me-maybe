@@ -27,7 +27,7 @@ describe('ranking freshness after explicit feedback', () => {
     process.env.DATABASE_URL = testDbPath;
     if (!existsSync(join(process.cwd(), 'data')))
       mkdirSync(join(process.cwd(), 'data'));
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
@@ -36,7 +36,7 @@ describe('ranking freshness after explicit feedback', () => {
     process.env.JEV_API_KEY = 'test-jev-key';
     process.env.TYPESAFE_API_KEY = '';
     process.env.SUBQ_API_KEY = '';
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM ranking_refresh_queue').run();
     db.prepare('DELETE FROM jobs').run();
@@ -55,7 +55,7 @@ describe('ranking freshness after explicit feedback', () => {
 
   afterAll(async () => {
     vi.restoreAllMocks();
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (originalJevKey === undefined) delete process.env.JEV_API_KEY;
@@ -74,7 +74,7 @@ describe('ranking freshness after explicit feedback', () => {
     id: string,
     options: { title?: string; score?: number | null; ageDays?: number } = {},
   ) {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const now = Date.now();
     getDb()
       .prepare(
@@ -103,7 +103,7 @@ describe('ranking freshness after explicit feedback', () => {
       await article('unscored', { score: null });
       await article('old', { ageDays: 100 });
       const { recordInteraction } = await import('./interactions');
-      const { getDb } = await import('$lib/server/db');
+      const { getDb } = await import('#lib/server/db/index.ts');
       recordInteraction('feedback', type, {
         visibleArticleIds: ['visible', 'visible', 'unknown'],
       });
@@ -144,7 +144,7 @@ describe('ranking freshness after explicit feedback', () => {
     );
     for (const id of visible) await article(id, { ageDays: 100 });
     const { recordInteraction } = await import('./interactions');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     recordInteraction('feedback', 'thumbs_up', {
       visibleArticleIds: [visible[0], ...visible],
     });
@@ -158,7 +158,7 @@ describe('ranking freshness after explicit feedback', () => {
   it('learns offline rejection once across idempotent replay', async () => {
     await article('offline');
     const { applyArticleState } = await import('./article-state');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const input = {
       articleIds: ['offline'],
       action: 'reject' as const,
@@ -196,7 +196,7 @@ describe('ranking freshness after explicit feedback', () => {
     }
     const { recordInteraction } = await import('./interactions');
     const { flushRankingRefreshQueue } = await import('./ranking-freshness');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     recordInteraction('feedback', 'boost');
     await flushRankingRefreshQueue();
     expect(
@@ -228,7 +228,7 @@ describe('ranking freshness after explicit feedback', () => {
     await article('missing-key-refresh');
     process.env.JEV_API_KEY = '';
     process.env.TYPESAFE_API_KEY = '';
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { markArticleForRankingRefresh, flushRankingRefreshQueue } =
       await import('./ranking-freshness');
     const { getNextQueuedJobAt } = await import('./feed/job-queue');
@@ -248,7 +248,7 @@ describe('ranking freshness after explicit feedback', () => {
   });
 
   it('removes orphaned refresh rows before selecting due work', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.exec('PRAGMA foreign_keys = OFF');
@@ -271,7 +271,7 @@ describe('ranking freshness after explicit feedback', () => {
 
   it('defers repeated scoring during the persisted cooldown without losing feedback', async () => {
     await article('cooldown');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { recordInteraction } = await import('./interactions');
     const { flushRankingRefreshQueue, RANKING_REFRESH_RATE_LIMIT_MS } =
       await import('./ranking-freshness');
@@ -314,7 +314,7 @@ describe('ranking freshness after explicit feedback', () => {
       }),
     );
     const { scoreArticleWithJev } = await import('./ai/jev');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const before = Date.now();
     expect(await scoreArticleWithJev('fresh-result')).toBe(0.9);
     const row = getDb()
@@ -336,7 +336,7 @@ describe('ranking freshness after explicit feedback', () => {
     const { recordInteraction } = await import('./interactions');
     const { scoreArticleWithJev } = await import('./ai/jev');
     const { flushRankingRefreshQueue } = await import('./ranking-freshness');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     recordInteraction('already-fresh', 'thumbs_up');
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ answers: { would_open: { noul: 0.9 } } }), {
@@ -365,7 +365,7 @@ describe('ranking freshness after explicit feedback', () => {
     const { recordInteraction } = await import('./interactions');
     const { flushRankingRefreshQueue } = await import('./ranking-freshness');
     const { scoreArticleWithJev } = await import('./ai/jev');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const now = Date.now();
     const first = enqueueJevProcess('successor-fresh', { now })!;
     getDb()
@@ -400,7 +400,7 @@ describe('ranking freshness after explicit feedback', () => {
     const ids = Array.from({ length: 65 }, (_, index) => `bulk-${index}`);
     for (const id of ids) await article(id);
     const { applyArticleState } = await import('./article-state');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     applyArticleState({
       articleIds: ids,
       action: 'reject',
@@ -455,7 +455,7 @@ describe('ranking freshness after explicit feedback', () => {
       );
       const { scoreArticleWithJev } = await import('./ai/jev');
       const { recordInteraction } = await import('./interactions');
-      const { getDb } = await import('$lib/server/db');
+      const { getDb } = await import('#lib/server/db/index.ts');
       const pending = scoreArticleWithJev('implicit-race');
       await vi.waitFor(() => expect(resolveFetch).toBeTypeOf('function'));
       recordInteraction('implicit-race', type);
@@ -483,7 +483,7 @@ describe('ranking freshness after explicit feedback', () => {
 
   it('defers ordinary queued Jev work behind a feedback cooldown', async () => {
     await article('ordinary-cooldown');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { enqueueJevProcess, runDueJobs } = await import('./feed/job-queue');
     const { recordInteraction } = await import('./interactions');
     const now = Date.now();
@@ -508,7 +508,7 @@ describe('ranking freshness after explicit feedback', () => {
   it('coalesces feedback during processing into one successor', async () => {
     await article('processing');
     const { enqueueJevProcess } = await import('./feed/job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const first = enqueueJevProcess('processing')!;
     getDb()
       .prepare(
@@ -541,7 +541,7 @@ describe('ranking freshness after explicit feedback', () => {
       );
       const { scoreArticleWithJev } = await import('./ai/jev');
       const { recordInteraction } = await import('./interactions');
-      const { getDb } = await import('$lib/server/db');
+      const { getDb } = await import('#lib/server/db/index.ts');
       const pending = scoreArticleWithJev('racing');
       await vi.waitFor(() => expect(resolveFetch).toBeTypeOf('function'));
       recordInteraction('racing', 'thumbs_up');

@@ -5,11 +5,11 @@ const { recordInteractionMock, applyArticleStateMock } = vi.hoisted(() => ({
   applyArticleStateMock: vi.fn(() => ({ updatedCount: 1 })),
 }));
 
-vi.mock('$lib/server/interactions', () => ({
+vi.mock('#lib/server/interactions.ts', () => ({
   recordInteraction: recordInteractionMock,
 }));
 
-vi.mock('$lib/server/article-state', () => ({
+vi.mock('#lib/server/article-state.ts', () => ({
   applyArticleState: applyArticleStateMock,
   ArticleStateError: class ArticleStateError extends Error {
     status = 400;
@@ -20,7 +20,7 @@ import { POST } from './+server';
 import {
   OFFLINE_PROTOCOL_HEADER,
   OFFLINE_PROTOCOL_VERSION,
-} from '$lib/server/auth/csrf';
+} from '#lib/server/auth/csrf.ts';
 
 function post(
   body: unknown,

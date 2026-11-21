@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { applySettingsMutation } from '$lib/server/settings';
-import { initializeDatabase } from '$lib/server/db/migrate';
+import { applySettingsMutation } from '#lib/server/settings.ts';
+import { initializeDatabase } from '#lib/server/db/migrate.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {

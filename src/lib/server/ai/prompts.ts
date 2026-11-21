@@ -1,4 +1,4 @@
-import { stripHtml } from '$lib/server/normalization';
+import { stripHtml } from '#lib/server/normalization.ts';
 import type { ArticleAnalysisInput } from './types';
 
 export const ARTICLE_ANALYSIS_SIGNAL_TAGS = [

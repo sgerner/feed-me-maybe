@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { searchArticles, SearchQueryError } from '$lib/server/search';
+import { searchArticles, SearchQueryError } from '#lib/server/search.ts';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId) {

@@ -1,16 +1,16 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import {
   MAX_JSON_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '$lib/server/network';
+} from '#lib/server/network.ts';
 import {
   normalizeRedditCommentsUrl,
   parseRedditCommentsResponse,
-} from '$lib/reddit-comments';
-import { recordAppError } from '$lib/server/logging';
+} from '#lib/reddit-comments.ts';
+import { recordAppError } from '#lib/server/logging.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {

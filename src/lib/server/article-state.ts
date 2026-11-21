@@ -1,17 +1,17 @@
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import {
   refreshRankingAfterFeedback,
   refreshRankingAfterProfileMutation,
-} from '$lib/server/ranking-freshness';
+} from '#lib/server/ranking-freshness.ts';
 import {
   hasExplicitHide,
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
   reversePreferenceMemoryDeltas,
   type PreferenceMemoryDelta,
-} from '$lib/server/preferences';
-import { dispatchWebhookEvent } from '$lib/server/webhooks';
+} from '#lib/server/preferences.ts';
+import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
 
 export const ARTICLE_STATE_ACTIONS = [
   'read',

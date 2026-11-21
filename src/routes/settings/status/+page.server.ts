@@ -1,11 +1,11 @@
 import type { PageServerLoad } from './$types';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import {
   isJevConfigured,
   isRankingProviderConfigured,
   isSubqConfigured,
-} from '$lib/server/ai/jev';
-import { getRankingProvider } from '$lib/server/ranking-provider';
+} from '#lib/server/ai/jev.ts';
+import { getRankingProvider } from '#lib/server/ranking-provider.ts';
 
 function parseDetails(
   value: string | null | undefined,

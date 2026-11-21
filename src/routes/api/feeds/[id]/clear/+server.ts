@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { clearFeedArticles } from '$lib/server/feed-management';
+import { getDb } from '#lib/server/db/index.ts';
+import { clearFeedArticles } from '#lib/server/feed-management.ts';
 
 export const POST: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {

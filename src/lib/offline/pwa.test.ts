@@ -41,13 +41,11 @@ describe('offline PWA contract', () => {
 
   it('keeps the custom worker authenticated-navigation safe', () => {
     const viteConfig = readFileSync(resolve(root, 'vite.config.ts'), 'utf8');
-    const serviceWorker = readFileSync(
-      resolve(root, 'src/service-worker.ts'),
-      'utf8',
-    );
+    const serviceWorker = readFileSync(resolve(root, 'src/sw.ts'), 'utf8');
 
-    expect(viteConfig).toContain("strategies: 'injectManifest'");
-    expect(viteConfig).toContain("filename: 'service-worker.ts'");
+    expect(viteConfig).toContain("strategies: 'buildSW'");
+    expect(viteConfig).toContain("swSrc: 'src/sw.ts'");
+    expect(viteConfig).toContain("filename: 'service-worker.js'");
     expect(viteConfig).toContain("base: '/'");
     expect(viteConfig).toContain("scope: '/'");
     expect(serviceWorker).toContain('precacheAndRoute(self.__WB_MANIFEST)');

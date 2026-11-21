@@ -4,7 +4,7 @@ import {
   createSavedSearch,
   listSavedSearches,
   SavedSearchError,
-} from '$lib/server/saved-searches';
+} from '#lib/server/saved-searches.ts';
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId)

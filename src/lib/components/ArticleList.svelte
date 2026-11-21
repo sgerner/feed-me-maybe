@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { addToast } from '$lib/stores/toast.svelte';
-  import { formatContent, sanitizeHtml } from '$lib/utils/format';
+  import { addToast } from '#lib/stores/toast.svelte.ts';
+  import { formatContent, sanitizeHtml } from '#lib/utils/format.ts';
   import { getContext, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import {
@@ -9,12 +9,12 @@
     invalidate,
     invalidateAll,
   } from '$app/navigation';
-  import { page as pageStore } from '$app/stores';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { page as pageStore } from '$app/state';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
     getSingleKeyShortcutsEnabled,
     SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
-  } from '$lib/utils/keyboard-shortcuts';
+  } from '#lib/utils/keyboard-shortcuts.ts';
   import {
     applyMutationToCachedArticle,
     cacheArticles,
@@ -23,7 +23,7 @@
     matchesOfflineVisibility,
     type OfflineMutationType,
     type OfflineArticle,
-  } from '$lib/offline';
+  } from '#lib/offline/index.ts';
 
   type InteractionType =
     | 'open'
@@ -130,7 +130,7 @@
   }
 
   function offlineScope(): string {
-    return String($pageStore.data.userId || 'admin');
+    return String(pageStore.data.userId || 'admin');
   }
 
   const summaryCache = new WeakMap<
@@ -211,8 +211,8 @@
     }
 
     // Determine mode: feed override or global default
-    const globalMode = $pageStore.data.globalSettings?.articleOpenMode || 'app';
-    const hideOnOpen = Boolean($pageStore.data.globalSettings?.hideOnOpen);
+    const globalMode = pageStore.data.globalSettings?.articleOpenMode || 'app';
+    const hideOnOpen = Boolean(pageStore.data.globalSettings?.hideOnOpen);
     const mode = article.feed_open_mode || globalMode;
     const shouldMarkOpened = !savedOnly && (mode === 'tab' || hideOnOpen);
     const articleIndex = shouldMarkOpened
@@ -228,7 +228,7 @@
           'feed-me-maybe:reader-queue',
           JSON.stringify({
             ids: articles.map((item: Article) => item.id),
-            source: $pageStore.url.pathname + $pageStore.url.search,
+            source: pageStore.url.pathname + pageStore.url.search,
           }),
         );
       } catch {
@@ -408,7 +408,7 @@
   };
 
   function getScrollRestoreKey(): string {
-    return `feed-me-maybe:article-list-scroll:${$pageStore.url.pathname}${$pageStore.url.search}`;
+    return `feed-me-maybe:article-list-scroll:${pageStore.url.pathname}${pageStore.url.search}`;
   }
 
   function readScrollRestoreState(): ScrollRestoreState | null {
@@ -490,11 +490,7 @@
   // Keep the most recently rendered library available for a fast, private
   // offline reopen. The cache module bounds and account-scopes the records.
   $effect(() => {
-    if (
-      typeof window === 'undefined' ||
-      !$pageStore.data.sessionId ||
-      savedOnly
-    )
+    if (typeof window === 'undefined' || !pageStore.data.sessionId || savedOnly)
       return;
     void cacheArticles(offlineScope(), articles.slice(0, 150)).catch(
       (error) => {
@@ -551,7 +547,7 @@
       (type === 'unsave' && savedOnly) ||
       (!savedOnly &&
         (type === 'hide' || type === 'thumbs_down' || type === 'boost')) ||
-      (type === 'read' && $pageStore.url.pathname === '/inbox');
+      (type === 'read' && pageStore.url.pathname === '/inbox');
     const previousRead = previousArticle?.read;
     const previousReaction = previousArticle
       ? {
@@ -851,7 +847,7 @@
   function articleMode(article: Article): string {
     return (
       article.feed_open_mode ||
-      $pageStore.data.globalSettings?.articleOpenMode ||
+      pageStore.data.globalSettings?.articleOpenMode ||
       'app'
     );
   }

@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { addToast } from '$lib/stores/toast.svelte';
-  import PullToRefresh from '$lib/components/PullToRefresh.svelte';
-  import ArticleList from '$lib/components/ArticleList.svelte';
-  import { syncFeed } from '$lib/feeds';
-  import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
+  import { addToast } from '#lib/stores/toast.svelte.ts';
+  import PullToRefresh from '#lib/components/PullToRefresh.svelte';
+  import ArticleList from '#lib/components/ArticleList.svelte';
+  import { syncFeed } from '#lib/feeds.ts';
+  import { ARTICLE_OPEN_MODES } from '#lib/constants/article-open-modes.ts';
   import { fly, fade } from 'svelte/transition';
   import { goto, invalidateAll } from '$app/navigation';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
   type FeedArticle = {
     id: string;
@@ -82,8 +82,8 @@
     }
     next.searchParams.delete('page');
     goto(`${next.pathname}${next.search}`, {
-      replaceState: true,
-      noScroll: true,
+      replace: true,
+      reset: false,
     });
   }
 

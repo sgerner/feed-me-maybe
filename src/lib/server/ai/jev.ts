@@ -2,25 +2,25 @@ import {
   fetchSafe,
   MAX_JSON_RESPONSE_BYTES,
   readResponseText,
-} from '$lib/server/network';
+} from '#lib/server/network.ts';
 import { ProviderHttpError, retryAtFromHeader } from './provider-error';
 import fs from 'node:fs';
-import { buildRankingPreferenceInput } from '$lib/server/ai/preference-input';
-import { getDb } from '$lib/server/db';
-import { parseJsonTextArray } from '$lib/server/normalization';
-import { refreshCombinedScore } from '$lib/server/scoring';
+import { buildRankingPreferenceInput } from '#lib/server/ai/preference-input.ts';
+import { getDb } from '#lib/server/db/index.ts';
+import { parseJsonTextArray } from '#lib/server/normalization.ts';
+import { refreshCombinedScore } from '#lib/server/scoring.ts';
 import {
   buildSafeDecisionInput,
   JEV_DECISION_QUESTIONS,
-} from '$lib/server/ai/decision-input';
+} from '#lib/server/ai/decision-input.ts';
 import {
   getRankingProviderSnapshot,
   type RankingProvider,
-} from '$lib/server/ranking-provider';
+} from '#lib/server/ranking-provider.ts';
 import {
   getRankingFeedbackRevision,
   markArticleForRankingRefresh,
-} from '$lib/server/ranking-freshness';
+} from '#lib/server/ranking-freshness.ts';
 
 const JEV_ENDPOINT =
   process.env.TYPESAFE_API_URL ||

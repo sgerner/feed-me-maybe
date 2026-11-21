@@ -273,8 +273,7 @@ feed-me-maybe/
 ├── Dockerfile               # Multi-stage Docker build
 ├── docker-compose.yml       # Docker Compose configuration
 ├── drizzle.config.ts        # Drizzle ORM configuration
-├── svelte.config.js         # SvelteKit configuration
-├── vite.config.ts           # Vite + PWA configuration
+├── vite.config.ts           # Vite, SvelteKit and PWA configuration
 └── package.json
 ```
 

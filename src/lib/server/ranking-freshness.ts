@@ -1,12 +1,12 @@
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import {
   getPreferenceFeatureKeysForArticles,
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
   type PreferenceMemoryDelta,
-} from '$lib/server/preferences';
-import type { InteractionType } from '$lib/server/interactions';
+} from '#lib/server/preferences.ts';
+import type { InteractionType } from '#lib/server/interactions.ts';
 
 const FEEDBACK_REVISION_SETTING = 'ranking_feedback_revision';
 const VISIBLE_ARTICLE_LIMIT = 30;
@@ -330,7 +330,7 @@ export async function flushRankingRefreshQueue(
   limit = 8,
 ): Promise<number> {
   const db = getDb();
-  const { isRankingProviderConfigured } = await import('$lib/server/ai/jev');
+  const { isRankingProviderConfigured } = await import('#lib/server/ai/jev.ts');
   const rankingProviderConfigured = isRankingProviderConfigured();
   // Normally the foreign key removes these with their articles. Clean up
   // leftovers from databases where foreign-key enforcement was disabled so
@@ -364,7 +364,7 @@ export async function flushRankingRefreshQueue(
   }>;
   if (!rows.length) return 0;
 
-  const { enqueueJevProcess } = await import('$lib/server/feed/job-queue');
+  const { enqueueJevProcess } = await import('#lib/server/feed/job-queue.ts');
 
   let queued = 0;
   for (const row of rows) {

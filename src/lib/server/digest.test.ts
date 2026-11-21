@@ -11,12 +11,12 @@ describe('weekly digest', () => {
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare(
       "DELETE FROM app_settings WHERE key LIKE 'weekly_digest_cache%' OR key IN ('calm_daily_briefing_history', 'ai_enabled')",
@@ -29,14 +29,14 @@ describe('weekly digest', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (existsSync(testDbPath)) unlinkSync(testDbPath);
   });
 
   it('summarizes the last 7 days and reuses the weekly cache', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();
@@ -153,7 +153,7 @@ describe('weekly digest', () => {
   });
 
   it('keeps epoch milliseconds from overpowering digest relevance scores', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();
@@ -249,7 +249,7 @@ describe('weekly digest', () => {
   });
 
   it('includes read articles hidden on open, but excludes thumbs-down and unread-hidden articles', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();
@@ -357,7 +357,7 @@ describe('weekly digest', () => {
   });
 
   it('normalizes malformed cached ai text fields', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();
@@ -434,7 +434,7 @@ describe('weekly digest', () => {
   });
 
   it('ignores object-shaped categories when deriving heuristic themes', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();
@@ -585,7 +585,7 @@ describe('weekly digest', () => {
   });
 
   it('builds a deterministic briefing from the full eligible corpus without AI', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();

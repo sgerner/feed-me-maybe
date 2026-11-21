@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { addToast } from '$lib/stores/toast.svelte';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { addToast } from '#lib/stores/toast.svelte.ts';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
   type RecoveryArticle = {
     id: string;

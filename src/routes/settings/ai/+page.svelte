@@ -1,8 +1,8 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { fly, fade } from 'svelte/transition';
-  import type { AiProvider, AiModel } from '$lib/server/ai/types';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import type { AiProvider, AiModel } from '#lib/server/ai/types.ts';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
   let providers = $state<AiProvider[]>([]);
   let searchQuery = $state('');

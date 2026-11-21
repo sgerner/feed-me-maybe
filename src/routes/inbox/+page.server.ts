@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getDb } from '$lib/server/db';
-import { queryGlobalArticleRanking } from '$lib/server/ranking';
+import { getDb } from '#lib/server/db/index.ts';
+import { queryGlobalArticleRanking } from '#lib/server/ranking.ts';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   if (!locals.sessionId) throw error(401, 'Unauthorized');

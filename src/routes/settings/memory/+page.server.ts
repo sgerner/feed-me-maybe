@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};

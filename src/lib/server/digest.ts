@@ -1,16 +1,16 @@
-import { stripHtml } from '$lib/server/normalization';
+import { stripHtml } from '#lib/server/normalization.ts';
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
-import { getConfiguredAiClient } from '$lib/server/ai/runtime';
-import { hasProviderCredentials } from '$lib/server/ai/credentials';
+import { getDb } from '#lib/server/db/index.ts';
+import { getConfiguredAiClient } from '#lib/server/ai/runtime.ts';
+import { hasProviderCredentials } from '#lib/server/ai/credentials.ts';
 import {
   WEEKLY_DIGEST_SYSTEM_PROMPT,
   buildWeeklyDigestPrompt,
   WEEKLY_DIGEST_PROMPT_MAX_ARTICLES,
   type WeeklyDigestArticleContext,
-} from '$lib/server/ai/digest-prompts';
-import type { FeedArticleRow } from '$lib/server/feed/articles';
-import { rankingOrderExpression } from '$lib/server/ranking';
+} from '#lib/server/ai/digest-prompts.ts';
+import type { FeedArticleRow } from '#lib/server/feed/articles.ts';
+import { rankingOrderExpression } from '#lib/server/ranking.ts';
 
 export const WEEKLY_DIGEST_LIMIT = 60;
 export const WEEKLY_DIGEST_WINDOW_DAYS = 7;

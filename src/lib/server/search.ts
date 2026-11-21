@@ -1,4 +1,4 @@
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 
 export const DEFAULT_SEARCH_LIMIT = 25;
 export const MAX_SEARCH_LIMIT = 100;

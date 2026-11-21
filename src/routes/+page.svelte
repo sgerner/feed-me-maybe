@@ -1,8 +1,8 @@
 <script lang="ts">
-  import PullToRefresh from '$lib/components/PullToRefresh.svelte';
-  import ArticleList from '$lib/components/ArticleList.svelte';
+  import PullToRefresh from '#lib/components/PullToRefresh.svelte';
+  import ArticleList from '#lib/components/ArticleList.svelte';
 
-  import { syncFeeds } from '$lib/feeds';
+  import { syncFeeds } from '#lib/feeds.ts';
 
   type Article = {
     id: string;

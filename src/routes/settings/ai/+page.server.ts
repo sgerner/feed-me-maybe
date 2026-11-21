@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types';
-import { getDb } from '$lib/server/db';
-import { hasProviderCredentials } from '$lib/server/ai/credentials';
+import { getDb } from '#lib/server/db/index.ts';
+import { hasProviderCredentials } from '#lib/server/ai/credentials.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};

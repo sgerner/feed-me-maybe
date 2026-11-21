@@ -1,12 +1,12 @@
 import { DOMParser } from 'linkedom';
 import Parser from 'rss-parser';
-import { sanitizeHtml } from '$lib/utils/format';
+import { sanitizeHtml } from '#lib/utils/format.ts';
 import {
   MAX_FEED_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '$lib/server/network';
-import { coerceText, normalizeTextArray } from '$lib/server/normalization';
+} from '#lib/server/network.ts';
+import { coerceText, normalizeTextArray } from '#lib/server/normalization.ts';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 

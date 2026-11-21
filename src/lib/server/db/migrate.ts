@@ -3,7 +3,7 @@ import {
   coerceText,
   normalizeTextArray,
   parseJsonTextArray,
-} from '$lib/server/normalization';
+} from '#lib/server/normalization.ts';
 
 type Database = ReturnType<typeof getDb>;
 

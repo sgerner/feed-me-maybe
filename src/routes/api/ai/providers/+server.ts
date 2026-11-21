@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getProviders } from '$lib/server/ai/models-dev';
+import { getProviders } from '#lib/server/ai/models-dev.ts';
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId) {

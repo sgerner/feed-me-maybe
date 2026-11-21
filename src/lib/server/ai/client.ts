@@ -5,8 +5,8 @@ import {
   ARTICLE_ANALYSIS_SIGNAL_TAGS,
   buildArticleAnalysisPrompt,
 } from './prompts';
-import { coerceText, stripHtml } from '$lib/server/normalization';
-import { fetchSafe } from '$lib/server/network';
+import { coerceText, stripHtml } from '#lib/server/normalization.ts';
+import { fetchSafe } from '#lib/server/network.ts';
 import { ProviderHttpError, retryAtFromHeader } from './provider-error';
 
 interface AiClientConfig {

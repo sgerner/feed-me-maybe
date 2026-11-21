@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import type { OfflineArticle } from '$lib/offline/types';
-import { getDb } from '$lib/server/db';
+import type { OfflineArticle } from '#lib/offline/types.ts';
+import { getDb } from '#lib/server/db/index.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) throw error(401, 'Unauthorized');

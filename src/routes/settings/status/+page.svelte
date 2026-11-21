@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
   import { fly } from 'svelte/transition';
-  import { syncFeed } from '$lib/feeds';
+  import { syncFeed } from '#lib/feeds.ts';
   type RecentJob = {
     status: string;
     created_at: number;

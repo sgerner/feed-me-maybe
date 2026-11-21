@@ -18,8 +18,8 @@ const aiMocks = vi.hoisted(() => ({
   processArticle: vi.fn(async (): Promise<void> => undefined),
 }));
 
-vi.mock('$lib/server/ai/jev', () => jevMocks);
-vi.mock('$lib/server/ai/processor', () => aiMocks);
+vi.mock('#lib/server/ai/jev.ts', () => jevMocks);
+vi.mock('#lib/server/ai/processor.ts', () => aiMocks);
 
 describe('feed job queue', () => {
   const testDbPath = join(process.cwd(), 'data', 'test-feed-job-queue.db');
@@ -29,12 +29,12 @@ describe('feed job queue', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM feed_fetch_logs').run();
     db.prepare('DELETE FROM jobs').run();
@@ -49,7 +49,7 @@ describe('feed job queue', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     for (const suffix of ['', '-wal', '-shm']) {
@@ -74,7 +74,7 @@ describe('feed job queue', () => {
     expect(second.id).toBe(first.id);
     expect(second.status).toBe('queued');
 
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare(
       'UPDATE jobs SET scheduled_at = ?, error_message = ? WHERE id = ?',
@@ -99,7 +99,7 @@ describe('feed job queue', () => {
   it('leaves queued AI work paused until background processing is re-enabled', async () => {
     const { enqueueAiProcess, getNextQueuedJobAt, getJob, runDueJobs } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     const job = enqueueAiProcess('paused-ai-article', { now });
@@ -265,7 +265,7 @@ describe('feed job queue', () => {
       const { enqueueAiProcess, runDueJobs, getJob, getNextQueuedJobAt } =
         await import('./job-queue');
       const { ProviderHttpError } =
-        await import('$lib/server/ai/provider-error');
+        await import('#lib/server/ai/provider-error.ts');
       const retryAt = Date.now() + 120_000;
       aiMocks.processArticle.mockRejectedValueOnce(
         new Error('Wrapped request failure', {
@@ -297,7 +297,7 @@ describe('feed job queue', () => {
   it('recovers abandoned processing jobs and fetch logs', async () => {
     const { FEED_FETCH_LEASE_MS, recoverAbandonedJobs } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 10_000_000;
     const startedAt = now - FEED_FETCH_LEASE_MS - 1;
@@ -367,7 +367,7 @@ describe('feed job queue', () => {
 
   it('retries failed jobs and eventually marks them failed', async () => {
     const { runDueJobs } = await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
 
@@ -422,7 +422,7 @@ describe('feed job queue', () => {
   it('backfills missing scores except failed, active, or completed backfill jobs', async () => {
     const { enqueueJevBackfill, JEV_PROCESS_JOB_TYPE } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 50_000;
 
@@ -558,7 +558,7 @@ describe('feed job queue', () => {
       enqueueJevProcess,
       JEV_PROCESS_JOB_TYPE,
     } = await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 55_000;
 
@@ -636,7 +636,7 @@ describe('feed job queue', () => {
   it('backfills active AI articles while AI processing is disabled', async () => {
     const { AI_PROCESS_JOB_TYPE, enqueueJevBackfill, JEV_PROCESS_JOB_TYPE } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 60_000;
 
@@ -680,7 +680,7 @@ describe('feed job queue', () => {
   it('allows one cooled down recovery for a failed Jev backfill', async () => {
     const { enqueueJevBackfill, JEV_PROCESS_JOB_TYPE } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 10_000_000;
     const cooldown = 60 * 60 * 1000;
@@ -734,7 +734,7 @@ describe('feed job queue', () => {
   it('bounds Jev backfill to four active jobs and deduplicates repeated runs', async () => {
     const { enqueueJevBackfill, JEV_PROCESS_JOB_TYPE } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 70_000;
 
@@ -775,7 +775,7 @@ describe('feed job queue', () => {
   it('recovers expired Jev leases and fails jobs that exhausted their attempts', async () => {
     const { JEV_PROCESS_LEASE_MS, recoverAbandonedJobs } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = 20_000_000;
     const startedAt = now - JEV_PROCESS_LEASE_MS - 1;
@@ -860,7 +860,7 @@ describe('feed job queue', () => {
 
   it('retries Jev failures and stops after the configured attempt limit', async () => {
     const { runDueJobs } = await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -925,7 +925,7 @@ describe('feed job queue', () => {
   it('keeps a Jev retry schedule and allows an explicit refresh for scored articles', async () => {
     const { enqueueJevBackfill, enqueueJevProcess, runDueJobs } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -994,7 +994,7 @@ describe('feed job queue', () => {
   it('leaves Jev jobs queued while Jev is unconfigured and hides them from scheduling', async () => {
     const { enqueueJevBackfill, getNextQueuedJobAt, runDueJobs } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     jevMocks.isRankingProviderConfigured.mockReturnValue(false);
@@ -1024,7 +1024,7 @@ describe('feed job queue', () => {
   it('prioritizes non-Jev work and caps Jev executions per worker run', async () => {
     const { AI_PROCESS_JOB_TYPE, JEV_PROCESS_JOB_TYPE, runDueJobs } =
       await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -1091,7 +1091,7 @@ describe('feed job queue', () => {
 
   it('counts failed Jev attempts against the per-run execution cap', async () => {
     const { JEV_PROCESS_JOB_TYPE, runDueJobs } = await import('./job-queue');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(

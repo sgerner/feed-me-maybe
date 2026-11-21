@@ -12,22 +12,22 @@ describe('settings API mutations', () => {
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (existsSync(testDbPath)) unlinkSync(testDbPath);
   });
 
   it('deletes a specific preference via delete_pref_* key', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
     const { getRankingFeedbackRevision } =
-      await import('$lib/server/ranking-freshness');
+      await import('#lib/server/ranking-freshness.ts');
     const db = getDb();
     const now = Date.now();
     const revision = getRankingFeedbackRevision();
@@ -96,7 +96,7 @@ describe('settings API mutations', () => {
   });
 
   it('selects a ranking provider through the settings API without returning key material', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -164,8 +164,8 @@ describe('settings API mutations', () => {
   });
 
   it('resets learned ranking inputs while preserving article state and metadata', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
     const db = getDb();
     const now = Date.now();
 
@@ -263,8 +263,8 @@ describe('settings API mutations', () => {
   });
 
   it('rolls back the entire training reset when an article update fails', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
     const db = getDb();
     const now = Date.now();
 

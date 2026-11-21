@@ -1,8 +1,8 @@
-import { getDb } from '$lib/server/db';
-import type { InteractionType } from '$lib/server/interactions';
+import { getDb } from '#lib/server/db/index.ts';
+import type { InteractionType } from '#lib/server/interactions.ts';
 import crypto from 'node:crypto';
-import { parseJsonTextArray } from '$lib/server/normalization';
-import { refreshCombinedScore } from '$lib/server/scoring';
+import { parseJsonTextArray } from '#lib/server/normalization.ts';
+import { refreshCombinedScore } from '#lib/server/scoring.ts';
 
 type ArticleContext = {
   id: string;

@@ -1,17 +1,20 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { isArticleOpenMode } from '$lib/constants/article-open-modes';
-import { getFeedHealth, normalizeFeedUrl } from '$lib/server/feed-management';
-import { fetchFeed } from '$lib/server/feed/fetcher';
-import { validatePublicUrl } from '$lib/server/network';
-import { isRedditUrl, normalizeRedditUrl } from '$lib/server/sources/reddit';
+import { getDb } from '#lib/server/db/index.ts';
+import { isArticleOpenMode } from '#lib/constants/article-open-modes.ts';
+import {
+  getFeedHealth,
+  normalizeFeedUrl,
+} from '#lib/server/feed-management.ts';
+import { fetchFeed } from '#lib/server/feed/fetcher.ts';
+import { validatePublicUrl } from '#lib/server/network.ts';
+import { isRedditUrl, normalizeRedditUrl } from '#lib/server/sources/reddit.ts';
 import {
   enqueueFeedFetch,
   FEED_FETCH_JOB_TYPE,
-} from '$lib/server/feed/job-queue';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
-import { wakePoller } from '$lib/server/poller';
+} from '#lib/server/feed/job-queue.ts';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+import { wakePoller } from '#lib/server/poller.ts';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {

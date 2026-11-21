@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
-  import { page as pageStore } from '$app/stores';
-  import ArticleList from '$lib/components/ArticleList.svelte';
-  import { fetchWithCsrf } from '$lib/client/csrf';
-  import { getCachedArticles, matchesOfflineVisibility } from '$lib/offline';
+  import { page as pageStore } from '$app/state';
+  import ArticleList from '#lib/components/ArticleList.svelte';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
+  import {
+    getCachedArticles,
+    matchesOfflineVisibility,
+  } from '#lib/offline/index.ts';
 
   type Article = {
     id: string;
@@ -192,10 +195,10 @@
 
       if (updateUrl) {
         const target = `/search${params.toString() ? `?${params}` : ''}`;
-        const current = `${$pageStore.url.pathname}${$pageStore.url.search}`;
+        const current = `${pageStore.url.pathname}${pageStore.url.search}`;
         if (target !== current) {
           lastAppliedUrlSearch = params.toString() ? `?${params}` : '';
-          await goto(target, { keepFocus: true, noScroll: true });
+          await goto(target, { reset: false });
         }
       }
     } catch (error) {
@@ -472,7 +475,7 @@
   }
 
   $effect(() => {
-    const url = $pageStore.url;
+    const url = pageStore.url;
     if (url.pathname !== '/search') {
       searchSequence += 1;
       searchController?.abort();

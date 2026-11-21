@@ -1,15 +1,15 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { encrypt } from '$lib/server/ai/crypto';
+import { encrypt } from '#lib/server/ai/crypto.ts';
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
-import { assertPublicNetworkUrl, SafeFetchError } from '$lib/server/network';
-import { getProvider } from '$lib/server/ai/models-dev';
-import { enqueueAiProcess } from '$lib/server/feed/job-queue';
+import { getDb } from '#lib/server/db/index.ts';
+import { assertPublicNetworkUrl, SafeFetchError } from '#lib/server/network.ts';
+import { getProvider } from '#lib/server/ai/models-dev.ts';
+import { enqueueAiProcess } from '#lib/server/feed/job-queue.ts';
 import {
   decryptProviderCredentials,
   hasProviderCredentials,
-} from '$lib/server/ai/credentials';
+} from '#lib/server/ai/credentials.ts';
 
 function isValidCustomModelId(value: string): boolean {
   return (

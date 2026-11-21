@@ -1,14 +1,14 @@
 import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
-import { recordAppError } from '$lib/server/logging';
-import { sanitizeHtml } from '$lib/utils/format';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+import { recordAppError } from '#lib/server/logging.ts';
+import { sanitizeHtml } from '#lib/utils/format.ts';
 import {
   MAX_HTML_RESPONSE_BYTES,
   SafeFetchError,
   fetchSafe,
   readResponseText,
-} from '$lib/server/network';
+} from '#lib/server/network.ts';
 
 function safeOrigin(value: string): string {
   try {

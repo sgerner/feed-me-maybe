@@ -3,12 +3,12 @@ import {
   readRetryAt,
   type FetchResult,
   type FetchedItem,
-} from '$lib/server/feed/fetcher';
+} from '#lib/server/feed/fetcher.ts';
 import {
   MAX_JSON_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '$lib/server/network';
+} from '#lib/server/network.ts';
 
 export type RedditKind =
   | 'subreddit'

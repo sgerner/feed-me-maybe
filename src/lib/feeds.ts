@@ -1,5 +1,5 @@
-import { addToast } from '$lib/stores/toast.svelte';
-import { fetchWithCsrf } from '$lib/client/csrf';
+import { addToast } from '#lib/stores/toast.svelte.ts';
+import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
 let syncRequest: Promise<boolean> | null = null;
 let lastSilentSyncAt = 0;
