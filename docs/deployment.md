@@ -172,14 +172,8 @@ server {
 The SQLite database is stored in a Docker named volume:
 
 ```bash
-# List volumes
-docker volume ls | grep feed-me-maybe
-
-# Inspect volume details
-docker volume inspect feed-me-maybe-data
-
-# Find the actual path on the host
-docker volume inspect -f '{{ .Mountpoint }}' feed-me-maybe-data
+# Inspect the running or stopped container's actual mount, including Compose's project prefix.
+docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{println .Name .Source}}{{end}}{{end}}' feed-me-maybe
 ```
 
 ### Bind Mount (Alternative)
