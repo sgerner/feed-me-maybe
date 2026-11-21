@@ -5,10 +5,10 @@ import {
 } from '#lib/server/network.ts';
 import { ProviderHttpError, retryAtFromHeader } from './provider-error';
 import fs from 'node:fs';
-import { buildRankingPreferenceInput } from '$lib/server/ai/preference-input';
-import { getDb } from '$lib/server/db';
-import { parseJsonTextArray, stripHtml } from '$lib/server/normalization';
-import { refreshCombinedScore } from '$lib/server/scoring';
+import { buildRankingPreferenceInput } from '#lib/server/ai/preference-input.ts';
+import { getDb } from '#lib/server/db/index.ts';
+import { parseJsonTextArray, stripHtml } from '#lib/server/normalization.ts';
+import { refreshCombinedScore } from '#lib/server/scoring.ts';
 import {
   buildSafeDecisionInput,
   JEV_DECISION_QUESTIONS,

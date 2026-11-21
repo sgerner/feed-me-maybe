@@ -274,7 +274,7 @@ describe('personal search engine', () => {
   });
 
   it('excludes paused feeds from default searches while allowing explicit feed or state filters', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { searchArticles } = await import('./search');
     const db = getDb();
     const now = Date.now();

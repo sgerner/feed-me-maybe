@@ -46,7 +46,7 @@ describe('feed job queue', () => {
     db.prepare(
       "DELETE FROM app_settings WHERE key LIKE 'provider_cooldown_%' OR key = 'ai_enabled'",
     ).run();
-    const { encrypt } = await import('$lib/server/ai/crypto');
+    const { encrypt } = await import('#lib/server/ai/crypto.ts');
     const creds = encrypt(JSON.stringify({ apiKey: 'test-ai-key' }));
     db.prepare(
       'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
@@ -1170,9 +1170,10 @@ describe('feed job queue', () => {
       AI_PROCESS_JOB_TYPE,
       JEV_PROCESS_JOB_TYPE,
     } = await import('./job-queue');
-    const { AiTruncationError } = await import('$lib/server/ai/client');
-    const { ProviderHttpError } = await import('$lib/server/ai/provider-error');
-    const { getDb } = await import('$lib/server/db');
+    const { AiTruncationError } = await import('#lib/server/ai/client.ts');
+    const { ProviderHttpError } =
+      await import('#lib/server/ai/provider-error.ts');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     const backoffAt = now + 90_000;
@@ -1225,7 +1226,7 @@ describe('feed job queue', () => {
     expect(getJob(unconfiguredAi.id)?.status).toBe('queued');
     expect(aiMocks.processArticle).not.toHaveBeenCalled();
 
-    const { encrypt } = await import('$lib/server/ai/crypto');
+    const { encrypt } = await import('#lib/server/ai/crypto.ts');
     const creds = encrypt(JSON.stringify({ apiKey: 'test-ai-key' }));
     db.prepare(
       'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
@@ -1256,8 +1257,8 @@ describe('feed job queue', () => {
       getNextQueuedJobAt,
       JEV_PROCESS_JOB_TYPE,
     } = await import('./job-queue');
-    const { pruneOperationalHistory } = await import('$lib/server/logging');
-    const { getDb } = await import('$lib/server/db');
+    const { pruneOperationalHistory } = await import('#lib/server/logging.ts');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     const old = now - 31 * 24 * 60 * 60 * 1000;
@@ -1327,7 +1328,7 @@ describe('feed job queue', () => {
   });
 
   it('skips paused feeds when enqueueing or executing AI and Jev jobs', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const {
       enqueueAiProcess,
       enqueueAiBackfill,

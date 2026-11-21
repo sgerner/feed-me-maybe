@@ -314,7 +314,7 @@ push schema changes into the app database.
 
 | Layer        | Technology                                        |
 | ------------ | ------------------------------------------------- |
-| Framework    | SvelteKit 2 with Svelte 5 (runes)                 |
+| Framework    | SvelteKit 3 with Svelte 5 (runes)                 |
 | Styling      | Tailwind CSS v4 + Skeleton UI v4 (Cerberus theme) |
 | Database     | SQLite via better-sqlite3                         |
 | ORM          | Drizzle ORM                                       |

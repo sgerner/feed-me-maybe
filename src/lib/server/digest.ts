@@ -1,15 +1,15 @@
 import { stripHtml } from '#lib/server/normalization.ts';
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
-import { getConfiguredAiClient } from '$lib/server/ai/runtime';
-import { parseLlmJsonObject } from '$lib/server/ai/client';
-import { ProviderHttpError } from '$lib/server/ai/provider-error';
+import { getDb } from '#lib/server/db/index.ts';
+import { getConfiguredAiClient } from '#lib/server/ai/runtime.ts';
+import { parseLlmJsonObject } from '#lib/server/ai/client.ts';
+import { ProviderHttpError } from '#lib/server/ai/provider-error.ts';
 import {
   AI_PROCESS_JOB_TYPE,
   getProviderCooldown,
   setProviderCooldown,
-} from '$lib/server/feed/job-queue';
-import { hasProviderCredentials } from '$lib/server/ai/credentials';
+} from '#lib/server/feed/job-queue.ts';
+import { hasProviderCredentials } from '#lib/server/ai/credentials.ts';
 import {
   WEEKLY_DIGEST_SYSTEM_PROMPT,
   buildWeeklyDigestPromptResult,

@@ -4,13 +4,13 @@ import {
   isJevConfigured,
   isRankingProviderConfigured,
   isSubqConfigured,
-} from '$lib/server/ai/jev';
-import { getRankingProvider } from '$lib/server/ranking-provider';
+} from '#lib/server/ai/jev.ts';
+import { getRankingProvider } from '#lib/server/ranking-provider.ts';
 import {
   AI_PROCESS_JOB_TYPE,
   getProviderCooldown,
   JEV_PROCESS_JOB_TYPE,
-} from '$lib/server/feed/job-queue';
+} from '#lib/server/feed/job-queue.ts';
 
 function parseDetails(
   value: string | null | undefined,

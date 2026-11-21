@@ -5,12 +5,12 @@ import {
   ARTICLE_ANALYSIS_SIGNAL_TAGS,
   buildArticleAnalysisPrompt,
 } from './prompts';
-import { coerceText, stripHtml } from '$lib/server/normalization';
+import { coerceText, stripHtml } from '#lib/server/normalization.ts';
 import {
   fetchSafe,
   MAX_JSON_RESPONSE_BYTES,
   readResponseText,
-} from '$lib/server/network';
+} from '#lib/server/network.ts';
 import { ProviderHttpError, retryAtFromHeader } from './provider-error';
 import { redactSecrets } from './redact';
 

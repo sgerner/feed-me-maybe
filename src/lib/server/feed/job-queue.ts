@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
-import { ProviderHttpError } from '$lib/server/ai/provider-error';
-import { SafeFetchError } from '$lib/server/network';
-import { getDb } from '$lib/server/db';
-import { recordAppError } from '$lib/server/logging';
-import { isRankingProviderConfigured } from '$lib/server/ai/jev';
-import { hasArticleAnalysisText } from '$lib/server/ai/prompts';
-import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
+import { ProviderHttpError } from '#lib/server/ai/provider-error.ts';
+import { SafeFetchError } from '#lib/server/network.ts';
+import { getDb } from '#lib/server/db/index.ts';
+import { recordAppError } from '#lib/server/logging.ts';
+import { isRankingProviderConfigured } from '#lib/server/ai/jev.ts';
+import { hasArticleAnalysisText } from '#lib/server/ai/prompts.ts';
+import { isAiProcessingConfigured } from '#lib/server/ai/runtime.ts';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
@@ -1117,7 +1117,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     ) {
       return { articleId, processed: false, skipped: true };
     }
-    const { processArticle } = await import('$lib/server/ai/processor');
+    const { processArticle } = await import('#lib/server/ai/processor.ts');
     const telemetry = await processArticle(articleId);
     return {
       articleId,
@@ -1162,7 +1162,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!isRankingProviderConfigured()) {
       throw new Error('Selected ranking provider is not configured');
     }
-    const { processJevArticle } = await import('$lib/server/ai/jev');
+    const { processJevArticle } = await import('#lib/server/ai/jev.ts');
     const telemetry = await processJevArticle(articleId);
     return {
       articleId,

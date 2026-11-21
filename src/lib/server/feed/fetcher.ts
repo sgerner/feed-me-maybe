@@ -5,12 +5,12 @@ import {
   MAX_FEED_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '$lib/server/network';
+} from '#lib/server/network.ts';
 import {
   coerceText,
   normalizeTextArray,
   stripHtml,
-} from '$lib/server/normalization';
+} from '#lib/server/normalization.ts';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 

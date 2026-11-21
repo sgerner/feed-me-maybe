@@ -571,7 +571,7 @@ describe('ranking freshness after explicit feedback', () => {
   it('reconciles null heuristic_revision at revision 0 and skips hidden feedback targets', async () => {
     await article('rev-zero');
     await article('hidden-unscored', { score: null });
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { flushRankingRefreshQueue, refreshRankingAfterFeedback } =
       await import('./ranking-freshness');
     const db = getDb();
@@ -607,7 +607,7 @@ describe('ranking freshness after explicit feedback', () => {
       title: 'Unrelated obituary',
       ageDays: 100,
     });
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { POST } = await import('../../routes/api/articles/state/+server');
     const { getRankingFeedbackRevision } = await import('./ranking-freshness');
 
@@ -657,7 +657,7 @@ describe('ranking freshness after explicit feedback', () => {
 
   it('excludes paused feeds from feedback refresh targets, queue flushing, and preserves older saved heuristics on global mutation', async () => {
     await article('enabled-art');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
 

@@ -378,7 +378,7 @@ describe('preference learning model', () => {
   });
 
   it('uses peak decayed negative evidence, gates broad/quality features, normalizes symbols/authors, and reconciles auto-hides', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const {
       updatePreferenceMemoryFromInteraction,
       getPreferenceStateForArticle,

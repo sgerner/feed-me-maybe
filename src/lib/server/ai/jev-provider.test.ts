@@ -457,7 +457,7 @@ describe('selected ranking provider', () => {
   });
 
   it('aligns decayed preference weights, polarity evidence counts, source signals, and blank feed title fallback', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { scoreArticleWithJev } = await import('./jev');
     const db = getDb();
     const now = Date.now();

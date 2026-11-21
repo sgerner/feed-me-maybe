@@ -430,7 +430,7 @@ describe('feed ingester identity and duplicate handling', () => {
   it('preserves ready AI metadata and combined_score on updates while AI is paused', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(

@@ -349,8 +349,8 @@ describe('settings API mutations', () => {
   });
 
   it('unhides preference_model auto-hides on delete_pref_ and reset_training while preserving manual hides, and sorts memory by decayed strength', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
     const { load } = await import('../../settings/memory/+page.server');
     const db = getDb();
     db.prepare('DELETE FROM user_preference_memory').run();

@@ -319,7 +319,7 @@ describe('AI configuration API', () => {
   });
 
   it('queues backlog on config save and counts unindexed pending jobs in status', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(

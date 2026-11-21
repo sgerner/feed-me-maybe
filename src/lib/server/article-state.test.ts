@@ -327,7 +327,7 @@ describe('article state foundation', () => {
   });
 
   it('excludes paused feeds from unread and state counts', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getUnreadCounts, getArticleStateCounts } =
       await import('./article-state');
     const db = getDb();

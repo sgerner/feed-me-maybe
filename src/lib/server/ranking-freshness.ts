@@ -5,9 +5,9 @@ import {
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
   type PreferenceMemoryDelta,
-} from '$lib/server/preferences';
-import type { InteractionType } from '$lib/server/interactions';
-import { wakePoller } from '$lib/server/poller';
+} from '#lib/server/preferences.ts';
+import type { InteractionType } from '#lib/server/interactions.ts';
+import { wakePoller } from '#lib/server/poller.ts';
 
 const FEEDBACK_REVISION_SETTING = 'ranking_feedback_revision';
 const VISIBLE_ARTICLE_LIMIT = 30;

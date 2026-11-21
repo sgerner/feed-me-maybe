@@ -67,8 +67,8 @@ describe('article enrichment', () => {
   });
 
   it('reuses canonical URL AI metadata, skips hidden items, and aborts commit when paused mid-flight', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { getConfiguredAiClient, isAiProcessingConfigured } =
       await import('./runtime');
     const { processArticle } = await import('./processor');

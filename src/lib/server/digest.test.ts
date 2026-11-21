@@ -730,9 +730,9 @@ describe('weekly digest', () => {
   });
 
   it('skips AI during provider cooldown, honors AbortSignal, and avoids overwriting AI cache with fallback', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
-    const { encrypt } = await import('$lib/server/ai/crypto');
+    const { encrypt } = await import('#lib/server/ai/crypto.ts');
     const originalSecret = process.env.APP_SECRET;
     process.env.APP_SECRET = 'test-app-secret-which-is-at-least-32-characters';
     try {
@@ -787,7 +787,7 @@ describe('weekly digest', () => {
   });
 
   it('excludes articles from paused feeds in weekly digest', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getWeeklyDigestArticles } = await import('./digest');
     const db = getDb();
     const now = Date.now();
