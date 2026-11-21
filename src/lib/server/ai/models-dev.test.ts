@@ -35,6 +35,11 @@ describe('models.dev catalog compatibility', () => {
                 limit: { context: 8_000 },
                 modalities: { input: ['text'], output: ['text'] },
               },
+              malformedLimit: {
+                name: 'Malformed context model',
+                limit: { context: 'Infinity' },
+                modalities: { input: ['text'], output: ['text'] },
+              },
             },
           },
           deepseek: {
@@ -85,6 +90,17 @@ describe('models.dev catalog compatibility', () => {
               },
             },
           },
+          queryEndpoint: {
+            name: 'Endpoint with query string',
+            npm: '@ai-sdk/openai-compatible',
+            api: 'https://api.example.com/v1?tenant=demo',
+            models: {
+              model: {
+                limit: { context: 32_000 },
+                modalities: { input: ['text'], output: ['text'] },
+              },
+            },
+          },
         }),
       ),
     );
@@ -101,5 +117,6 @@ describe('models.dev catalog compatibility', () => {
     expect(providers[1].baseUrl).toBe('https://api.deepseek.com/v1');
     await expect(getModel('anthropic', 'claude')).resolves.toBeUndefined();
     await expect(getModel('openai', 'embedding')).resolves.toBeUndefined();
+    await expect(getModel('openai', 'malformedLimit')).resolves.toBeUndefined();
   });
 });
