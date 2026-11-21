@@ -4,7 +4,14 @@
   import { renderContent } from '$lib/utils/format';
   import { page } from '$app/stores';
   import { navigating } from '$app/state';
-  import { addToast, getToasts, removeToast } from '$lib/stores/toast.svelte';
+  import {
+    addToast,
+    getToasts,
+    pauseToast,
+    removeToast,
+    resumeToast,
+    setToastSuppressed,
+  } from '$lib/stores/toast.svelte';
   import { fade, fly } from 'svelte/transition';
   import { afterNavigate, invalidateAll } from '$app/navigation';
   import PWABanner from '$lib/components/PWABanner.svelte';
@@ -123,7 +130,8 @@
     return () => document.removeEventListener('keydown', handleSidebarKeydown);
   });
 
-  afterNavigate(() => {
+  afterNavigate(({ to }) => {
+    setToastSuppressed(to?.url.pathname.startsWith('/articles/') ?? false);
     if (!sidebarOpen || !isMobileViewport) {
       sidebarOpen = false;
       return;
@@ -1282,55 +1290,75 @@
       {/if}
     </dialog>
 
-    <!-- Toast container -->
-    <div
-      class="fixed right-5 z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5 {$page.url.pathname.startsWith(
-        '/articles/',
-      )
-        ? 'bottom-[calc(11rem+env(safe-area-inset-bottom))]'
-        : 'bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))]'}"
-      aria-live="polite"
-      aria-atomic="false"
-    >
-      {#each toasts as toast (toast.id)}
-        <div
-          in:fly={{ y: 12, duration: 280, delay: 60 }}
-          out:fly={{ y: 8, duration: 200 }}
-          class="toast-glass rounded-[2px] px-4 py-2.5 text-sm font-medium text-white shadow-xl transition-all duration-300"
-          role={toast.type === 'error' ? 'alert' : 'status'}
-          class:toast-success={toast.type === 'success'}
-          class:toast-error={toast.type === 'error'}
-          class:toast-info={toast.type === 'info'}
-          class:toast-warning={toast.type === 'warning'}
-        >
-          <span>{toast.message}</span>
-          {#if toast.action}
+    {#if !$page.url.pathname.startsWith('/articles/')}
+      <!-- Toast container -->
+      <div
+        class="app-toasts fixed right-5 bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))] z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5"
+        aria-live="polite"
+        aria-atomic="false"
+      >
+        {#each toasts as toast (toast.id)}
+          <div
+            in:fly={{ y: 12, duration: 280, delay: 60 }}
+            out:fade={{ duration: 120 }}
+            class="toast-glass flex items-center gap-2 rounded-[2px] px-3 py-2 text-sm font-medium text-white shadow-xl transition-all duration-300"
+            role={toast.type === 'error' ? 'alert' : 'status'}
+            class:toast-success={toast.type === 'success'}
+            class:toast-error={toast.type === 'error'}
+            class:toast-info={toast.type === 'info'}
+            class:toast-warning={toast.type === 'warning'}
+            onmouseenter={() => pauseToast(toast.id, 'hover')}
+            onmouseleave={() => resumeToast(toast.id, 'hover')}
+            onfocusin={() => pauseToast(toast.id, 'focus')}
+            onfocusout={(event) => {
+              const nextTarget = event.relatedTarget as Node | null;
+              if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                resumeToast(toast.id, 'focus');
+              }
+            }}
+          >
+            <span class="min-w-0 flex-1">{toast.message}</span>
+            {#if toast.action}
+              <button
+                type="button"
+                class="shrink-0 underline decoration-primary-300 underline-offset-2 hover:text-primary-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-300"
+                onclick={async (event) => {
+                  const button = event.currentTarget;
+                  await toast.action?.run();
+                  if (document.activeElement === button) {
+                    document.getElementById('main-content')?.focus();
+                  }
+                  removeToast(toast.id);
+                }}>{toast.action.label}</button
+              >
+            {/if}
             <button
               type="button"
-              class="ml-3 underline decoration-primary-300 underline-offset-2 hover:text-primary-200"
-              onclick={async (event) => {
-                const button = event.currentTarget;
-                await toast.action?.run();
-                if (document.activeElement === button) {
-                  document.getElementById('main-content')?.focus();
-                }
-                removeToast(toast.id);
-              }}>{toast.action.label}</button
-            >
-            <button
-              type="button"
-              class="ml-3 underline decoration-primary-300 underline-offset-2 hover:text-primary-200"
+              class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
+              aria-label="Dismiss notification"
               onclick={(event) => {
                 if (document.activeElement === event.currentTarget) {
                   document.getElementById('main-content')?.focus();
                 }
                 removeToast(toast.id);
-              }}>Dismiss</button
+              }}
             >
-          {/if}
-        </div>
-      {/each}
-    </div>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                class="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              >
+                <path d="m4 4 8 8M12 4l-8 8" />
+              </svg>
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     {#if showAddFeedModal}
       <div
@@ -1485,3 +1513,10 @@
     {@render children()}
   </main>
 {/if}
+
+<style>
+  /* Svelte keeps exiting elements mounted until their fade finishes. */
+  .app-toasts > .toast-glass:nth-last-child(n + 3) {
+    display: none;
+  }
+</style>
