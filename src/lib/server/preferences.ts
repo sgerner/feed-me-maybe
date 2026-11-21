@@ -332,7 +332,7 @@ function getArticleContext(articleId: string): ArticleContext | undefined {
            COALESCE(am.content_type, '') as ai_content_type,
            COALESCE(am.signals, '[]') as ai_signals
     FROM articles a
-    LEFT JOIN article_ai_metadata am ON am.article_id = a.id
+    LEFT JOIN article_ai_metadata am ON am.article_id = a.id AND am.analysis_status = 'ready'
     WHERE a.id = ?
   `,
     )
@@ -361,7 +361,7 @@ export function getPreferenceFeatureKeysForArticles(
                COALESCE(am.content_type, '') AS ai_content_type,
                COALESCE(am.signals, '[]') AS ai_signals
         FROM articles a
-        LEFT JOIN article_ai_metadata am ON am.article_id = a.id
+        LEFT JOIN article_ai_metadata am ON am.article_id = a.id AND am.analysis_status = 'ready'
         WHERE a.id IN (${ids.map(() => '?').join(', ')})
       `,
       )

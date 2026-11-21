@@ -7,6 +7,7 @@ import {
   type PreferenceMemoryDelta,
 } from '$lib/server/preferences';
 import type { InteractionType } from '$lib/server/interactions';
+import { wakePoller } from '$lib/server/poller';
 
 const FEEDBACK_REVISION_SETTING = 'ranking_feedback_revision';
 const VISIBLE_ARTICLE_LIMIT = 30;
@@ -102,6 +103,9 @@ function getFeedbackTargets(
     .prepare(
       `SELECT id FROM articles
        WHERE jev_score IS NULL
+         AND COALESCE(hidden, 0) = 0
+         AND COALESCE(rejected, 0) = 0
+         AND COALESCE(thumbs_down, 0) = 0
          AND fetched_at >= ?
        ORDER BY fetched_at DESC, id DESC
        LIMIT ?`,
@@ -112,6 +116,9 @@ function getFeedbackTargets(
     .prepare(
       `SELECT id, feed_id FROM articles
        WHERE jev_score IS NOT NULL
+         AND COALESCE(hidden, 0) = 0
+         AND COALESCE(rejected, 0) = 0
+         AND COALESCE(thumbs_down, 0) = 0
          AND fetched_at >= ?
        ORDER BY fetched_at DESC, id DESC
        LIMIT ?`,
@@ -223,6 +230,7 @@ export function refreshRankingAfterProfileMutation(articleId: string): void {
     refreshTargetImmediately(existingIds[0], revision);
   });
   transaction.immediate();
+  wakePoller();
 }
 
 /**
@@ -320,6 +328,7 @@ export function refreshRankingAfterFeedback(input: {
     ).run(revision, revision, JSON.stringify(targetIds));
   });
   refreshTargets.immediate();
+  wakePoller();
 
   return { revision, refreshedArticleIds: targetIds };
 }
@@ -385,7 +394,10 @@ export async function flushRankingRefreshQueue(
       continue;
     }
 
-    if (Number(row.heuristic_revision) !== revision) {
+    if (
+      row.heuristic_revision === null ||
+      Number(row.heuristic_revision) !== revision
+    ) {
       const transaction = db.transaction(() => {
         const current = db
           .prepare(
@@ -418,6 +430,7 @@ export async function flushRankingRefreshQueue(
     if (
       !current ||
       Number(current.requested_revision) !== revision ||
+      current.heuristic_revision === null ||
       Number(current.heuristic_revision) !== revision
     ) {
       continue;
@@ -454,7 +467,7 @@ export function refreshRankingAfterGlobalProfileMutation(): {
   const db = getDb();
   const now = Date.now();
   const activeCutoff = now - RECENT_ARTICLE_WINDOW_MS;
-  return db
+  const result = db
     .transaction(() => {
       const revision = advanceRankingFeedbackRevision(now);
 
@@ -507,7 +520,7 @@ export function refreshRankingAfterGlobalProfileMutation(): {
       ).run();
       db.prepare('DELETE FROM ranking_refresh_queue').run();
       db.prepare(
-        "DELETE FROM jobs WHERE type = 'jev_process' AND status = 'queued'",
+        "DELETE FROM jobs WHERE type = 'jev_process' AND status != 'processing'",
       ).run();
 
       const articles = db
@@ -532,4 +545,6 @@ export function refreshRankingAfterGlobalProfileMutation(): {
       return { revision, articleCount: articles.length };
     })
     .immediate();
+  if (result.articleCount > 0) wakePoller();
+  return result;
 }

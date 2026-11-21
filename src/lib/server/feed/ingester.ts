@@ -356,6 +356,9 @@ export async function ingestFeed(
       content_length_upper: number | null;
       has_content: number;
       has_summary: number;
+      hidden: number;
+      rejected: number;
+      thumbs_down: number;
       author: string | null;
       categories: string | null;
       external_url: string | null;
@@ -376,6 +379,9 @@ export async function ingestFeed(
                  CASE WHEN summary IS NOT NULL
                             AND length(CAST(summary AS BLOB)) > 0
                       THEN 1 ELSE 0 END AS has_summary,
+                 COALESCE(hidden, 0) AS hidden,
+                 COALESCE(rejected, 0) AS rejected,
+                 COALESCE(thumbs_down, 0) AS thumbs_down,
                  author, categories,
                  ${supportsExternalUrl ? 'external_url' : "'' AS external_url"}
           FROM articles WHERE feed_id = ?
@@ -548,6 +554,9 @@ export async function ingestFeed(
           ).run(...params.slice(0, -1), Date.now(), params.at(-1));
         }
 
+        const existingVisible =
+          !existing.hidden && !existing.rejected && !existing.thumbs_down;
+
         if (rankingInputChanged) {
           db.prepare(
             `UPDATE articles
@@ -555,16 +564,25 @@ export async function ingestFeed(
              WHERE id = ?`,
           ).run(existing.id);
           db.prepare(
-            `UPDATE article_ai_metadata
-             SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
-             WHERE article_id = ?`,
+            `DELETE FROM jobs
+             WHERE type = 'jev_process' AND status != 'processing'
+               AND json_valid(payload) = 1
+               AND json_extract(payload, '$.articleId') = ?`,
           ).run(existing.id);
+          if (queueAi) {
+            db.prepare(
+              `UPDATE article_ai_metadata
+               SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
+               WHERE article_id = ?`,
+            ).run(existing.id);
+          }
           refreshCombinedScore(existing.id);
-          rankingArticleIds.add(existing.id);
+          if (existingVisible) rankingArticleIds.add(existing.id);
         }
 
         const shouldQueueAi =
           queueAi &&
+          existingVisible &&
           rankingInputChanged &&
           (Boolean(existing.has_content) ||
             Boolean(existing.has_summary) ||
@@ -628,7 +646,22 @@ export async function ingestFeed(
         `INSERT INTO articles (${articleColumns}) VALUES (${articleValues.map(() => '?').join(', ')})`,
       ).run(...articleValues);
       applyPreferenceModelToArticle(articleId);
-      if (queueAi && hasArticleAnalysisText(item.summary, item.content)) {
+      const visibility = db
+        .prepare(
+          'SELECT hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+        )
+        .get(articleId) as
+        { hidden: number; rejected: number; thumbs_down: number } | undefined;
+      const isVisible =
+        Boolean(visibility) &&
+        !visibility?.hidden &&
+        !visibility?.rejected &&
+        !visibility?.thumbs_down;
+      if (
+        isVisible &&
+        queueAi &&
+        hasArticleAnalysisText(item.summary, item.content)
+      ) {
         enqueueAiProcess(articleId, { feedId });
         aiQueuedArticleIds.add(articleId);
       }
@@ -639,7 +672,7 @@ export async function ingestFeed(
       if (newArticle) webhookArticles.push(newArticle);
 
       newArticleIds.push(articleId);
-      rankingArticleIds.add(articleId);
+      if (isVisible) rankingArticleIds.add(articleId);
       const inserted: ExistingArticle = {
         id: articleId,
         url: normalizedUrl,
@@ -650,6 +683,9 @@ export async function ingestFeed(
         content_length_upper: item.content?.length || 0,
         has_content: item.content ? 1 : 0,
         has_summary: item.summary ? 1 : 0,
+        hidden: visibility?.hidden ? 1 : 0,
+        rejected: visibility?.rejected ? 1 : 0,
+        thumbs_down: visibility?.thumbs_down ? 1 : 0,
         author: item.author || null,
         categories: item.categories.length
           ? JSON.stringify(item.categories)

@@ -20,7 +20,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
            am.summary as ai_summary, am.topics, am.content_type, am.explanation
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
-    LEFT JOIN article_ai_metadata am ON am.article_id = a.id
+    LEFT JOIN article_ai_metadata am ON am.article_id = a.id AND am.analysis_status = 'ready'
     WHERE a.id = ?
   `,
     )

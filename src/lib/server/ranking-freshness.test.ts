@@ -567,4 +567,36 @@ describe('ranking freshness after explicit feedback', () => {
       ).toBeTruthy();
     },
   );
+
+  it('reconciles null heuristic_revision at revision 0 and skips hidden feedback targets', async () => {
+    await article('rev-zero');
+    await article('hidden-unscored', { score: null });
+    const { getDb } = await import('$lib/server/db');
+    const { flushRankingRefreshQueue, refreshRankingAfterFeedback } =
+      await import('./ranking-freshness');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(
+      'hidden-unscored',
+    );
+    db.prepare(
+      `INSERT INTO ranking_refresh_queue (article_id, requested_revision, heuristic_revision, not_before, created_at)
+       VALUES ('rev-zero', 0, NULL, ?, ?)`,
+    ).run(now - 1000, now - 1000);
+
+    const queued = await flushRankingRefreshQueue(now, 4);
+    expect(queued).toBe(1);
+    expect(
+      db.prepare('SELECT COUNT(*) AS c FROM ranking_refresh_queue').get() as {
+        c: number;
+      },
+    ).toEqual({ c: 0 });
+
+    const feedbackResult = refreshRankingAfterFeedback({
+      articleIds: ['rev-zero'],
+      type: 'thumbs_up',
+    });
+    expect(feedbackResult.refreshedArticleIds).not.toContain('hidden-unscored');
+  });
 });

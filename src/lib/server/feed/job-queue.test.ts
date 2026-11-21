@@ -24,9 +24,11 @@ vi.mock('$lib/server/ai/processor', () => aiMocks);
 describe('feed job queue', () => {
   const testDbPath = join(process.cwd(), 'data', 'test-feed-job-queue.db');
   const originalDbUrl = process.env.DATABASE_URL;
+  const originalAppSecret = process.env.APP_SECRET;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = testDbPath;
+    process.env.APP_SECRET = 'test-app-secret-which-is-at-least-32-characters';
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
     const { initializeDatabase } = await import('$lib/server/db/migrate');
@@ -40,9 +42,23 @@ describe('feed job queue', () => {
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM feeds').run();
     db.prepare('DELETE FROM app_error_logs').run();
+    db.prepare('DELETE FROM provider_configs').run();
     db.prepare(
       "DELETE FROM app_settings WHERE key LIKE 'provider_cooldown_%' OR key = 'ai_enabled'",
     ).run();
+    const { encrypt } = await import('$lib/server/ai/crypto');
+    const creds = encrypt(JSON.stringify({ apiKey: 'test-ai-key' }));
+    db.prepare(
+      'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+    ).run(
+      'test-ai-cfg',
+      'test-provider',
+      'test-model',
+      creds.encrypted,
+      creds.nonce,
+      Date.now(),
+      Date.now(),
+    );
     jevMocks.isRankingProviderConfigured.mockReturnValue(true);
     jevMocks.processJevArticle.mockReset().mockResolvedValue(undefined);
     aiMocks.processArticle.mockReset().mockResolvedValue(undefined);
@@ -52,6 +68,8 @@ describe('feed job queue', () => {
     const { closeDb } = await import('$lib/server/db');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
+    if (originalAppSecret === undefined) delete process.env.APP_SECRET;
+    else process.env.APP_SECRET = originalAppSecret;
     for (const suffix of ['', '-wal', '-shm']) {
       const path = `${testDbPath}${suffix}`;
       if (existsSync(path)) unlinkSync(path);
@@ -1140,5 +1158,171 @@ describe('feed job queue', () => {
     expect(jevMocks.processJevArticle).toHaveBeenCalledTimes(4);
     expect(jobs.filter(({ attempts }) => attempts === 1)).toHaveLength(4);
     expect(jobs.filter(({ attempts }) => attempts === 0)).toHaveLength(4);
+  });
+
+  it('preserves retry backoff on feedback wakeups, skips unconfigured AI, and enforces permanent truncations', async () => {
+    const {
+      enqueueAiProcess,
+      enqueueJevProcess,
+      getJob,
+      getNextQueuedJobAt,
+      runDueJobs,
+      AI_PROCESS_JOB_TYPE,
+      JEV_PROCESS_JOB_TYPE,
+    } = await import('./job-queue');
+    const { AiTruncationError } = await import('$lib/server/ai/client');
+    const { ProviderHttpError } = await import('$lib/server/ai/provider-error');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    const backoffAt = now + 90_000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-backoff', 'https://example.com/backoff', now, now);
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'backoff-article',
+      'feed-backoff',
+      'https://example.com/backoff/1',
+      'Backoff article',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, scheduled_at, created_at)
+       VALUES ('jev-backoff', ?, 'queued', ?, 1, 4, ?, ?)`,
+    ).run(
+      JEV_PROCESS_JOB_TYPE,
+      JSON.stringify({ articleId: 'backoff-article' }),
+      backoffAt,
+      now - 1000,
+    );
+
+    const woken = enqueueJevProcess('backoff-article', { feedback: true, now });
+    expect(woken?.scheduledAt).toBe(backoffAt);
+
+    const retryAt = now + 45_000;
+    jevMocks.processJevArticle.mockRejectedValueOnce(
+      new ProviderHttpError('Too many requests', 429, retryAt),
+    );
+    db.prepare('UPDATE jobs SET scheduled_at = ? WHERE id = ?').run(
+      now - 1,
+      'jev-backoff',
+    );
+    await runDueJobs({ now, maxJobs: 1 });
+    expect(getJob('jev-backoff')?.result).toEqual({ retryAt });
+
+    db.prepare('DELETE FROM provider_configs').run();
+    const unconfiguredAi = enqueueAiProcess('unconfigured-ai', { now });
+    expect(getNextQueuedJobAt()).toBeGreaterThanOrEqual(
+      Math.max(now + 60_000, retryAt),
+    );
+    expect(getNextQueuedJobAt()).toBeLessThanOrEqual(Date.now() + 60_000);
+    await runDueJobs({ now, maxJobs: 1 });
+    expect(getJob(unconfiguredAi.id)?.status).toBe('queued');
+    expect(aiMocks.processArticle).not.toHaveBeenCalled();
+
+    const { encrypt } = await import('$lib/server/ai/crypto');
+    const creds = encrypt(JSON.stringify({ apiKey: 'test-ai-key' }));
+    db.prepare(
+      'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+    ).run(
+      'restored-ai',
+      'test-provider',
+      'test-model',
+      creds.encrypted,
+      creds.nonce,
+      now,
+      now,
+    );
+    aiMocks.processArticle.mockRejectedValueOnce(
+      new AiTruncationError('Truncated completion'),
+    );
+    await runDueJobs({ now, maxJobs: 1 });
+    expect(getJob(unconfiguredAi.id)).toMatchObject({
+      status: 'failed',
+      attempts: 1,
+    });
+    expect(AI_PROCESS_JOB_TYPE).toBe('ai_process');
+  });
+
+  it('prevents poller spins at Jev capacity and prunes sessions and non-backfill ranking jobs', async () => {
+    const {
+      DEFAULT_JEV_QUEUE_CAPACITY,
+      enqueueJevProcess,
+      getNextQueuedJobAt,
+      JEV_PROCESS_JOB_TYPE,
+    } = await import('./job-queue');
+    const { pruneOperationalHistory } = await import('$lib/server/logging');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-cap', 'https://example.com/cap', now, now);
+    for (let i = 0; i <= DEFAULT_JEV_QUEUE_CAPACITY; i += 1) {
+      db.prepare(
+        'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        `cap-${i}`,
+        'feed-cap',
+        `https://example.com/cap/${i}`,
+        `Cap ${i}`,
+        now,
+        now,
+        now,
+      );
+      if (i < DEFAULT_JEV_QUEUE_CAPACITY) {
+        const j = enqueueJevProcess(`cap-${i}`, { now })!;
+        db.prepare('UPDATE jobs SET scheduled_at = ? WHERE id = ?').run(
+          now + 60_000,
+          j.id,
+        );
+      }
+    }
+    db.prepare(
+      `INSERT INTO ranking_refresh_queue (article_id, requested_revision, heuristic_revision, not_before, created_at)
+       VALUES (?, 1, 1, ?, ?)`,
+    ).run(`cap-${DEFAULT_JEV_QUEUE_CAPACITY}`, now - 5_000, now - 5_000);
+
+    // Must wait on future Jev job instead of spinning immediately on full capacity.
+    expect(getNextQueuedJobAt()).toBe(now + 60_000);
+
+    db.prepare(
+      'INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)',
+    ).run('expired-sess', 'admin', old, now - 1);
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, completed_at, created_at)
+       VALUES ('old-feedback-jev', ?, 'completed', ?, 1, 4, ?, ?),
+              ('old-backfill-tombstone', ?, 'completed', ?, 1, 4, ?, ?)`,
+    ).run(
+      JEV_PROCESS_JOB_TYPE,
+      JSON.stringify({ articleId: 'cap-0', feedback: true }),
+      old,
+      old,
+      JEV_PROCESS_JOB_TYPE,
+      JSON.stringify({ articleId: 'cap-0', backfill: true }),
+      old,
+      old,
+    );
+
+    pruneOperationalHistory(now);
+
+    expect(
+      db.prepare('SELECT id FROM sessions WHERE id = ?').get('expired-sess'),
+    ).toBeUndefined();
+    expect(
+      db.prepare('SELECT id FROM jobs WHERE id = ?').get('old-feedback-jev'),
+    ).toBeUndefined();
+    expect(
+      db
+        .prepare('SELECT id FROM jobs WHERE id = ?')
+        .get('old-backfill-tombstone'),
+    ).toBeDefined();
   });
 });
