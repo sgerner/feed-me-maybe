@@ -833,6 +833,11 @@ main::-webkit-scrollbar-thumb,
   overflow-x: auto;
   margin: 1.5rem 0;
 }
+.prose-glass table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
 .prose-glass code {
   background: color-mix(in oklch, var(--color-surface-100) 10%, transparent);
   padding: 0.125rem 0.375rem;

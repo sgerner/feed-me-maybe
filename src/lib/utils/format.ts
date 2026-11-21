@@ -68,8 +68,20 @@ const ALLOWED_ATTRIBUTES = {
  * reaches a Svelte {@html} sink. Keeping this policy centralized prevents a
  * newly added renderer from accidentally reintroducing executable markup.
  */
-export function sanitizeHtml(html: string | null | undefined): string {
+export function sanitizeHtml(
+  html: string | null | undefined,
+  baseUrl?: string,
+): string {
   if (!html) return '';
+
+  const resolveUrl = (value: string | undefined) => {
+    if (!value || !baseUrl || value.startsWith('#')) return value;
+    try {
+      return new URL(value, baseUrl).href;
+    } catch {
+      return value;
+    }
+  };
 
   return sanitizeHtmlLib(html, {
     allowedTags: [...ALLOWED_TAGS],
@@ -91,11 +103,22 @@ export function sanitizeHtml(html: string | null | undefined): string {
       'template',
     ],
     transformTags: {
-      a: sanitizeHtmlLib.simpleTransform(
-        'a',
-        { target: '_blank', rel: 'noopener noreferrer' },
-        true,
-      ),
+      a: (tagName, attrs) => {
+        const href = resolveUrl(attrs.href);
+        return {
+          tagName,
+          attribs: {
+            ...attrs,
+            ...(href ? { href } : {}),
+            target: '_blank',
+            rel: 'noopener noreferrer',
+          },
+        };
+      },
+      img: (tagName, attrs) => {
+        const src = resolveUrl(attrs.src || (baseUrl ? attrs['data-src'] : ''));
+        return { tagName, attribs: { ...attrs, ...(src ? { src } : {}) } };
+      },
     },
   });
 }

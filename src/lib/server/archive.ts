@@ -56,13 +56,16 @@ async function fetchPage(
   url: string,
   timeoutMs = 15000,
   proxyBaseUrl?: string,
+  deadline?: AbortSignal,
 ): Promise<{ url: string; html: string } | null> {
   try {
     const { response, finalUrl } = await fetchSafe(
       url,
       {
         headers: buildHeaders(),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: deadline
+          ? AbortSignal.any([deadline, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       },
       {
         proxyBaseUrl,
@@ -190,11 +193,14 @@ function extractMetaContent(
   return undefined;
 }
 
-function extractImageFromHtml(html: string): string | undefined {
+function extractImageFromHtml(
+  html: string,
+  pageUrl: string,
+): string | undefined {
   const image = extractMetaContent(html, 'og:image');
   if (!image) return undefined;
   try {
-    const parsed = new URL(image);
+    const parsed = new URL(image, pageUrl);
     return ['http:', 'https:'].includes(parsed.protocol)
       ? parsed.href
       : undefined;
@@ -305,7 +311,7 @@ export async function fetchPublisherArticle(
   if (!page) return null;
   const parsed = extractWithReadability(page.html, page.url);
   if (!parsed || isGarbageContent(parsed.content)) return null;
-  return parsed;
+  return { ...parsed, imageUrl: extractImageFromHtml(page.html, page.url) };
 }
 
 function extractWithFallback(
@@ -314,7 +320,7 @@ function extractWithFallback(
   fallbackTitle: string,
 ): { title: string; content: string; imageUrl?: string } | null {
   const title = extractTitleFromHtml(html, fallbackTitle);
-  const imageUrl = extractImageFromHtml(html);
+  const imageUrl = extractImageFromHtml(html, pageUrl);
   const extractedHtml = extractCandidateHtml(html);
   const content = normalizeContent(extractedHtml, pageUrl);
   if (!content.trim()) return null;
@@ -322,7 +328,11 @@ function extractWithFallback(
 }
 
 function isGarbageContent(content: string): boolean {
-  const text = content.toLowerCase();
+  const text = content
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
   const garbageIndicators = [
     'google search',
     'google webcache',
@@ -332,7 +342,10 @@ function isGarbageContent(content: string): boolean {
     'cache miss',
   ];
   for (const indicator of garbageIndicators) {
-    if (text.includes(indicator)) {
+    if (
+      text === indicator ||
+      (text.length < 500 && text.startsWith(indicator + ' '))
+    ) {
       return true;
     }
   }
@@ -345,7 +358,7 @@ async function extractFromSnapshotPage(
   fallbackTitle: string,
 ): Promise<ArchivedArticle | null> {
   const title = extractTitleFromHtml(html, fallbackTitle);
-  const imageUrl = extractImageFromHtml(html);
+  const imageUrl = extractImageFromHtml(html, pageUrl);
 
   // Try Readability first for clean extraction
   const readability = extractWithReadability(html, pageUrl);
@@ -354,7 +367,7 @@ async function extractFromSnapshotPage(
       archiveUrl: pageUrl,
       title: readability.title || title,
       content: readability.content,
-      imageUrl: imageUrl || extractImageFromHtml(html),
+      imageUrl,
     };
   }
 
@@ -376,9 +389,10 @@ async function tryArchiveMirror(
   mirror: string,
   originalUrl: string,
   fallbackTitle: string,
+  deadline: AbortSignal,
 ): Promise<ArchivedArticle | null> {
   const searchUrl = `${mirror}/${originalUrl}`;
-  const searchPage = await fetchPage(searchUrl, 20000);
+  const searchPage = await fetchPage(searchUrl, 4_000, undefined, deadline);
   if (!searchPage) {
     return null;
   }
@@ -412,7 +426,13 @@ async function tryArchiveMirror(
     );
 
     for (const snapshotUrl of snapshotUrls.slice(0, 5)) {
-      const snapshotPage = await fetchPage(snapshotUrl, 15000);
+      if (deadline.aborted) break;
+      const snapshotPage = await fetchPage(
+        snapshotUrl,
+        4_000,
+        undefined,
+        deadline,
+      );
       if (!snapshotPage) {
         continue;
       }
@@ -441,6 +461,7 @@ async function tryArchiveMirror(
 async function tryJinaAi(
   originalUrl: string,
   fallbackTitle: string,
+  deadline: AbortSignal,
 ): Promise<ArchivedArticle | null> {
   try {
     const jinaUrl = `https://r.jina.ai/http://${originalUrl.replace(/^https?:\/\//, '')}`;
@@ -450,7 +471,7 @@ async function tryJinaAi(
         headers: {
           'User-Agent': ARCHIVE_USER_AGENT,
         },
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]),
       },
       {
         maxBytes: MAX_HTML_RESPONSE_BYTES,
@@ -504,6 +525,7 @@ async function tryJinaAi(
 export async function fetchArchivedArticle(
   originalUrl: string,
   fallbackTitle: string,
+  proxyBaseUrl?: string,
 ): Promise<ArchivedArticle | null> {
   try {
     // Validate before sending the URL to an archive mirror or extraction
@@ -513,22 +535,32 @@ export async function fetchArchivedArticle(
     return null;
   }
 
-  // 1. Try archive mirrors in rotation
+  const archiveDeadline = AbortSignal.timeout(12_000);
+
+  // Limit the combined mirror and extractor time so the publisher still gets a turn.
   for (const mirror of ARCHIVE_MIRRORS) {
-    const result = await tryArchiveMirror(mirror, originalUrl, fallbackTitle);
+    if (archiveDeadline.aborted) break;
+    const result = await tryArchiveMirror(
+      mirror,
+      originalUrl,
+      fallbackTitle,
+      archiveDeadline,
+    );
     if (result) {
       return result;
     }
   }
 
   // 2. Fallback: jina.ai content extraction (often bypasses paywalls)
-  const jinaResult = await tryJinaAi(originalUrl, fallbackTitle);
+  const jinaResult = archiveDeadline.aborted
+    ? null
+    : await tryJinaAi(originalUrl, fallbackTitle, archiveDeadline);
   if (jinaResult) {
     return jinaResult;
   }
 
   // 3. Last resort: fetch original directly with Readability
-  const originalPage = await fetchPage(originalUrl, 15000);
+  const originalPage = await fetchPage(originalUrl, 8_000, proxyBaseUrl);
   if (originalPage) {
     const readability = extractWithReadability(
       originalPage.html,
@@ -539,7 +571,7 @@ export async function fetchArchivedArticle(
         archiveUrl: originalPage.url,
         title: readability.title || fallbackTitle,
         content: readability.content,
-        imageUrl: extractImageFromHtml(originalPage.html),
+        imageUrl: extractImageFromHtml(originalPage.html, originalPage.url),
       };
     }
     const fallback = extractWithFallback(
