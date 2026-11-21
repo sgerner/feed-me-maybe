@@ -86,7 +86,8 @@ function isPrivateIpv4(address) {
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 0 && (c === 0 || c === 2)) ||
     (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
     (a === 203 && b === 0 && c === 113) ||
     a >= 224
   );
@@ -222,7 +223,7 @@ async function fetchTarget(targetUrl, request) {
       await response.body?.cancel();
       throw new Error('Response too large');
     }
-    if (response.ok && !contentTypeIsAllowed(response)) {
+    if (!contentTypeIsAllowed(response)) {
       await response.body?.cancel();
       throw new Error('Unsupported content type');
     }
@@ -269,6 +270,27 @@ function buildForwardHeaders(request) {
   return headers;
 }
 
+const SAFE_RESPONSE_HEADERS = [
+  'cache-control',
+  'content-length',
+  'content-type',
+  'etag',
+  'expires',
+  'last-modified',
+  'retry-after',
+  'x-ratelimit-remaining',
+  'x-ratelimit-reset',
+  'x-ratelimit-used',
+];
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': "sandbox; default-src 'none'",
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+};
+
 function buildCorsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
@@ -276,7 +298,23 @@ function buildCorsHeaders() {
     'Access-Control-Allow-Headers':
       'Accept,Accept-Language,Authorization,Content-Type,If-Modified-Since,If-None-Match,Range,X-Requested-With',
     Vary: 'Origin',
+    ...SECURITY_HEADERS,
   };
+}
+
+/** @param {Headers} upstreamHeaders */
+function buildResponseHeaders(upstreamHeaders) {
+  const headers = new Headers();
+  for (const name of SAFE_RESPONSE_HEADERS) {
+    const value = upstreamHeaders.get(name);
+    if (value !== null) {
+      headers.set(name, value);
+    }
+  }
+  for (const [key, value] of Object.entries(buildCorsHeaders())) {
+    headers.set(key, value);
+  }
+  return headers;
 }
 
 export default {
@@ -308,10 +346,7 @@ export default {
 
     try {
       const response = await fetchTarget(targetUrl, request);
-      const responseHeaders = new Headers(response.headers);
-      for (const [key, value] of Object.entries(buildCorsHeaders())) {
-        responseHeaders.set(key, value);
-      }
+      const responseHeaders = buildResponseHeaders(response.headers);
 
       return new Response(limitResponseBody(response.body), {
         status: response.status,
