@@ -1513,6 +1513,7 @@
     {@render children()}
   </main>
 {/if}
+
 <style>
   /* Svelte keeps exiting elements mounted until their fade finishes. */
   .app-toasts > .toast-glass:nth-last-child(n + 3) {
