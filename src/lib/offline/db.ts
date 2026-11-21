@@ -229,3 +229,22 @@ export async function replaceRecords(
   for (const record of records) store.put(record);
   await transactionComplete(transaction);
 }
+
+export async function settleOutboxReplay(
+  updated: OfflineMutation[],
+  removedIds: string[],
+): Promise<void> {
+  const database = await openOfflineDatabase();
+  if (!database) return;
+  const transaction = database.transaction('outbox', 'readwrite');
+  const store = transaction.objectStore('outbox');
+  for (const id of removedIds) store.delete(id);
+  for (const mutation of updated) {
+    const request = store.get(mutation.id);
+    request.onsuccess = () => {
+      // An action queued during replay may have replaced this mutation.
+      if (request.result) store.put(mutation);
+    };
+  }
+  await transactionComplete(transaction);
+}

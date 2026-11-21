@@ -71,6 +71,9 @@ function isPwaAssetPath(pathname: string): boolean {
     pathname === '/manifest.webmanifest' ||
     pathname === '/registerSW.js' ||
     pathname === '/sw.js' ||
+    pathname === '/service-worker.js' ||
+    pathname === '/offline' ||
+    pathname === '/offline.html' ||
     /^\/workbox-[\w.-]+\.js$/.test(pathname)
   );
 }

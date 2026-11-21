@@ -87,12 +87,23 @@ function makeCachedArticle(
 ): CachedArticle {
   const timestamp = now();
   return {
-    ...article,
+    ...normalizeArticleFlags(article),
     cacheVersion: OFFLINE_CACHE_VERSION,
     scope,
     key: scopedKey(scope, article.id),
     cachedAt: timestamp,
     updatedAt: timestamp,
+  };
+}
+
+function normalizeArticleFlags<T extends OfflineArticle>(article: T): T {
+  return {
+    ...article,
+    read: Boolean(article.read),
+    saved: Boolean(article.saved),
+    hidden: Boolean(article.hidden),
+    thumbs_up: Boolean(article.thumbs_up),
+    thumbs_down: Boolean(article.thumbs_down),
   };
 }
 
@@ -165,10 +176,13 @@ function getPendingSaveKeys(
 
 async function getScopedArticles(scope: string): Promise<CachedArticle[]> {
   const records = await getAllRecords<CachedArticle>('articles');
-  return records.filter(
-    (article) =>
-      article.scope === scope && article.cacheVersion === OFFLINE_CACHE_VERSION,
-  );
+  return records
+    .filter(
+      (article) =>
+        article.scope === scope &&
+        article.cacheVersion === OFFLINE_CACHE_VERSION,
+    )
+    .map(normalizeArticleFlags);
 }
 
 export async function cacheArticles(
@@ -347,10 +361,17 @@ export async function cacheOfflineSnapshot(
   snapshot: OfflineLibrarySnapshot,
   limits: OfflineStorageLimits = {},
 ): Promise<void> {
-  await cacheArticles(userScope, snapshot.articles ?? [], limits);
-  if (snapshot.savedArticles) {
-    await cacheSavedArticles(userScope, snapshot.savedArticles, limits);
-  }
+  await cacheArticles(
+    userScope,
+    [
+      ...(snapshot.articles ?? []),
+      ...(snapshot.savedArticles ?? []).map((article) => ({
+        ...article,
+        saved: true,
+      })),
+    ],
+    limits,
+  );
   for (const digest of snapshot.digests ?? []) {
     await cacheDigest(userScope, digest, limits);
   }

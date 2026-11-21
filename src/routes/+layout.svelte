@@ -23,10 +23,13 @@
   import { fetchWithCsrf } from '$lib/client/csrf';
   import {
     activateOfflineUser,
+    applyMutationToArticle,
     clearOfflinePrivateData,
+    enqueueOfflineMutation,
     getOfflineSyncStatus,
     getCachedArticles,
     type OfflineArticle,
+    type OfflineMutationType,
     installOfflineSync,
     retryBlockedOfflineMutations,
   } from '$lib/offline';
@@ -44,6 +47,7 @@
   >('online');
   let queuedActions = $state(0);
   let syncNeedsAttention = $state(false);
+  let syncNeedsSignIn = $state(false);
   let addingFeed = $state(false);
   let showAddFeedModal = $state(false);
   let newFeedUrl = $state('');
@@ -156,6 +160,29 @@
     }
   });
 
+  let cachedActionPending = $state(false);
+
+  async function updateCachedArticle(type: OfflineMutationType) {
+    const article = cachedArticle;
+    if (!article || cachedActionPending) return;
+    cachedActionPending = true;
+    try {
+      await enqueueOfflineMutation(String(data.userId || 'admin'), {
+        articleId: article.id,
+        type,
+      });
+      if (cachedArticle?.id === article.id) {
+        cachedArticle = applyMutationToArticle(cachedArticle, type);
+      }
+      addToast('Action queued for sync', 'info');
+      void refreshOfflineStatus(String(data.userId || 'admin'));
+    } catch {
+      addToast('Could not queue the article action', 'error');
+    } finally {
+      cachedActionPending = false;
+    }
+  }
+
   function openAddFeedModal() {
     addFeedPreviouslyFocused =
       isMobileViewport && sidebarOpen
@@ -195,6 +222,7 @@
 
     try {
       const status = await getOfflineSyncStatus(scope);
+      syncNeedsSignIn = status.needsSignIn;
       applyOfflineStatus(status.pendingCount, status.state === 'blocked');
     } catch {
       applyOfflineStatus(0);
@@ -228,6 +256,7 @@
         result.blocked > 0 || result.conflicts > 0,
       );
       if (result.synced > 0) {
+        void invalidateAll();
         addToast(
           `${result.synced} offline action${result.synced === 1 ? '' : 's'} synced`,
           'success',
@@ -335,12 +364,14 @@
               result.blocked > 0 || result.conflicts > 0,
             );
             if (result.synced > 0) {
+              void invalidateAll();
               addToast(
                 `${result.synced} offline action${result.synced === 1 ? '' : 's'} synced`,
                 'success',
               );
             }
             if (result.blocked > 0 || result.conflicts > 0) {
+              void refreshOfflineStatus(scope);
               addToast('An offline action needs your attention', 'error');
             }
           },
@@ -1113,7 +1144,12 @@
                   Up to date
                 {/if}
               </span>
-              {#if offlineState === 'blocked'}
+              {#if offlineState === 'blocked' && syncNeedsSignIn}
+                <a
+                  class="ml-2 text-xs underline underline-offset-2"
+                  href="/login">Sign in</a
+                >
+              {:else if offlineState === 'blocked'}
                 <button
                   class="ml-2 text-xs underline underline-offset-2"
                   type="button"
@@ -1164,14 +1200,20 @@
       >
         {#if offlineState === 'blocked'}
           <span>Sync needs attention</span>
-          <button
-            class="ml-2 underline underline-offset-2"
-            type="button"
-            disabled={syncing || isOffline()}
-            onclick={retryOfflineActions}
-          >
-            Retry
-          </button>
+          {#if syncNeedsSignIn}
+            <a class="ml-2 underline underline-offset-2" href="/login"
+              >Sign in</a
+            >
+          {:else}
+            <button
+              class="ml-2 underline underline-offset-2"
+              type="button"
+              disabled={syncing || isOffline()}
+              onclick={retryOfflineActions}
+            >
+              Retry
+            </button>
+          {/if}
         {:else if offlineState === 'syncing'}
           Syncing…
         {:else}
@@ -1267,7 +1309,7 @@
     >
       <form
         method="dialog"
-        class="mb-4 flex items-center justify-between gap-3"
+        class="sticky top-0 mb-4 flex items-center justify-between gap-3 bg-surface-900 py-2"
       >
         <span class="text-sm text-surface-300">Offline article</span>
         <button type="submit" class="btn preset-filled-surface-200-800"
@@ -1279,7 +1321,7 @@
           {cachedArticle.title}
         </h1>
         {#if cachedArticle.content || cachedArticle.summary}
-          <div class="prose prose-invert max-w-none">
+          <div class="prose-glass overflow-x-auto">
             {@html renderContent(
               cachedArticle.content || cachedArticle.summary,
             )}
@@ -1287,6 +1329,44 @@
         {:else}
           <p>This article’s text is unavailable offline.</p>
         {/if}
+        <div
+          class="mt-4 flex flex-wrap gap-2"
+          aria-label="Offline article actions"
+        >
+          <button
+            type="button"
+            class="btn preset-tonal"
+            disabled={cachedActionPending}
+            onclick={() =>
+              updateCachedArticle(cachedArticle?.read ? 'unread' : 'read')}
+          >
+            {cachedArticle.read ? 'Mark unread' : 'Mark read'}
+          </button>
+          <button
+            type="button"
+            class="btn preset-tonal"
+            disabled={cachedActionPending}
+            onclick={() =>
+              updateCachedArticle(cachedArticle?.saved ? 'unsave' : 'save')}
+          >
+            {cachedArticle.saved ? 'Unsave' : 'Save'}
+          </button>
+          <button
+            type="button"
+            class="btn preset-tonal"
+            disabled={cachedActionPending}
+            onclick={() =>
+              updateCachedArticle(
+                cachedArticle?.hidden || cachedArticle?.thumbs_down
+                  ? 'restore'
+                  : 'hide',
+              )}
+          >
+            {cachedArticle.hidden || cachedArticle.thumbs_down
+              ? 'Restore'
+              : 'Hide'}
+          </button>
+        </div>
       {/if}
     </dialog>
 
@@ -1502,7 +1582,9 @@
       </div>
     {/if}
 
-    <PWABanner />
+    {#if !$page.url.pathname.startsWith('/articles/')}
+      <PWABanner />
+    {/if}
     <KeyboardShortcuts
       bind:open={showShortcuts}
       reader={$page.url.pathname.startsWith('/articles/')}

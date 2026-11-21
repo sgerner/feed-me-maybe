@@ -108,6 +108,7 @@ export interface OfflineLibrarySnapshot {
 }
 
 export interface OfflineSyncStatus {
+  needsSignIn: boolean;
   state: 'idle' | 'syncing' | 'offline' | 'retrying' | 'blocked';
   pendingCount: number;
   lastSyncedAt: number | null;

@@ -16,6 +16,7 @@
     SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
   } from '$lib/utils/keyboard-shortcuts';
   import {
+    applyMutationToCachedArticle,
     cacheArticles,
     enqueueOfflineMutation,
     getCachedArticles,
@@ -615,6 +616,17 @@
         },
       );
       if (res.ok) {
+        if (type === 'save' && previousArticle) {
+          void cacheArticles(offlineScope(), [
+            { ...previousArticle, saved: true },
+          ]).catch(() => undefined);
+        } else if (offlineType) {
+          void applyMutationToCachedArticle(
+            offlineScope(),
+            articleId,
+            offlineType,
+          ).catch(() => undefined);
+        }
         if (shouldRemove) removedFromPage++;
         void invalidate('app:reader-counts');
         const message = INTERACTION_LABELS[type] || type;
@@ -644,6 +656,9 @@
                   if (undo.conflicts.length) {
                     addToast('Article changed since this action', 'warning');
                   } else if (undo.restoredArticleIds.includes(articleId)) {
+                    void cacheArticles(offlineScope(), [previousArticle]).catch(
+                      () => undefined,
+                    );
                     const currentIndex = articles.findIndex(
                       (item: Article) => item.id === articleId,
                     );
