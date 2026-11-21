@@ -11,17 +11,22 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const conditions = category
     ? ' AND TRIM(f.category) = ? AND f.enabled = 1'
     : '';
-  const parameters = category ? [category] : [];
+  const snapshotAt = Date.now();
+  const parameters = category ? [category, snapshotAt] : [snapshotAt];
+  const whereClause =
+    'a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0' +
+    conditions +
+    ' AND a.fetched_at <= ?';
 
   const totalResult = db
     .prepare(
-      `SELECT COUNT(*) AS count FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0${conditions}`,
+      `SELECT COUNT(*) AS count FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE ${whereClause}`,
     )
     .get(...parameters) as { count: number };
   const limit = 25;
   const articles = queryGlobalArticleRanking(
     db,
-    'a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0' + conditions,
+    whereClause,
     parameters,
     limit,
   );
@@ -31,5 +36,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     articles,
     totalPages: Math.max(1, Math.ceil(totalResult.count / limit)),
     totalArticles: totalResult.count,
+    snapshotAt,
   };
 };

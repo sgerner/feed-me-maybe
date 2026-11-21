@@ -12,11 +12,23 @@
   };
 
   let { data: pageData } = $props<{
-    data: { articles: Article[]; totalPages: number };
+    data: {
+      articles: Article[];
+      initialHasMore: boolean;
+      page: number;
+      snapshotAt: number;
+    };
   }>();
 
   let articles = $state<Article[]>([]);
   let syncing = $state(false);
+  const loadMoreSearchParams = $derived.by(() => {
+    const params: Record<string, string> = {
+      snapshotAt: String(pageData.snapshotAt),
+    };
+    if (pageData.category) params.category = pageData.category;
+    return params;
+  });
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(pageData.articles);
@@ -49,10 +61,10 @@
     {/if}
     <ArticleList
       bind:articles
-      totalPages={pageData.totalPages}
-      loadMoreSearchParams={pageData.category
-        ? { category: pageData.category }
-        : {}}
+      initialHasMore={pageData.initialHasMore}
+      initialPage={pageData.page}
+      liveUpdates
+      {loadMoreSearchParams}
     />
   {/key}
 </PullToRefresh>

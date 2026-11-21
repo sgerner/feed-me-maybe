@@ -93,4 +93,46 @@ export function queryGlobalArticleRanking(
     .all(...whereParams, limit, offset);
 }
 
+/**
+ * Read selected article IDs in their position within the full global ranking.
+ * The ID filter is deliberately applied after per-feed ranks are calculated,
+ * so a small live-update batch keeps the same ordering as the complete list.
+ */
+export function queryGlobalArticleRankingByIds(
+  db: Database.Database,
+  whereClause: string,
+  whereParams: unknown[],
+  articleIds: string[],
+): unknown[] {
+  if (articleIds.length === 0) return [];
+
+  const score = rankingScoreExpression('a');
+  const idPlaceholders = articleIds.map(() => '?').join(', ');
+  const query = `
+    WITH ranked_article_ids AS (
+      SELECT a.id, a.feed_id, a.published_at, a.fetched_at,
+             ${score} AS rank_score,
+             ROW_NUMBER() OVER (
+               PARTITION BY a.feed_id, a.read
+               ORDER BY ${score} DESC,
+                        COALESCE(a.published_at, a.fetched_at) DESC,
+                        a.id DESC
+             ) AS feed_rank
+      FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
+      WHERE ${whereClause}
+    )
+    SELECT ${ARTICLE_COLUMNS}
+    FROM ranked_article_ids p
+    JOIN articles a ON a.id = p.id
+    JOIN feeds f ON f.id = a.feed_id
+    WHERE p.id IN (${idPlaceholders})
+    ORDER BY p.rank_score - MIN((p.feed_rank - 1) * 2.5, 15) DESC,
+             COALESCE(p.published_at, p.fetched_at) DESC,
+             p.id DESC
+  `;
+
+  return db.prepare(query).all(...whereParams, ...articleIds);
+}
+
 export const rankingOrderExpression = rankingScoreExpression;

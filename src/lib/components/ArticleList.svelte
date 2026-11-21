@@ -63,10 +63,15 @@
 
   let {
     articles = $bindable(),
-    totalPages,
+    totalPages = 1,
+    initialHasMore,
+    initialPage = 1,
     feedId = null,
     loadMoreSearchParams = {},
     showInfiniteScroll = true,
+    liveUpdates = false,
+    onLiveArticlesAdded,
+    onLiveArticleVisibilityChanged,
     savedOnly = false,
     feedbackMode = 'standard',
     emptyTitle = 'No articles yet',
@@ -75,10 +80,18 @@
     emptyCtaLabel = 'Go to Settings',
   } = $props<{
     articles: Article[];
-    totalPages: number;
+    totalPages?: number;
+    initialHasMore?: boolean;
+    initialPage?: number;
     feedId?: string | null;
     loadMoreSearchParams?: Record<string, string>;
     showInfiniteScroll?: boolean;
+    liveUpdates?: boolean;
+    onLiveArticlesAdded?: (articleIds: string[]) => void;
+    onLiveArticleVisibilityChanged?: (
+      articleId: string,
+      visible: boolean,
+    ) => void;
     savedOnly?: boolean;
     feedbackMode?: 'standard' | 'boost';
     emptyTitle?: string;
@@ -290,6 +303,13 @@
   let removedFromPage = $state(0);
   let loadingMore = $state(false);
   let hasMore = $state(false);
+  let pendingLiveArticleIds = new Set<string>();
+  let liveArticleFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let fetchingLiveArticles = false;
+  let liveArticleRequestController: AbortController | null = null;
+  let liveUpdatesDisposed = false;
+  let liveOnlyArticleIds = new Set<string>();
+  let lastSnapshotAt: number | null = null;
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
@@ -450,9 +470,15 @@
   }
 
   $effect(() => {
-    hasMore = totalPages > 1;
-    page = 1;
+    const rawSnapshotAt = Number(loadMoreSearchParams.snapshotAt);
+    const snapshotAt = Number.isFinite(rawSnapshotAt) ? rawSnapshotAt : null;
+    hasMore = initialHasMore ?? totalPages > 1;
+    page = initialPage;
     removedFromPage = 0;
+    if (snapshotAt !== lastSnapshotAt) {
+      liveOnlyArticleIds = new Set();
+      lastSnapshotAt = snapshotAt;
+    }
   });
 
   $effect(() => {
@@ -627,7 +653,13 @@
             offlineType,
           ).catch(() => undefined);
         }
-        if (shouldRemove) removedFromPage++;
+        if (shouldRemove) {
+          if (liveOnlyArticleIds.has(articleId)) {
+            onLiveArticleVisibilityChanged?.(articleId, false);
+          } else {
+            removedFromPage++;
+          }
+        }
         void invalidate('app:reader-counts');
         const message = INTERACTION_LABELS[type] || type;
         if (stateAction && previousArticle) {
@@ -671,8 +703,13 @@
                         previousArticle,
                       );
                     articles = next;
-                    if (shouldRemove)
-                      removedFromPage = Math.max(0, removedFromPage - 1);
+                    if (shouldRemove) {
+                      if (liveOnlyArticleIds.has(articleId)) {
+                        onLiveArticleVisibilityChanged?.(articleId, true);
+                      } else {
+                        removedFromPage = Math.max(0, removedFromPage - 1);
+                      }
+                    }
                     void invalidate('app:reader-counts');
                     addToast('Action undone', 'success');
                   }
@@ -897,6 +934,128 @@
     }
   }
 
+  function scheduleLiveArticleFetch(delay = 300): void {
+    if (
+      !liveUpdates ||
+      liveUpdatesDisposed ||
+      liveArticleFetchTimer ||
+      fetchingLiveArticles ||
+      pendingLiveArticleIds.size === 0
+    )
+      return;
+
+    liveArticleFetchTimer = setTimeout(() => {
+      liveArticleFetchTimer = null;
+      void fetchLiveArticles();
+    }, delay);
+  }
+
+  async function fetchLiveArticles(): Promise<void> {
+    if (
+      !liveUpdates ||
+      liveUpdatesDisposed ||
+      fetchingLiveArticles ||
+      pendingLiveArticleIds.size === 0
+    )
+      return;
+
+    fetchingLiveArticles = true;
+    const controller = new AbortController();
+    liveArticleRequestController = controller;
+    const ids = Array.from(pendingLiveArticleIds).slice(0, 100);
+    let nextBatchDelay = 300;
+    for (const id of ids) pendingLiveArticleIds.delete(id);
+
+    try {
+      const url = new URL('/api/articles', window.location.origin);
+      if (feedId) url.searchParams.set('feedId', feedId);
+      for (const [key, value] of Object.entries(loadMoreSearchParams)) {
+        url.searchParams.set(key, String(value));
+      }
+      for (const id of ids) url.searchParams.append('id', id);
+
+      const response = await fetch(url.toString(), {
+        signal: controller.signal,
+      });
+      if (liveUpdatesDisposed) return;
+      if (!response.ok)
+        throw new Error(`Live article request failed: ${response.status}`);
+
+      const data = await response.json();
+      if (liveUpdatesDisposed) return;
+      const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
+      for (const article of data.articles as Article[]) {
+        if (
+          Number.isFinite(snapshotAt) &&
+          typeof article.fetched_at === 'number' &&
+          article.fetched_at > snapshotAt
+        ) {
+          liveOnlyArticleIds.add(article.id);
+        }
+      }
+      const existingIds = new Set(
+        articles.map((article: Article) => article.id),
+      );
+      const newArticles = (data.articles as Article[]).filter((article) => {
+        if (existingIds.has(article.id)) return false;
+        existingIds.add(article.id);
+        return true;
+      });
+
+      if (newArticles.length > 0) {
+        const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
+        const addedAfterSnapshot = newArticles
+          .filter(
+            (article) =>
+              Number.isFinite(snapshotAt) &&
+              typeof article.fetched_at === 'number' &&
+              article.fetched_at > snapshotAt,
+          )
+          .map((article) => article.id);
+        if (addedAfterSnapshot.length > 0) {
+          onLiveArticlesAdded?.(addedAfterSnapshot);
+        }
+
+        const previousScrollTop = scrollContainerEl?.scrollTop ?? 0;
+        const previousScrollHeight = scrollContainerEl?.scrollHeight ?? 0;
+        articles = [...newArticles, ...articles];
+        await tick();
+
+        if (scrollContainerEl && previousScrollTop > 0) {
+          scrollContainerEl.scrollTop =
+            previousScrollTop +
+            (scrollContainerEl.scrollHeight - previousScrollHeight);
+        }
+      }
+    } catch (error) {
+      if (!liveUpdatesDisposed) {
+        console.error('Failed to load live articles', error);
+        for (const id of ids) pendingLiveArticleIds.add(id);
+        nextBatchDelay = 2000;
+      }
+    } finally {
+      fetchingLiveArticles = false;
+      if (liveArticleRequestController === controller) {
+        liveArticleRequestController = null;
+      }
+      if (!liveUpdatesDisposed && pendingLiveArticleIds.size > 0) {
+        scheduleLiveArticleFetch(nextBatchDelay);
+      }
+    }
+  }
+
+  function handleNewArticles(event: Event): void {
+    const detail = (event as CustomEvent<{ ids?: unknown }>).detail;
+    if (!Array.isArray(detail?.ids)) return;
+
+    for (const id of detail.ids) {
+      if (typeof id === 'string' && id.length > 0 && id.length <= 128) {
+        pendingLiveArticleIds.add(id);
+      }
+    }
+    scheduleLiveArticleFetch();
+  }
+
   function isNearBottom(): boolean {
     if (!scrollContainerEl) return false;
     return (
@@ -919,6 +1078,11 @@
   });
 
   onMount(() => {
+    liveUpdatesDisposed = false;
+    if (liveUpdates) {
+      window.addEventListener('feed-me-maybe:new-articles', handleNewArticles);
+    }
+
     const syncShortcutPreference = () => {
       singleKeyShortcutsEnabled = getSingleKeyShortcutsEnabled();
     };
@@ -1020,6 +1184,17 @@
     void restoreScrollPosition();
 
     return () => {
+      liveUpdatesDisposed = true;
+      liveArticleRequestController?.abort();
+      liveArticleRequestController = null;
+      window.removeEventListener(
+        'feed-me-maybe:new-articles',
+        handleNewArticles,
+      );
+      if (liveArticleFetchTimer) {
+        clearTimeout(liveArticleFetchTimer);
+        liveArticleFetchTimer = null;
+      }
       window.removeEventListener(
         SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
         syncShortcutPreference,

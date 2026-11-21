@@ -28,16 +28,47 @@
       totalPages: number;
       totalArticles: number;
       category: string;
+      snapshotAt: number;
     };
   } = $props();
   let articles = $state<Article[]>([]);
+  let liveUnreadArticleIds = $state<string[]>([]);
+  let unreadCount = $derived(data.totalArticles + liveUnreadArticleIds.length);
+  let unreadSnapshotAt = $state(0);
+  const loadMoreSearchParams = $derived.by(() => {
+    const params: Record<string, string> = {
+      unread: '1',
+      snapshotAt: String(data.snapshotAt),
+    };
+    if (data.category) params.category = data.category;
+    return params;
+  });
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(data.articles);
 
   $effect(() => {
+    if (data.snapshotAt !== unreadSnapshotAt) {
+      unreadSnapshotAt = data.snapshotAt;
+      liveUnreadArticleIds = [];
+    }
     articles = loadedArticles;
   });
+
+  function addLiveUnreadArticles(articleIds: string[]): void {
+    liveUnreadArticleIds = Array.from(
+      new Set([...liveUnreadArticleIds, ...articleIds]),
+    );
+  }
+
+  function updateLiveUnreadVisibility(
+    articleId: string,
+    visible: boolean,
+  ): void {
+    liveUnreadArticleIds = visible
+      ? Array.from(new Set([...liveUnreadArticleIds, articleId]))
+      : liveUnreadArticleIds.filter((id) => id !== articleId);
+  }
 
   onMount(() => {
     if (navigator.onLine !== false || articles.length > 0) return;
@@ -71,9 +102,7 @@
         {data.category ? `${data.category} inbox` : 'Inbox'}
       </h1>
       <p class="section-subtitle">
-        {data.totalArticles} unread {data.totalArticles === 1
-          ? 'story'
-          : 'stories'}.
+        {unreadCount} unread {unreadCount === 1 ? 'story' : 'stories'}.
       </p>
     </div>
     <a href="/search?q=is%3Aunread" class="btn preset-tonal no-underline"
@@ -85,9 +114,10 @@
     <ArticleList
       bind:articles
       totalPages={data.totalPages}
-      loadMoreSearchParams={data.category
-        ? { unread: '1', category: data.category }
-        : { unread: '1' }}
+      liveUpdates
+      onLiveArticlesAdded={addLiveUnreadArticles}
+      onLiveArticleVisibilityChanged={updateLiveUnreadVisibility}
+      {loadMoreSearchParams}
       emptyTitle="No unread stories"
       emptyMessage="You are all caught up."
       emptyCtaHref="/"

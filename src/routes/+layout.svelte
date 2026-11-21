@@ -581,26 +581,6 @@
     }
   });
 
-  let newArticlesAvailable = $state(0);
-  let refreshingArticles = $state(false);
-  let articleRefreshVersion = $state(0);
-
-  async function showNewArticles() {
-    refreshingArticles = true;
-    const count = newArticlesAvailable;
-    try {
-      await invalidateAll();
-      articleRefreshVersion++;
-      newArticlesAvailable = Math.max(0, newArticlesAvailable - count);
-      await tick();
-      if (document.activeElement === document.body) mainContentEl?.focus();
-    } catch {
-      addToast('Could not load new articles', 'error');
-    } finally {
-      refreshingArticles = false;
-    }
-  }
-
   // Real-time updates via SSE
   $effect(() => {
     if (!data.sessionId) return;
@@ -667,8 +647,18 @@
         try {
           const payload = JSON.parse(event.data);
 
-          if (Number.isSafeInteger(payload.count) && payload.count > 0) {
-            newArticlesAvailable += payload.count;
+          if (Array.isArray(payload.articles)) {
+            const ids = payload.articles.filter(
+              (id: unknown): id is string =>
+                typeof id === 'string' && id.length > 0 && id.length <= 128,
+            );
+            if (ids.length > 0) {
+              window.dispatchEvent(
+                new CustomEvent('feed-me-maybe:new-articles', {
+                  detail: { ids },
+                }),
+              );
+            }
           }
         } catch (err) {
           console.error('[sse] Error handling new_articles event:', err);
@@ -1173,22 +1163,7 @@
         aria-busy={Boolean(navigating.to)}
         inert={isMobileViewport && sidebarOpen}
       >
-        {#if newArticlesAvailable > 0 && ['/', '/inbox', '/feeds'].includes($page.url.pathname)}
-          <button
-            type="button"
-            class="btn preset-tonal m-3"
-            disabled={refreshingArticles}
-            aria-busy={refreshingArticles}
-            onclick={showNewArticles}
-          >
-            {refreshingArticles
-              ? 'Loading…'
-              : `Load ${newArticlesAvailable} new article${newArticlesAvailable === 1 ? '' : 's'}`}
-          </button>
-        {/if}
-        {#key `${$page.url.pathname}:${articleRefreshVersion}`}
-          {@render children()}
-        {/key}
+        {@render children()}
       </main>
     </div>
 
