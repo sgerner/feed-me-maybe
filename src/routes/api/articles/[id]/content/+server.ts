@@ -3,6 +3,10 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { fetchPublisherArticle } from '$lib/server/archive';
 import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
+import { enqueueAiProcess } from '$lib/server/feed/job-queue';
+import { refreshRankingAfterProfileMutation } from '$lib/server/ranking-freshness';
+import { wakePoller } from '$lib/server/poller';
 
 export const POST: RequestHandler = async ({ locals, params }) => {
   if (!locals.sessionId)
@@ -12,17 +16,23 @@ export const POST: RequestHandler = async ({ locals, params }) => {
   const article = db
     .prepare(
       `
-    SELECT a.url, a.content, f.use_proxy
+    SELECT a.url, a.external_url, a.content, f.use_proxy
     FROM articles a JOIN feeds f ON f.id = a.feed_id
     WHERE a.id = ?
   `,
     )
     .get(params.id) as
-    { url: string; content: string | null; use_proxy: number } | undefined;
+    | {
+        url: string;
+        external_url: string | null;
+        content: string | null;
+        use_proxy: number;
+      }
+    | undefined;
   if (!article) return json({ error: 'Article not found' }, { status: 404 });
 
   const result = await fetchPublisherArticle(
-    article.url,
+    article.external_url || article.url,
     article.use_proxy ? getConfiguredProxyBaseUrl() : undefined,
   );
   if (!result?.content) {
@@ -50,14 +60,29 @@ export const POST: RequestHandler = async ({ locals, params }) => {
     );
   }
 
-  const update = db
-    .prepare('UPDATE articles SET content = ? WHERE id = ? AND content IS ?')
-    .run(result.content, params.id, article.content);
-  if (!update.changes) {
+  const updated = db.transaction(() => {
+    const update = db
+      .prepare(
+        "UPDATE articles SET content = ?, image_url = COALESCE(NULLIF(image_url, ''), ?), updated_at = ? WHERE id = ? AND content IS ?",
+      )
+      .run(
+        result.content,
+        result.imageUrl ?? null,
+        Date.now(),
+        params.id,
+        article.content,
+      );
+    if (!update.changes) return false;
+    refreshRankingAfterProfileMutation(params.id);
+    if (isAiProcessingConfigured()) enqueueAiProcess(params.id);
+    return true;
+  })();
+  if (!updated) {
     return json(
       { error: 'The article changed while fetching text. Try again.' },
       { status: 409 },
     );
   }
+  wakePoller();
   return json({ content: result.content });
 };
