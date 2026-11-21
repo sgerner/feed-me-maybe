@@ -1,7 +1,10 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import ArticleList from '$lib/components/ArticleList.svelte';
-  import { cacheSavedArticles, type OfflineArticle } from '$lib/offline';
+  import ArticleList from '#lib/components/ArticleList.svelte';
+  import {
+    cacheSavedArticles,
+    type OfflineArticle,
+  } from '#lib/offline/index.ts';
 
   let { data } = $props<{ data: { articles: OfflineArticle[] } }>();
   let articles = $state<OfflineArticle[]>([]);

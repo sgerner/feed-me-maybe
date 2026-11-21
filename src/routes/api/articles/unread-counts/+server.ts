@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getUnreadCounts } from '$lib/server/article-state';
+import { getUnreadCounts } from '#lib/server/article-state.ts';
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId) {

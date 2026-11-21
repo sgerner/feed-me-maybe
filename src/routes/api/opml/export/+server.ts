@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { exportOpml } from '$lib/server/opml';
+import { exportOpml } from '#lib/server/opml.ts';
 
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.sessionId)

@@ -10,19 +10,19 @@ describe('preference learning model', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (existsSync(testDbPath)) unlinkSync(testDbPath);
   });
 
   it('learns negative obituary preference and can auto-hide future similar article', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const {
       updatePreferenceMemoryFromInteraction,
       applyPreferenceModelToArticle,
@@ -81,7 +81,7 @@ describe('preference learning model', () => {
   });
 
   it('decays stale preferences when scoring', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getPreferenceStateForArticle } = await import('./preferences');
     const db = getDb();
     const now = Date.now();
@@ -142,7 +142,7 @@ describe('preference learning model', () => {
   });
 
   it('matches phrases in different orders', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const {
       updatePreferenceMemoryFromInteraction,
       getPreferenceStateForArticle,
@@ -187,7 +187,7 @@ describe('preference learning model', () => {
   });
 
   it('learns neutral signal and author preferences from article feedback', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const {
       updatePreferenceMemoryFromInteraction,
       getPreferenceStateForArticle,
@@ -282,8 +282,8 @@ describe('preference learning model', () => {
   });
 
   it('treats open and manual hide as weaker feedback than thumbs', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { recordInteraction } = await import('$lib/server/interactions');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { recordInteraction } = await import('#lib/server/interactions.ts');
     const db = getDb();
     const now = Date.now();
 
@@ -378,7 +378,7 @@ describe('preference learning model', () => {
   });
 
   it('uses peak decayed negative evidence, gates broad/quality features, normalizes symbols/authors, and reconciles auto-hides', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const {
       updatePreferenceMemoryFromInteraction,
       getPreferenceStateForArticle,

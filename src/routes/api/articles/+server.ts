@@ -1,11 +1,11 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { getFeedArticles } from '$lib/server/feed/articles';
+import { getDb } from '#lib/server/db/index.ts';
+import { getFeedArticles } from '#lib/server/feed/articles.ts';
 import {
   queryGlobalArticleRanking,
   queryGlobalArticleRankingByIds,
-} from '$lib/server/ranking';
+} from '#lib/server/ranking.ts';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
   if (!locals.sessionId) {

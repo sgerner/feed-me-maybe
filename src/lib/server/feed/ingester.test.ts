@@ -13,16 +13,16 @@ import { join } from 'node:path';
 vi.mock('./fetcher', () => ({
   fetchFeed: vi.fn(),
 }));
-vi.mock('$lib/server/preferences', () => ({
+vi.mock('#lib/server/preferences.ts', () => ({
   applyPreferenceModelToArticle: vi.fn(),
 }));
-vi.mock('$lib/server/webhooks', () => ({
+vi.mock('#lib/server/webhooks.ts', () => ({
   dispatchWebhookEvent: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('$lib/server/realtime', () => ({
+vi.mock('#lib/server/realtime.ts', () => ({
   broadcast: vi.fn(),
 }));
-vi.mock('$lib/server/proxy', () => ({
+vi.mock('#lib/server/proxy.ts', () => ({
   getConfiguredProxyBaseUrl: () => undefined,
 }));
 
@@ -34,12 +34,12 @@ describe('feed ingester identity and duplicate handling', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM feed_fetch_logs').run();
     db.prepare('DELETE FROM jobs').run();
@@ -53,8 +53,8 @@ describe('feed ingester identity and duplicate handling', () => {
   it('does not commit a new ETag when article ingestion rolls back', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
-    const { dispatchWebhookEvent } = await import('$lib/server/webhooks');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { dispatchWebhookEvent } = await import('#lib/server/webhooks.ts');
     vi.mocked(dispatchWebhookEvent).mockClear();
     const db = getDb();
     const now = Date.now();
@@ -119,7 +119,7 @@ describe('feed ingester identity and duplicate handling', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     for (const suffix of ['', '-wal', '-shm']) {
@@ -150,7 +150,7 @@ describe('feed ingester identity and duplicate handling', () => {
   it('deduplicates canonical URLs within a fetch and preserves article state', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -239,7 +239,7 @@ describe('feed ingester identity and duplicate handling', () => {
   it('keeps separate entries that share a page but use different anchors', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -267,13 +267,13 @@ describe('feed ingester identity and duplicate handling', () => {
   it('skips image-only AI work and schedules enrichment when article text arrives', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
       'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
     ).run('stub-feed', 'https://example.com/stubs.rss', now, now);
-    const { encrypt } = await import('$lib/server/ai/crypto');
+    const { encrypt } = await import('#lib/server/ai/crypto.ts');
     const config = encrypt(JSON.stringify({ apiKey: 'fixture-key' }));
     db.prepare(
       'INSERT INTO provider_configs (id, provider_id, model_id, enabled, api_key_encrypted, api_key_nonce, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)',
@@ -317,7 +317,7 @@ describe('feed ingester identity and duplicate handling', () => {
   it('waits for enrichment before queueing the first ranking score', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     const originalJevApiKey = process.env.JEV_API_KEY;
@@ -330,7 +330,7 @@ describe('feed ingester identity and duplicate handling', () => {
       now,
       now,
     );
-    const { encrypt } = await import('$lib/server/ai/crypto');
+    const { encrypt } = await import('#lib/server/ai/crypto.ts');
     const config = encrypt(JSON.stringify({ apiKey: 'fixture-key' }));
     db.prepare(
       'INSERT INTO provider_configs (id, provider_id, model_id, enabled, api_key_encrypted, api_key_nonce, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)',
@@ -376,7 +376,7 @@ describe('feed ingester identity and duplicate handling', () => {
   it('preserves the UTF-16 content upgrade threshold during deduplication', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -430,7 +430,7 @@ describe('feed ingester identity and duplicate handling', () => {
   it('preserves ready AI metadata and combined_score on updates while AI is paused', async () => {
     const { fetchFeed } = await import('./fetcher');
     const { ingestFeed } = await import('./ingester');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(

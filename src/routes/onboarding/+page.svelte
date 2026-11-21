@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { fly } from 'svelte/transition';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
   let step = $state(1);
   const totalSteps = 2;
@@ -127,7 +127,7 @@
         body: JSON.stringify({ key: 'setup_complete', value: 'true' }),
       });
       if (!response.ok) throw new Error('Setup could not be saved');
-      await goto(destination, { invalidateAll: true });
+      await goto(destination, { refreshAll: true });
     } catch {
       setupError = 'Could not finish setup. Please try again.';
     } finally {

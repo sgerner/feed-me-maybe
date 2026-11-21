@@ -1,5 +1,5 @@
-import { getDb } from '$lib/server/db';
-import { rankingOrderExpression } from '$lib/server/ranking';
+import { getDb } from '#lib/server/db/index.ts';
+import { rankingOrderExpression } from '#lib/server/ranking.ts';
 
 export const HIDDEN_FEED_CONTENT_LIMIT = 30;
 export const DEFAULT_FEED_PAGE_LIMIT = 25;

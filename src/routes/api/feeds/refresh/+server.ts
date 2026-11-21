@@ -1,9 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { scheduleNextPoll, wakePoller } from '$lib/server/poller';
-import { enqueueFeedFetch, runDueJobs } from '$lib/server/feed/job-queue';
-import { recordAppError } from '$lib/server/logging';
+import { getDb } from '#lib/server/db/index.ts';
+import { scheduleNextPoll, wakePoller } from '#lib/server/poller.ts';
+import { enqueueFeedFetch, runDueJobs } from '#lib/server/feed/job-queue.ts';
+import { recordAppError } from '#lib/server/logging.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {

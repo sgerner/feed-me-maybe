@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { addToast } from '$lib/stores/toast.svelte';
+  import { addToast } from '#lib/stores/toast.svelte.ts';
 
   let {
     onSync,

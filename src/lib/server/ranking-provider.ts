@@ -1,4 +1,4 @@
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 
 export const RANKING_PROVIDERS = ['jev', 'subq'] as const;
 export type RankingProvider = (typeof RANKING_PROVIDERS)[number];

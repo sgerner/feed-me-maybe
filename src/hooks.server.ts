@@ -1,27 +1,27 @@
-import { building, dev } from '$app/environment';
+import type { Handle, HandleServerError } from '@sveltejs/kit/hooks';
+import { redirect } from '@sveltejs/kit';
+import { building, dev } from '$app/env';
 import {
   initializeDatabase,
   runPendingRankingRepair,
-} from '$lib/server/db/migrate';
-import { rebuildArticleHeuristicScores } from '$lib/server/preferences';
+} from '#lib/server/db/migrate.ts';
+import { rebuildArticleHeuristicScores } from '#lib/server/preferences.ts';
 import {
   validateSession,
   getSessionCookieName,
-} from '$lib/server/auth/session';
-import { safeReturnTo } from '$lib/server/auth/redirect';
-import { startPolling, stopPolling } from '$lib/server/poller';
-import type { Handle, HandleServerError } from '@sveltejs/kit';
-import { redirect } from '@sveltejs/kit';
-import { closeDb, getDb } from '$lib/server/db';
-import { recordAppError } from '$lib/server/logging';
-import { closeRealtimeClients } from '$lib/server/realtime';
+} from '#lib/server/auth/session.ts';
+import { safeReturnTo } from '#lib/server/auth/redirect.ts';
+import { startPolling, stopPolling } from '#lib/server/poller.ts';
+import { closeDb, getDb } from '#lib/server/db/index.ts';
+import { recordAppError } from '#lib/server/logging.ts';
+import { closeRealtimeClients } from '#lib/server/realtime.ts';
 import {
   CSRF_COOKIE_NAME,
   CSRF_MAX_AGE_SECONDS,
   createCsrfToken,
   isCsrfProtectedMutation,
   isValidMutationCsrf,
-} from '$lib/server/auth/csrf';
+} from '#lib/server/auth/csrf.ts';
 
 if (!building) {
   initializeDatabase();
@@ -164,21 +164,19 @@ export const handle: Handle = async ({ event, resolve }) => {
   return resolve(event);
 };
 
-export const handleError: HandleServerError = ({
-  error,
-  event,
-  status,
-  message,
-}) => {
+export const handleError: HandleServerError = ({ kind, error, event }) => {
+  // SvelteKit 3 also reports expected errors raised with error(...). Only
+  // unexpected and framework errors (such as 404s) belong in the error log.
+  if (kind === 'app' || kind === 'validation') return;
+
+  const status = kind === 'framework' ? error.status : 500;
+  const message = kind === 'framework' ? error.message : 'Internal Error';
   recordAppError({
     source: 'handleError',
-    error,
+    error: kind === 'framework' ? error.message : error,
     details: { status, fallbackMessage: message },
     path: event.url.pathname,
     method: event.request.method,
   });
-
-  return {
-    message,
-  };
+  // Returning nothing keeps SvelteKit's default safe message and status.
 };

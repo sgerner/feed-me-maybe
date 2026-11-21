@@ -3,16 +3,16 @@ import type { RequestHandler } from './$types';
 import {
   recordInteraction,
   type InteractionType,
-} from '$lib/server/interactions';
+} from '#lib/server/interactions.ts';
 import {
   applyArticleState,
   ArticleStateError,
   type ArticleStateAction,
-} from '$lib/server/article-state';
+} from '#lib/server/article-state.ts';
 import {
   OFFLINE_PROTOCOL_HEADER,
   OFFLINE_PROTOCOL_VERSION,
-} from '$lib/server/auth/csrf';
+} from '#lib/server/auth/csrf.ts';
 
 const MAX_VISIBLE_ARTICLE_IDS = 30;
 const MAX_ARTICLE_ID_LENGTH = 200;

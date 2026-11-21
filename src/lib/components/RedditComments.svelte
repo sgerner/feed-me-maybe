@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { formatContent } from '$lib/utils/format';
-  import { buildProxyRequestUrl } from '$lib/proxy';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { formatContent } from '#lib/utils/format.ts';
+  import { buildProxyRequestUrl } from '#lib/proxy.ts';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
     normalizeRedditCommentsUrl,
     parseRedditCommentsResponse,
     type RedditComment,
-  } from '$lib/reddit-comments';
+  } from '#lib/reddit-comments.ts';
 
   type Comment = RedditComment;
 

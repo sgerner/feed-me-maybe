@@ -1,12 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { fetchPublisherArticle } from '$lib/server/archive';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
-import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
-import { enqueueAiProcess } from '$lib/server/feed/job-queue';
-import { refreshRankingAfterProfileMutation } from '$lib/server/ranking-freshness';
-import { wakePoller } from '$lib/server/poller';
+import { getDb } from '#lib/server/db/index.ts';
+import { fetchPublisherArticle } from '#lib/server/archive.ts';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+import { isAiProcessingConfigured } from '#lib/server/ai/runtime.ts';
+import { enqueueAiProcess } from '#lib/server/feed/job-queue.ts';
+import { refreshRankingAfterProfileMutation } from '#lib/server/ranking-freshness.ts';
+import { wakePoller } from '#lib/server/poller.ts';
 
 export const POST: RequestHandler = async ({ locals, params }) => {
   if (!locals.sessionId)

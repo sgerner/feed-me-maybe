@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { syncFeeds } from '$lib/feeds';
-  import { cacheDigest, getCachedDigests } from '$lib/offline';
-  import type { OfflineJsonValue } from '$lib/offline';
+  import { syncFeeds } from '#lib/feeds.ts';
+  import { cacheDigest, getCachedDigests } from '#lib/offline/index.ts';
+  import type { OfflineJsonValue } from '#lib/offline/index.ts';
 
   type DigestArticle = {
     id: string;

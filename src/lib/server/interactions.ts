@@ -1,14 +1,14 @@
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import crypto from 'node:crypto';
 import {
   updateHeuristicScore,
   updatePreferenceMemoryFromInteraction,
-} from '$lib/server/preferences';
+} from '#lib/server/preferences.ts';
 import {
   refreshRankingAfterFeedback,
   refreshRankingAfterProfileMutation,
-} from '$lib/server/ranking-freshness';
-import { dispatchWebhookEvent } from '$lib/server/webhooks';
+} from '#lib/server/ranking-freshness.ts';
+import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
 
 export type InteractionType =
   | 'read'

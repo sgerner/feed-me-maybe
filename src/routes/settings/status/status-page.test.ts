@@ -14,13 +14,13 @@ const {
   mockGetRankingProvider: vi.fn(),
 }));
 
-vi.mock('$lib/server/db', () => ({ getDb: mockGetDb }));
-vi.mock('$lib/server/ai/jev', () => ({
+vi.mock('#lib/server/db/index.ts', () => ({ getDb: mockGetDb }));
+vi.mock('#lib/server/ai/jev.ts', () => ({
   isJevConfigured: mockIsJevConfigured,
   isRankingProviderConfigured: mockIsRankingProviderConfigured,
   isSubqConfigured: mockIsSubqConfigured,
 }));
-vi.mock('$lib/server/ranking-provider', () => ({
+vi.mock('#lib/server/ranking-provider.ts', () => ({
   getRankingProvider: mockGetRankingProvider,
 }));
 

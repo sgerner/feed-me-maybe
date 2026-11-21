@@ -1,14 +1,14 @@
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import { getConfiguredAiClient, isAiProcessingConfigured } from './runtime';
 import type { ArticleScore } from './types';
 import { hasArticleAnalysisText } from './prompts';
-import { parseJsonTextArray } from '$lib/server/normalization';
+import { parseJsonTextArray } from '#lib/server/normalization.ts';
 import {
   applyPreferenceModelToArticle,
   updateHeuristicScore,
-} from '$lib/server/preferences';
-import { markArticleForRankingRefresh } from '$lib/server/ranking-freshness';
+} from '#lib/server/preferences.ts';
+import { markArticleForRankingRefresh } from '#lib/server/ranking-freshness.ts';
 import { isRankingProviderConfigured } from './jev';
 
 const DAY_MS = 24 * 60 * 60 * 1000;

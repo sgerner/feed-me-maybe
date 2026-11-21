@@ -10,19 +10,19 @@ describe('feed management', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (existsSync(testDbPath)) unlinkSync(testDbPath);
   });
 
   it('clears feed articles without deleting learned preferences', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { clearFeedArticles } = await import('./feed-management');
     const db = getDb();
     const now = Date.now();
@@ -131,7 +131,7 @@ describe('feed management', () => {
   });
 
   it('reports healthy, stale, and error feed states with next due time', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getFeedHealth } = await import('./feed-management');
     const db = getDb();
     const now = Date.now();

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import { parseSearchQuery, SearchQueryError } from './search';
 
 export type SavedSearch = {

@@ -1,7 +1,7 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { Agent } from 'undici';
-import { buildProxyRequestUrl } from '$lib/proxy';
+import { buildProxyRequestUrl } from '#lib/proxy.ts';
 
 export const MAX_FEED_RESPONSE_BYTES = 5 * 1024 * 1024;
 export const MAX_HTML_RESPONSE_BYTES = 10 * 1024 * 1024;

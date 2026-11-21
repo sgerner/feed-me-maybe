@@ -1,5 +1,5 @@
-import { getDb } from '$lib/server/db';
-import { building } from '$app/environment';
+import { getDb } from '#lib/server/db/index.ts';
+import { building } from '$app/env';
 import {
   enqueueFeedFetch,
   getNextQueuedJobAt,
@@ -7,12 +7,15 @@ import {
   runDueJobs,
   type JobRecord,
   type RunJobsResult,
-} from '$lib/server/feed/job-queue';
+} from '#lib/server/feed/job-queue.ts';
 import {
   getEffectivePollIntervalMins,
   getGlobalPollIntervalMins,
-} from '$lib/server/feed-management';
-import { pruneOperationalHistory, recordAppError } from '$lib/server/logging';
+} from '#lib/server/feed-management.ts';
+import {
+  pruneOperationalHistory,
+  recordAppError,
+} from '#lib/server/logging.ts';
 
 const INITIAL_POLL_DELAY_MS = 1_000;
 const DEFAULT_JOB_BATCH_SIZE = 24;

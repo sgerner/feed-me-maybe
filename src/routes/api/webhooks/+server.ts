@@ -5,8 +5,8 @@ import {
   updateWebhook,
   deleteWebhook,
   isWebhookEventList,
-} from '$lib/server/webhooks';
-import { SafeFetchError } from '$lib/server/network';
+} from '#lib/server/webhooks.ts';
+import { SafeFetchError } from '#lib/server/network.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)

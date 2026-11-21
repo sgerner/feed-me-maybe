@@ -10,7 +10,7 @@ import {
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
-vi.mock('$lib/server/ai/models-dev', () => ({
+vi.mock('#lib/server/ai/models-dev.ts', () => ({
   getProvider: vi.fn(async (id: string) =>
     id === 'test-provider'
       ? {
@@ -22,7 +22,7 @@ vi.mock('$lib/server/ai/models-dev', () => ({
   ),
 }));
 
-vi.mock('$lib/server/network', () => ({
+vi.mock('#lib/server/network.ts', () => ({
   assertPublicNetworkUrl: vi.fn(async (value: string) => new URL(value)),
   SafeFetchError: class SafeFetchError extends Error {},
 }));
@@ -39,12 +39,12 @@ describe('AI configuration API', () => {
     process.env.APP_SECRET = 'test-app-secret-which-is-at-least-32-characters';
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM jobs').run();
     db.prepare('DELETE FROM feeds').run();
@@ -55,7 +55,7 @@ describe('AI configuration API', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     if (originalAppSecret === undefined) delete process.env.APP_SECRET;
@@ -86,7 +86,7 @@ describe('AI configuration API', () => {
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toContain('credential');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     expect(
       (
         getDb()
@@ -97,7 +97,7 @@ describe('AI configuration API', () => {
   });
 
   it('reports only the enabled config, preserves pause state, and clears the saved provider', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(
@@ -149,7 +149,7 @@ describe('AI configuration API', () => {
   });
 
   it('reports provider cooldown and retries failed analyses in a bounded batch', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     await post({
@@ -236,7 +236,7 @@ describe('AI configuration API', () => {
   });
 
   it('keeps only one active provider row after saving a duplicate', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const saved = await post({
       providerId: 'test-provider',
@@ -298,7 +298,7 @@ describe('AI configuration API', () => {
     });
     expect(response.status).toBe(200);
 
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const row = getDb()
       .prepare(
         'SELECT model_id, custom_base_url FROM provider_configs WHERE enabled = 1',
@@ -319,7 +319,7 @@ describe('AI configuration API', () => {
   });
 
   it('queues backlog on config save and counts unindexed pending jobs in status', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
     db.prepare(

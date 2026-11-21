@@ -4,7 +4,7 @@ import {
   searchArticles,
   SearchQueryError,
   type SearchSort,
-} from '$lib/server/search';
+} from '#lib/server/search.ts';
 
 function parseLimit(value: string | null): number | undefined {
   if (value === null || value === '') return undefined;

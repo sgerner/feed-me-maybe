@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import ArticleList from '$lib/components/ArticleList.svelte';
-  import { getCachedArticles } from '$lib/offline';
+  import ArticleList from '#lib/components/ArticleList.svelte';
+  import { getCachedArticles } from '#lib/offline/index.ts';
 
   type Article = {
     id: string;

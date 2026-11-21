@@ -3,13 +3,13 @@ import {
   readRetryAt,
   type FetchResult,
   type FetchedItem,
-} from '$lib/server/feed/fetcher';
+} from '#lib/server/feed/fetcher.ts';
 import {
   MAX_JSON_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '$lib/server/network';
-import { stripHtml } from '$lib/server/normalization';
+} from '#lib/server/network.ts';
+import { stripHtml } from '#lib/server/normalization.ts';
 
 export type RedditKind =
   | 'subreddit'

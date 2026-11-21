@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fly, fade } from 'svelte/transition';
-  import BrandMark from '$lib/components/BrandMark.svelte';
+  import BrandMark from '#lib/components/BrandMark.svelte';
   let { data, form } = $props();
 </script>
 

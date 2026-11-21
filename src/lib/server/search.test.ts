@@ -11,12 +11,12 @@ describe('personal search engine', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM articles').run();
     db.prepare('DELETE FROM feeds').run();
@@ -131,7 +131,7 @@ describe('personal search engine', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     for (const suffix of ['', '-wal', '-shm']) {
@@ -194,7 +194,7 @@ describe('personal search engine', () => {
   });
 
   it('keeps recent cursor pagination stable and updates the FTS trigger index', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { searchArticles } = await import('./search');
     const first = searchArticles({ limit: 1, sort: 'recent' });
     expect(first.articles).toHaveLength(1);
@@ -253,8 +253,8 @@ describe('personal search engine', () => {
   });
 
   it('runs the versioned migration idempotently', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
     initializeDatabase();
     const migration = getDb()
@@ -274,7 +274,7 @@ describe('personal search engine', () => {
   });
 
   it('excludes paused feeds from default searches while allowing explicit feed or state filters', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { searchArticles } = await import('./search');
     const db = getDb();
     const now = Date.now();

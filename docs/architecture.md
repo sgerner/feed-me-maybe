@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Feed Me Maybe is a single-process, self-hosted RSS reader built on SvelteKit 2. The entire application runs as one Node.js process with an embedded SQLite database — no external services, message queues, or separate workers are required.
+Feed Me Maybe is a single-process, self-hosted RSS reader built on SvelteKit 3. The entire application runs as one Node.js process with an embedded SQLite database — no external services, message queues, or separate workers are required.
 
 ```
 ┌─────────────────────────────────────────────────────┐

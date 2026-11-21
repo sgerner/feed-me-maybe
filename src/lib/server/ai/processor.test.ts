@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/server/db', () => ({ getDb: vi.fn() }));
+vi.mock('#lib/server/db/index.ts', () => ({ getDb: vi.fn() }));
 vi.mock('./runtime', () => ({
   isAiProcessingConfigured: vi.fn(() => true),
   getConfiguredAiClient: vi.fn(async () => ({
@@ -18,8 +18,8 @@ afterEach(() => db?.close());
 
 describe('article enrichment', () => {
   it('commits score refresh intent even when all ranking jobs are occupied', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { processArticle } = await import('./processor');
     db = new Database(':memory:');
     vi.mocked(getDb).mockReturnValue(db);
@@ -67,8 +67,8 @@ describe('article enrichment', () => {
   });
 
   it('reuses canonical URL AI metadata, skips hidden items, and aborts commit when paused mid-flight', async () => {
-    const { getDb } = await import('$lib/server/db');
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { getConfiguredAiClient, isAiProcessingConfigured } =
       await import('./runtime');
     const { processArticle } = await import('./processor');

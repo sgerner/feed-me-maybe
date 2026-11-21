@@ -4,7 +4,7 @@ import {
   destroySession,
   clearSessionCookie,
   getSessionCookieName,
-} from '$lib/server/auth/session';
+} from '#lib/server/auth/session.ts';
 
 export const POST: RequestHandler = async ({ cookies }) => {
   const sessionId = cookies.get(getSessionCookieName());

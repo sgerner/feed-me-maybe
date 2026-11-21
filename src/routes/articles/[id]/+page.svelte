@@ -2,19 +2,19 @@
   import { fade, fly } from 'svelte/transition';
   import { onMount } from 'svelte';
   import { goto, invalidate } from '$app/navigation';
-  import { getSingleKeyShortcutsEnabled } from '$lib/utils/keyboard-shortcuts';
-  import { formatContent, renderContent } from '$lib/utils/format';
-  import { extractArticleImages } from '$lib/utils/article-images';
-  import { addToast } from '$lib/stores/toast.svelte';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
+  import { formatContent, renderContent } from '#lib/utils/format.ts';
+  import { extractArticleImages } from '#lib/utils/article-images.ts';
+  import { addToast } from '#lib/stores/toast.svelte.ts';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
     applyMutationToCachedArticle,
     cacheArticles,
     enqueueOfflineMutation,
     type OfflineMutationType,
-  } from '$lib/offline';
-  import { page } from '$app/stores';
-  import RedditComments from '$lib/components/RedditComments.svelte';
+  } from '#lib/offline/index.ts';
+  import { page } from '$app/state';
+  import RedditComments from '#lib/components/RedditComments.svelte';
   type InteractionType = 'thumbs_up' | 'thumbs_down' | 'save' | 'hide';
   type ArticleData = {
     id: string;
@@ -52,7 +52,7 @@
   }>();
 
   const article = $derived(pageData.article);
-  const mode = $derived($page.url.searchParams.get('mode') || 'app');
+  const mode = $derived(page.url.searchParams.get('mode') || 'app');
 
   // Reactive interaction state
   let liked = $state(false);
@@ -147,7 +147,7 @@
   }
 
   function offlineScope(): string {
-    return String($page.data.userId || 'admin');
+    return String(page.data.userId || 'admin');
   }
 
   type ReaderStateSnapshot = {

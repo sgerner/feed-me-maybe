@@ -1,24 +1,24 @@
-import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
-import { hasArticleAnalysisText } from '$lib/server/ai/prompts';
-import { normalizeSourceUrl } from '$lib/server/source-url';
-import { getDb } from '$lib/server/db';
-import { fetchFeed } from '$lib/server/feed/fetcher';
+import { isAiProcessingConfigured } from '#lib/server/ai/runtime.ts';
+import { hasArticleAnalysisText } from '#lib/server/ai/prompts.ts';
+import { normalizeSourceUrl } from '#lib/server/source-url.ts';
+import { getDb } from '#lib/server/db/index.ts';
+import { fetchFeed } from '#lib/server/feed/fetcher.ts';
 import {
   isRedditUrl,
   normalizeRedditUrl,
   fetchRedditSource,
-} from '$lib/server/sources/reddit';
-import { applyPreferenceModelToArticle } from '$lib/server/preferences';
-import { refreshCombinedScore } from '$lib/server/scoring';
-import { dispatchWebhookEvent } from '$lib/server/webhooks';
-import { broadcast } from '$lib/server/realtime';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
-import { recordAppError } from '$lib/server/logging';
+} from '#lib/server/sources/reddit.ts';
+import { applyPreferenceModelToArticle } from '#lib/server/preferences.ts';
+import { refreshCombinedScore } from '#lib/server/scoring.ts';
+import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
+import { broadcast } from '#lib/server/realtime.ts';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+import { recordAppError } from '#lib/server/logging.ts';
 import {
   enqueueAiProcess,
   enqueueJevProcess,
-} from '$lib/server/feed/job-queue';
-import { normalizeFeedUrl } from '$lib/server/feed-management';
+} from '#lib/server/feed/job-queue.ts';
+import { normalizeFeedUrl } from '#lib/server/feed-management.ts';
 import crypto from 'node:crypto';
 
 interface IngestOptions {

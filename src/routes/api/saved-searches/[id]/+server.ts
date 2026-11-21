@@ -4,7 +4,7 @@ import {
   deleteSavedSearch,
   SavedSearchError,
   updateSavedSearch,
-} from '$lib/server/saved-searches';
+} from '#lib/server/saved-searches.ts';
 
 function errorResponse(caught: unknown, fallback: string): Response {
   if (caught instanceof SavedSearchError) {

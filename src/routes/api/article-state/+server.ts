@@ -8,7 +8,7 @@ import {
   getArticleStateCounts,
   getArticleStateHistory,
   type ArticleStateAction,
-} from '$lib/server/article-state';
+} from '#lib/server/article-state.ts';
 
 function actionFromBody(body: Record<string, unknown>): ArticleStateAction {
   if (typeof body.action === 'string') {

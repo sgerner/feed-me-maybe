@@ -1,16 +1,16 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { verifyPassword } from '$lib/server/auth/password';
+import { verifyPassword } from '#lib/server/auth/password.ts';
 import {
   createSession,
   setSessionCookie,
   getSessionCookieName,
-} from '$lib/server/auth/session';
+} from '#lib/server/auth/session.ts';
 import {
   consumeLoginAttempt,
   getClientAddress as getSafeClientAddress,
   resetLoginAttempts,
-} from '$lib/server/auth/rate-limit';
+} from '#lib/server/auth/rate-limit.ts';
 
 export const POST: RequestHandler = async ({
   request,

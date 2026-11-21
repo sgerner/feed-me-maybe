@@ -1,16 +1,16 @@
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import {
   advanceRankingProviderRevision,
   getRankingProviderSnapshot,
   isRankingProvider,
-} from '$lib/server/ranking-provider';
-import { isRankingProviderConfigured } from '$lib/server/ai/jev';
-import { refreshCombinedScore } from '$lib/server/scoring';
-import { reconcileAutoHiddenArticles } from '$lib/server/preferences';
+} from '#lib/server/ranking-provider.ts';
+import { isRankingProviderConfigured } from '#lib/server/ai/jev.ts';
+import { refreshCombinedScore } from '#lib/server/scoring.ts';
+import { reconcileAutoHiddenArticles } from '#lib/server/preferences.ts';
 import {
   getRankingFeedbackRevision,
   refreshRankingAfterGlobalProfileMutation,
-} from '$lib/server/ranking-freshness';
+} from '#lib/server/ranking-freshness.ts';
 
 function updateRankingProvider(value: string): {
   success: boolean;

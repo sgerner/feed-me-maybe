@@ -5,7 +5,7 @@
     getSingleKeyShortcutsEnabled,
     SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
     setSingleKeyShortcutsEnabled,
-  } from '$lib/utils/keyboard-shortcuts';
+  } from '#lib/utils/keyboard-shortcuts.ts';
 
   let { open = $bindable(false), reader = false } = $props();
   let dialogEl = $state<HTMLDivElement | null>(null);

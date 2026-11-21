@@ -1,4 +1,4 @@
-import { registerClient } from '$lib/server/realtime';
+import { registerClient } from '#lib/server/realtime.ts';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = ({ locals }) => {

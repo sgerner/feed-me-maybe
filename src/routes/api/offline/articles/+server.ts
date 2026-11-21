@@ -1,8 +1,8 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import type { OfflineArticle } from '$lib/offline/types';
-import { getDb } from '$lib/server/db';
-import { rankingOrderExpression } from '$lib/server/ranking';
+import type { OfflineArticle } from '#lib/offline/types.ts';
+import { getDb } from '#lib/server/db/index.ts';
+import { rankingOrderExpression } from '#lib/server/ranking.ts';
 
 const SAVED_ARTICLE_LIMIT = 100;
 const UNREAD_ARTICLE_LIMIT = 150;

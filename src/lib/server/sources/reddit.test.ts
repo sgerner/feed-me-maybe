@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchFeed } from '$lib/server/feed/fetcher';
+import { fetchFeed } from '#lib/server/feed/fetcher.ts';
 import {
   isRedditUrl,
   normalizeRedditUrl,
@@ -8,7 +8,7 @@ import {
   fetchRedditSource,
 } from './reddit';
 
-vi.mock('$lib/server/feed/fetcher', async (importOriginal) => {
+vi.mock('#lib/server/feed/fetcher.ts', async (importOriginal) => {
   const actual = (await importOriginal()) as any;
   return {
     ...actual,

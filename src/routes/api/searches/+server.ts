@@ -6,7 +6,7 @@ import {
   listSavedSearches,
   SavedSearchError,
   updateSavedSearch,
-} from '$lib/server/saved-searches';
+} from '#lib/server/saved-searches.ts';
 
 type SavedSearchInput = {
   name: string;

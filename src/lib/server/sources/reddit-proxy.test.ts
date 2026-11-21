@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildProxyRequestUrl } from '$lib/proxy';
+import { buildProxyRequestUrl } from '#lib/proxy.ts';
 import { normalizeRedditUrl, fetchRedditSource } from './reddit';
 
 vi.mock('node:dns/promises', () => ({

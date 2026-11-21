@@ -1,18 +1,21 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getDb } from '$lib/server/db';
-import { fetchFeed } from '$lib/server/feed/fetcher';
-import { enqueueFeedFetch } from '$lib/server/feed/job-queue';
-import { wakePoller } from '$lib/server/poller';
+import { getDb } from '#lib/server/db/index.ts';
+import { fetchFeed } from '#lib/server/feed/fetcher.ts';
+import { enqueueFeedFetch } from '#lib/server/feed/job-queue.ts';
+import { wakePoller } from '#lib/server/poller.ts';
 import {
   isRedditUrl,
   normalizeRedditUrl,
   fetchRedditSource,
-} from '$lib/server/sources/reddit';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
-import { recordAppError } from '$lib/server/logging';
-import { validatePublicUrl } from '$lib/server/network';
-import { getFeedHealth, normalizeFeedUrl } from '$lib/server/feed-management';
+} from '#lib/server/sources/reddit.ts';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+import { recordAppError } from '#lib/server/logging.ts';
+import { validatePublicUrl } from '#lib/server/network.ts';
+import {
+  getFeedHealth,
+  normalizeFeedUrl,
+} from '#lib/server/feed-management.ts';
 import crypto from 'node:crypto';
 
 export const GET: RequestHandler = async ({ locals }) => {

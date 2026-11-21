@@ -1,5 +1,5 @@
-import { normalizeSourceUrl } from '$lib/server/source-url';
-import { getDb } from '$lib/server/db';
+import { normalizeSourceUrl } from '#lib/server/source-url.ts';
+import { getDb } from '#lib/server/db/index.ts';
 
 const MIN_POLL_INTERVAL_MINS = 1;
 const MAX_POLL_INTERVAL_MINS = 24 * 60;

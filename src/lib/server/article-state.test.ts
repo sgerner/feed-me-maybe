@@ -10,12 +10,12 @@ describe('article state foundation', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM article_state_history').run();
     db.prepare('DELETE FROM user_interactions').run();
@@ -58,7 +58,7 @@ describe('article state foundation', () => {
   });
 
   afterAll(async () => {
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     for (const suffix of ['', '-wal', '-shm']) {
@@ -110,7 +110,7 @@ describe('article state foundation', () => {
   });
 
   it('records explicit hide intent on an auto-hidden article and reverses it safely', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { applyArticleState, getArticleState, undoArticleState } =
       await import('./article-state');
     const { hasExplicitHide, calculateHeuristicScore } =
@@ -161,7 +161,7 @@ describe('article state foundation', () => {
   });
 
   it('undoes a hide when a compatibility trigger fills an existing saved timestamp', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { applyArticleState, getArticleState, undoArticleState } =
       await import('./article-state');
     const db = getDb();
@@ -205,7 +205,7 @@ describe('article state foundation', () => {
   });
 
   it('retracts rejection preference deltas and tags the exact interaction on undo', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { applyArticleState, undoArticleState, getArticleState } =
       await import('./article-state');
     const db = getDb();
@@ -249,7 +249,7 @@ describe('article state foundation', () => {
   });
 
   it('retracts an active rejection when an article is explicitly restored', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { applyArticleState, getArticleState } =
       await import('./article-state');
     const db = getDb();
@@ -327,7 +327,7 @@ describe('article state foundation', () => {
   });
 
   it('excludes paused feeds from unread and state counts', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getUnreadCounts, getArticleStateCounts } =
       await import('./article-state');
     const db = getDb();

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
-  import { addToast } from '$lib/stores/toast.svelte';
+  import { addToast } from '#lib/stores/toast.svelte.ts';
   import { enhance } from '$app/forms';
-  import ThemeChooser from '$lib/components/ThemeChooser.svelte';
-  import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
+  import ThemeChooser from '#lib/components/ThemeChooser.svelte';
+  import { ARTICLE_OPEN_MODES } from '#lib/constants/article-open-modes.ts';
   import { fly } from 'svelte/transition';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
   let { data, form } = $props();
   let rankingProvider = $state<'jev' | 'subq'>('jev');

@@ -1,8 +1,8 @@
 <script lang="ts">
   import '../app.css';
   import { onMount, setContext, tick } from 'svelte';
-  import { renderContent } from '$lib/utils/format';
-  import { page } from '$app/stores';
+  import { renderContent } from '#lib/utils/format.ts';
+  import { page } from '$app/state';
   import { navigating } from '$app/state';
   import {
     addToast,
@@ -11,16 +11,16 @@
     removeToast,
     resumeToast,
     setToastSuppressed,
-  } from '$lib/stores/toast.svelte';
+  } from '#lib/stores/toast.svelte.ts';
   import { fade, fly } from 'svelte/transition';
   import { afterNavigate, invalidateAll } from '$app/navigation';
-  import PWABanner from '$lib/components/PWABanner.svelte';
-  import BrandMark from '$lib/components/BrandMark.svelte';
-  import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
-  import { getSingleKeyShortcutsEnabled } from '$lib/utils/keyboard-shortcuts';
+  import PWABanner from '#lib/components/PWABanner.svelte';
+  import BrandMark from '#lib/components/BrandMark.svelte';
+  import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
+  import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
 
-  import { syncFeeds } from '$lib/feeds';
-  import { fetchWithCsrf } from '$lib/client/csrf';
+  import { syncFeeds } from '#lib/feeds.ts';
+  import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
     activateOfflineUser,
     applyMutationToArticle,
@@ -32,7 +32,7 @@
     type OfflineMutationType,
     installOfflineSync,
     retryBlockedOfflineMutations,
-  } from '$lib/offline';
+  } from '#lib/offline/index.ts';
 
   let sidebarOpen = $state(false);
   let isMobileViewport = $state(false);
@@ -322,7 +322,7 @@
         newFeedUrl = '';
         newFeedCategory = '';
         showAddFeedModal = false;
-        const { addToast } = await import('$lib/stores/toast.svelte');
+        const { addToast } = await import('#lib/stores/toast.svelte.ts');
         addToast('Feed added successfully', 'success');
         // Refresh the page to show the new feed in the sidebar
         await invalidateAll();
@@ -539,10 +539,10 @@
   );
 
   function isCurrentNavItem(href: string): boolean {
-    const path = $page.url.pathname;
+    const path = page.url.pathname;
     if (
       (href === '/' || href === '/inbox') &&
-      $page.url.searchParams.has('category')
+      page.url.searchParams.has('category')
     )
       return false;
     return href === '/'
@@ -575,7 +575,7 @@
   }
 
   $effect(() => {
-    const path = $page.url.pathname;
+    const path = page.url.pathname;
     if (path.startsWith('/recovery') || path.startsWith('/settings')) {
       secondaryOpen = true;
     }
@@ -810,8 +810,8 @@
               </div>
               <details
                 class="nav-feed-group"
-                open={$page.url.pathname.startsWith('/feeds/') ||
-                  $page.url.searchParams.has('category')}
+                open={page.url.pathname.startsWith('/feeds/') ||
+                  page.url.searchParams.has('category')}
               >
                 <summary class="nav-feed-summary">
                   <span>Browse sources</span>
@@ -824,9 +824,8 @@
                     {#if category}
                       <details
                         open={feeds.some(
-                          (feed) => $page.url.pathname === `/feeds/${feed.id}`,
-                        ) ||
-                          $page.url.searchParams.get('category') === category}
+                          (feed) => page.url.pathname === `/feeds/${feed.id}`,
+                        ) || page.url.searchParams.get('category') === category}
                       >
                         <summary class="nav-feed-summary">
                           <span>{category}</span>
@@ -840,16 +839,16 @@
                         <a
                           class="nav-item nav-item-subtle"
                           href="/?category={encodeURIComponent(category)}"
-                          aria-current={$page.url.pathname === '/' &&
-                          $page.url.searchParams.get('category') === category
+                          aria-current={page.url.pathname === '/' &&
+                          page.url.searchParams.get('category') === category
                             ? 'page'
                             : undefined}>All {category}</a
                         >
                         <a
                           class="nav-item nav-item-subtle"
                           href="/inbox?category={encodeURIComponent(category)}"
-                          aria-current={$page.url.pathname === '/inbox' &&
-                          $page.url.searchParams.get('category') === category
+                          aria-current={page.url.pathname === '/inbox' &&
+                          page.url.searchParams.get('category') === category
                             ? 'page'
                             : undefined}>Unread {category}</a
                         >
@@ -867,12 +866,12 @@
                 {#snippet feedLink(feed: (typeof data.feeds)[number])}
                   <a
                     href="/feeds/{feed.id}"
-                    aria-current={$page.url.pathname === `/feeds/${feed.id}`
+                    aria-current={page.url.pathname === `/feeds/${feed.id}`
                       ? 'page'
                       : undefined}
                     data-sveltekit-preload-data
                     class={'nav-item nav-item-subtle' +
-                      ($page.url.pathname === `/feeds/${feed.id}`
+                      (page.url.pathname === `/feeds/${feed.id}`
                         ? ' nav-item-active'
                         : '')}
                   >
@@ -1008,10 +1007,10 @@
                 href="/recovery"
                 data-sveltekit-preload-data
                 class={'nav-item' +
-                  ($page.url.pathname.startsWith('/recovery')
+                  (page.url.pathname.startsWith('/recovery')
                     ? ' nav-item-active'
                     : '')}
-                aria-current={$page.url.pathname.startsWith('/recovery')
+                aria-current={page.url.pathname.startsWith('/recovery')
                   ? 'page'
                   : undefined}
               >
@@ -1040,10 +1039,10 @@
                   href={item.href}
                   data-sveltekit-preload-data
                   class={'nav-item' +
-                    ($page.url.pathname.startsWith(item.href)
+                    (page.url.pathname.startsWith(item.href)
                       ? ' nav-item-active'
                       : '')}
-                  aria-current={$page.url.pathname.startsWith(item.href)
+                  aria-current={page.url.pathname.startsWith(item.href)
                     ? 'page'
                     : undefined}
                 >
@@ -1345,7 +1344,7 @@
       {/if}
     </dialog>
 
-    {#if !$page.url.pathname.startsWith('/articles/')}
+    {#if !page.url.pathname.startsWith('/articles/')}
       <!-- Toast container -->
       <div
         class="app-toasts fixed right-5 bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))] z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5"
@@ -1557,12 +1556,12 @@
       </div>
     {/if}
 
-    {#if !$page.url.pathname.startsWith('/articles/')}
+    {#if !page.url.pathname.startsWith('/articles/')}
       <PWABanner />
     {/if}
     <KeyboardShortcuts
       bind:open={showShortcuts}
-      reader={$page.url.pathname.startsWith('/articles/')}
+      reader={page.url.pathname.startsWith('/articles/')}
     />
   </div>
 {:else}

@@ -1,4 +1,4 @@
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import crypto from 'node:crypto';
 
 const SESSION_COOKIE_NAME = 'feed-me-maybe-session';

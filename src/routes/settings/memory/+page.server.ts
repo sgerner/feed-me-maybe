@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types';
-import { getDb } from '$lib/server/db';
-import { getDecayedStrength } from '$lib/server/preferences';
+import { getDb } from '#lib/server/db/index.ts';
+import { getDecayedStrength } from '#lib/server/preferences.ts';
 
 type PreferenceMemoryRow = {
   id: string;

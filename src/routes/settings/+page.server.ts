@@ -1,10 +1,10 @@
-import { wakePoller } from '$lib/server/poller';
+import { wakePoller } from '#lib/server/poller.ts';
 import type { PageServerLoad, Actions } from './$types';
-import { getDb } from '$lib/server/db';
+import { getDb } from '#lib/server/db/index.ts';
 import { fail } from '@sveltejs/kit';
-import { isArticleOpenMode } from '$lib/constants/article-open-modes';
-import { isJevConfigured, isSubqConfigured } from '$lib/server/ai/jev';
-import { getRankingProvider } from '$lib/server/ranking-provider';
+import { isArticleOpenMode } from '#lib/constants/article-open-modes.ts';
+import { isJevConfigured, isSubqConfigured } from '#lib/server/ai/jev.ts';
+import { getRankingProvider } from '#lib/server/ranking-provider.ts';
 
 export const load: PageServerLoad = async ({ locals }) => {
   if (!locals.sessionId) return {};

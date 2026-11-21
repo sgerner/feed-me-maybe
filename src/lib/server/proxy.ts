@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { buildProxyRequestUrl } from '$lib/proxy';
+import { buildProxyRequestUrl } from '#lib/proxy.ts';
 
 const PROXY_ENV_KEYS = ['PROXY_BASE_URL', 'REDDIT_BASE_URL'] as const;
 

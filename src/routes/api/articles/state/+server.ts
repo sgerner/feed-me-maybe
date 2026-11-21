@@ -5,7 +5,7 @@ import {
   ARTICLE_STATE_ACTIONS,
   ArticleStateError,
   type ArticleStateAction,
-} from '$lib/server/article-state';
+} from '#lib/server/article-state.ts';
 
 function getErrorResponse(caught: unknown): Response {
   if (caught instanceof ArticleStateError) {

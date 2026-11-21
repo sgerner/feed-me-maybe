@@ -1,10 +1,10 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getDb } from '$lib/server/db';
-import { hasExplicitHide } from '$lib/server/preferences';
-import { recordInteraction } from '$lib/server/interactions';
-import { fetchArchivedArticle } from '$lib/server/archive';
-import { getConfiguredProxyBaseUrl } from '$lib/server/proxy';
+import { getDb } from '#lib/server/db/index.ts';
+import { hasExplicitHide } from '#lib/server/preferences.ts';
+import { recordInteraction } from '#lib/server/interactions.ts';
+import { fetchArchivedArticle } from '#lib/server/archive.ts';
+import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 
 export const load: PageServerLoad = async ({ params, locals, url }) => {
   if (!locals.sessionId) {

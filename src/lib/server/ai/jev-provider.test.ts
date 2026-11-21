@@ -33,7 +33,7 @@ describe('selected ranking provider', () => {
     process.env.DATABASE_URL = testDbPath;
     const dataDir = join(process.cwd(), 'data');
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('$lib/server/db/migrate');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
   });
 
@@ -46,7 +46,7 @@ describe('selected ranking provider', () => {
     process.env.SUBQ_API_KEY = 'test-subq-key';
     process.env.SUBQ_API_KEY_FILE = '';
 
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     db.prepare('DELETE FROM ranking_refresh_queue').run();
     db.prepare('DELETE FROM jobs').run();
@@ -76,7 +76,7 @@ describe('selected ranking provider', () => {
 
   afterAll(async () => {
     vi.restoreAllMocks();
-    const { closeDb } = await import('$lib/server/db');
+    const { closeDb } = await import('#lib/server/db/index.ts');
     closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     for (const [key, value] of Object.entries(originalEnv)) {
@@ -91,7 +91,7 @@ describe('selected ranking provider', () => {
   });
 
   async function insertArticle(id: string, jevScore: number | null = null) {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const now = Date.now();
     getDb()
       .prepare(
@@ -115,9 +115,9 @@ describe('selected ranking provider', () => {
   }
 
   it('defaults to Jev and reports provider availability without exposing keys', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getRankingProviderSnapshot } =
-      await import('$lib/server/ranking-provider');
+      await import('#lib/server/ranking-provider.ts');
     const { isJevConfigured, isRankingProviderConfigured, isSubqConfigured } =
       await import('./jev');
     getDb()
@@ -150,7 +150,7 @@ describe('selected ranking provider', () => {
   it('allows a valid provider selection while reporting its missing key', async () => {
     process.env.SUBQ_API_KEY = '';
     process.env.SUBQ_API_KEY_FILE = '';
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
 
     expect(applySettingsMutation('ranking_provider', 'subq')).toMatchObject({
       success: true,
@@ -162,10 +162,10 @@ describe('selected ranking provider', () => {
 
   it('sends the same would_open question to SubQ and stores its score', async () => {
     await insertArticle('subq-score');
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
     const { JEV_DECISION_QUESTIONS } = await import('./decision-input');
     const { scoreArticleWithJev } = await import('./jev');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     expect(applySettingsMutation('ranking_provider', 'subq')).toMatchObject({
       success: true,
       provider: 'subq',
@@ -203,7 +203,7 @@ describe('selected ranking provider', () => {
 
   it('deduplicates source preferences and ignores automatic hides', async () => {
     await insertArticle('profile-candidate');
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { scoreArticleWithJev } = await import('./jev');
     const db = getDb();
     const now = Date.now();
@@ -327,7 +327,8 @@ describe('selected ranking provider', () => {
     'rejects a null score from %s without overwriting the cached score',
     async (provider) => {
       if (provider === 'subq') {
-        const { applySettingsMutation } = await import('$lib/server/settings');
+        const { applySettingsMutation } =
+          await import('#lib/server/settings.ts');
         applySettingsMutation('ranking_provider', provider);
       }
       await insertArticle(`null-score-${provider}`, 0.45);
@@ -338,7 +339,7 @@ describe('selected ranking provider', () => {
         ),
       );
       const { scoreArticleWithJev } = await import('./jev');
-      const { getDb } = await import('$lib/server/db');
+      const { getDb } = await import('#lib/server/db/index.ts');
 
       await expect(
         scoreArticleWithJev(`null-score-${provider}`),
@@ -365,7 +366,7 @@ describe('selected ranking provider', () => {
         ),
       );
       const { scoreArticleWithJev } = await import('./jev');
-      const { getDb } = await import('$lib/server/db');
+      const { getDb } = await import('#lib/server/db/index.ts');
 
       await expect(
         scoreArticleWithJev(`out-of-range-${score}`),
@@ -380,10 +381,10 @@ describe('selected ranking provider', () => {
 
   it('invalidates cached scores on switch and rejects in-flight results after switching back', async () => {
     await insertArticle('provider-race', 0.74);
-    const { applySettingsMutation } = await import('$lib/server/settings');
-    const { getDb } = await import('$lib/server/db');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { getRankingProviderSnapshot } =
-      await import('$lib/server/ranking-provider');
+      await import('#lib/server/ranking-provider.ts');
     const { scoreArticleWithJev } = await import('./jev');
     getDb()
       .prepare(
@@ -445,17 +446,18 @@ describe('selected ranking provider', () => {
   });
 
   it('rejects invalid provider values without changing the selection', async () => {
-    const { applySettingsMutation } = await import('$lib/server/settings');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
     expect(applySettingsMutation('ranking_provider', 'unknown')).toEqual({
       success: false,
       message: 'Invalid ranking provider',
     });
-    const { getRankingProvider } = await import('$lib/server/ranking-provider');
+    const { getRankingProvider } =
+      await import('#lib/server/ranking-provider.ts');
     expect(getRankingProvider()).toBe('jev');
   });
 
   it('aligns decayed preference weights, polarity evidence counts, source signals, and blank feed title fallback', async () => {
-    const { getDb } = await import('$lib/server/db');
+    const { getDb } = await import('#lib/server/db/index.ts');
     const { scoreArticleWithJev } = await import('./jev');
     const db = getDb();
     const now = Date.now();
