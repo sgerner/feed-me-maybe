@@ -7,20 +7,37 @@ import {
 } from '#lib/server/webhooks.ts';
 import { SafeFetchError } from '#lib/server/network.ts';
 
+/** The parsed body if it is a JSON object; null for malformed JSON, null, arrays and primitives. */
+async function readBody(request: Request): Promise<Record<string, any> | null> {
+  try {
+    const body: unknown = await request.json();
+    return body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, any>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const invalidBody = () =>
+  Response.json({ error: 'Invalid body' }, { status: 400 });
+
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await request.json();
+  const body = await readBody(request);
+  if (!body) return invalidBody();
   const { name, url, events, secret } = body;
 
-  const missingField = !name
-    ? 'name'
-    : !url
-      ? 'url'
-      : !isWebhookEventList(events)
-        ? 'events'
-        : null;
+  const missingField =
+    typeof name !== 'string' || !name
+      ? 'name'
+      : typeof url !== 'string' || !url
+        ? 'url'
+        : !isWebhookEventList(events)
+          ? 'events'
+          : null;
 
   if (missingField) {
     return Response.json(
@@ -28,6 +45,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         error: 'Name, target URL, and at least one event are required.',
         field: missingField,
       },
+      { status: 400 },
+    );
+  }
+  if (secret != null && typeof secret !== 'string') {
+    return Response.json(
+      { error: 'Signing secret must be text', field: 'secret' },
       { status: 400 },
     );
   }
@@ -50,10 +73,18 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await request.json();
+  const body = await readBody(request);
+  if (!body) return invalidBody();
   const { id, ...updates } = body;
 
-  if (!id) return Response.json({ error: 'id is required' }, { status: 400 });
+  if (typeof id !== 'string' || !id)
+    return Response.json({ error: 'id is required' }, { status: 400 });
+  if (updates.name !== undefined && typeof updates.name !== 'string') {
+    return Response.json(
+      { error: 'Name must be text', field: 'name' },
+      { status: 400 },
+    );
+  }
   if (updates.events !== undefined && !isWebhookEventList(updates.events)) {
     return Response.json(
       { error: 'Select at least one supported event', field: 'events' },
@@ -82,9 +113,12 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { id } = await request.json();
+  const body = await readBody(request);
+  if (!body) return invalidBody();
+  const { id } = body;
 
-  if (!id) return Response.json({ error: 'id is required' }, { status: 400 });
+  if (typeof id !== 'string' || !id)
+    return Response.json({ error: 'id is required' }, { status: 400 });
 
   try {
     deleteWebhook(id);
