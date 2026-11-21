@@ -101,30 +101,27 @@ export const articles = sqliteTable(
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
-  (table) => ({
-    feedIdIdx: index('idx_articles_feed_id').on(table.feedId),
-    publishedAtIdx: index('idx_articles_published_at').on(table.publishedAt),
-    visibleRankIdx: index('idx_articles_visible_rank')
+  (table) => [
+    index('idx_articles_feed_id').on(table.feedId),
+    index('idx_articles_published_at').on(table.publishedAt),
+    index('idx_articles_visible_rank')
       .on(
         sql`COALESCE(NULLIF(${table.combinedScore}, 0), ${table.heuristicScore}, 0) DESC`,
         sql`${table.publishedAt} DESC`,
       )
       .where(sql`${table.hidden} = 0`),
-    feedVisibleRankIdx: index('idx_articles_feed_visible_rank')
+    index('idx_articles_feed_visible_rank')
       .on(
         table.feedId,
         sql`COALESCE(NULLIF(${table.combinedScore}, 0), ${table.heuristicScore}, 0) DESC`,
         sql`${table.publishedAt} DESC`,
       )
       .where(sql`${table.hidden} = 0`),
-    savedPublishedAtIdx: index('idx_articles_saved_published')
+    index('idx_articles_saved_published')
       .on(sql`${table.publishedAt} DESC`)
       .where(sql`${table.saved} = 1`),
-    feedUrlUnique: uniqueIndex('idx_articles_feed_url').on(
-      table.feedId,
-      table.url,
-    ),
-  }),
+    uniqueIndex('idx_articles_feed_url').on(table.feedId, table.url),
+  ],
 );
 
 // ── Article AI Metadata ──
@@ -165,19 +162,17 @@ export const articleStateHistory = sqliteTable(
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     undoneAt: integer('undone_at', { mode: 'timestamp' }),
   },
-  (table) => ({
-    operationIdx: index('idx_article_state_history_operation').on(
-      table.operationId,
-    ),
-    articleIdx: index('idx_article_state_history_article').on(
+  (table) => [
+    index('idx_article_state_history_operation').on(table.operationId),
+    index('idx_article_state_history_article').on(
       table.articleId,
       table.createdAt,
     ),
-    idempotencyIdx: uniqueIndex('idx_article_state_history_idempotency').on(
+    uniqueIndex('idx_article_state_history_idempotency').on(
       table.idempotencyKey,
       table.articleId,
     ),
-  }),
+  ],
 );
 
 export const savedSearches = sqliteTable(
@@ -191,9 +186,7 @@ export const savedSearches = sqliteTable(
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
-  (table) => ({
-    updatedIdx: index('idx_saved_searches_updated').on(table.updatedAt),
-  }),
+  (table) => [index('idx_saved_searches_updated').on(table.updatedAt)],
 );
 
 // ── Feed Fetch Logs ──
