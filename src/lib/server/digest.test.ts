@@ -642,4 +642,181 @@ describe('weekly digest', () => {
       result.allArticles.every((item) => item.url.startsWith('https://')),
     ).toBe(true);
   });
+
+  it('accepts case-insensitive status, null uncertainty, fenced JSON, and interleaves diverse feeds', async () => {
+    const {
+      extractDigestJson,
+      getWeeklyDigestSelectionPreview,
+      normalizeCalmBriefingResponse,
+    } = await import('./digest');
+
+    expect(
+      extractDigestJson(
+        'Preface {ignored}\n```json\n{"headline":"Calm\nBrief","summary":"Ok","themes":[],"takeaways":[],"topSignal":[],"worthYourTime":[],"whatChanged":[],"uncertainty":[]}\n```',
+      ),
+    ).toMatchObject({ headline: 'Calm\nBrief', summary: 'Ok' });
+
+    const normalized = normalizeCalmBriefingResponse({
+      headline: 'Update',
+      summary: 'Two updates.',
+      takeaways: [],
+      topSignal: [
+        {
+          articleId: 'a1',
+          reason: 'Important',
+          status: 'New',
+          uncertainty: null,
+        },
+      ],
+      worthYourTime: [],
+      whatChanged: [],
+      uncertainty: [],
+      themes: [],
+    });
+    expect(normalized?.topSignal?.[0]).toEqual({
+      articleId: 'a1',
+      reason: 'Important',
+      status: 'new',
+    });
+
+    const now = Date.now();
+    const preview = getWeeklyDigestSelectionPreview([
+      ...[1, 2, 3].map((i) => ({
+        id: `a-${i}`,
+        feed_id: 'feed-a',
+        url: `https://a.example/${i}`,
+        title: `Unique alpha topic ${i}`,
+        author: null,
+        summary: '',
+        image_url: null,
+        categories: '[]',
+        published_at: now - i,
+        fetched_at: now - i,
+        read: 0,
+        saved: 0,
+        hidden: 0,
+        thumbs_up: 0,
+        thumbs_down: 0,
+        heuristic_score: 100 - i,
+        combined_score: 100 - i,
+        feed_title: 'Feed A',
+        feed_url: 'https://a.example/rss',
+        feed_open_mode: 'app',
+      })),
+      {
+        id: 'b-1',
+        feed_id: 'feed-b',
+        url: 'https://b.example/1',
+        title: 'Distinct beta topic',
+        author: null,
+        summary: '',
+        image_url: null,
+        categories: '[]',
+        published_at: now - 10,
+        fetched_at: now - 10,
+        read: 0,
+        saved: 0,
+        hidden: 0,
+        thumbs_up: 0,
+        thumbs_down: 0,
+        heuristic_score: 60,
+        combined_score: 60,
+        feed_title: 'Feed B',
+        feed_url: 'https://b.example/rss',
+        feed_open_mode: 'app',
+      },
+    ]);
+    expect(preview.slice(0, 2).map((item) => item.id)).toEqual(['a-1', 'b-1']);
+  });
+
+  it('skips AI during provider cooldown, honors AbortSignal, and avoids overwriting AI cache with fallback', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getWeeklyDigestArticles } = await import('./digest');
+    const { encrypt } = await import('$lib/server/ai/crypto');
+    const originalSecret = process.env.APP_SECRET;
+    process.env.APP_SECRET = 'test-app-secret-which-is-at-least-32-characters';
+    try {
+      const db = getDb();
+      const now = Date.now();
+      const creds = encrypt(JSON.stringify({ apiKey: 'digest-key' }));
+      db.prepare(
+        'INSERT INTO provider_configs (id, provider_id, model_id, api_key_encrypted, api_key_nonce, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+      ).run(
+        'digest-cfg',
+        'openai',
+        'gpt-4o-mini',
+        creds.encrypted,
+        creds.nonce,
+        now,
+        now,
+      );
+      db.prepare(
+        'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('feed-d', 'https://example.com/rss', 'Digest Feed', now, now);
+      db.prepare(
+        'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, hidden, read, saved, published_at, fetched_at, heuristic_score, combined_score, categories, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, 80, 80, ?, ?, ?)',
+      ).run(
+        'd-1',
+        'feed-d',
+        'https://example.com/d1',
+        'Story One',
+        'Summary one',
+        now - 1000,
+        now - 1000,
+        '["news"]',
+        now,
+        now,
+      );
+      db.prepare(
+        "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('provider_cooldown_ai_process', ?, ?)",
+      ).run(String(now + 60_000), now);
+
+      const result = await getWeeklyDigestArticles({ now, forceRefresh: true });
+      expect(result.aiEnabled).toBe(true);
+      expect(result.aiGenerated).toBe(false);
+
+      const ac = new AbortController();
+      ac.abort();
+      await expect(
+        getWeeklyDigestArticles({ now, signal: ac.signal }),
+      ).rejects.toThrow(/abort/i);
+    } finally {
+      if (originalSecret === undefined) delete process.env.APP_SECRET;
+      else process.env.APP_SECRET = originalSecret;
+    }
+  });
+
+  it('excludes articles from paused feeds in weekly digest', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getWeeklyDigestArticles } = await import('./digest');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run(
+      'digest-paused-feed',
+      'https://paused-digest.example.com/rss',
+      'Paused Digest',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, summary, published_at, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'digest-paused-article',
+      'digest-paused-feed',
+      'https://paused-digest.example.com/1',
+      'Paused Digest Story',
+      'Should not appear.',
+      now - 1000,
+      now - 1000,
+      now,
+      now,
+    );
+
+    const result = await getWeeklyDigestArticles({ now, forceRefresh: true });
+    expect(result.allArticles.map((a) => a.id)).not.toContain(
+      'digest-paused-article',
+    );
+  });
 });

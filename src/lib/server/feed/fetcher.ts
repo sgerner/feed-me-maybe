@@ -5,8 +5,12 @@ import {
   MAX_FEED_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '#lib/server/network.ts';
-import { coerceText, normalizeTextArray } from '#lib/server/normalization.ts';
+} from '$lib/server/network';
+import {
+  coerceText,
+  normalizeTextArray,
+  stripHtml,
+} from '$lib/server/normalization';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
 
@@ -452,6 +456,12 @@ export async function fetchFeed(
         const safeImageUrl = safeHttpUrl(imageUrl, safeUrl);
         const externalUrl = safeHttpUrl(item.externalUrl, finalUrl);
 
+        const cleanSummary = sanitizeHtml(summary, safeUrl);
+        const boundedSummary =
+          cleanSummary.length > 500
+            ? stripHtml(cleanSummary).slice(0, 500).trim()
+            : cleanSummary;
+
         return {
           guid: coerceText(item.guid || item.id || item.link),
           url: safeUrl,
@@ -461,7 +471,7 @@ export async function fetchFeed(
             coerceText(item.author) ||
             coerceText(item['dc:creator']) ||
             undefined,
-          summary: sanitizeHtml(summary.slice(0, 500), safeUrl) || undefined,
+          summary: boundedSummary || undefined,
           content: sanitizeHtml(content, safeUrl) || undefined,
           imageUrl: safeImageUrl || undefined,
           externalUrl:

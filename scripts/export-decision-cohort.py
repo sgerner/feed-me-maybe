@@ -20,6 +20,7 @@ import math
 import re
 import sqlite3
 import sys
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -49,6 +50,29 @@ SIGNAL_WEIGHTS = {
     "future_guessing": 1.3,
     "thin_rewrite": 1.1,
     "ad_copy": 1.1,
+}
+POSITIVE_QUALITY_SIGNALS = {
+    "official_announcement",
+    "primary_source",
+    "specific_details",
+    "technical_depth",
+    "data_driven",
+    "actionable",
+    "hands_on",
+    "concrete_update",
+    "cited_sources",
+}
+NEGATIVE_QUALITY_SIGNALS = {
+    "speculation",
+    "rumor",
+    "leak",
+    "hype",
+    "clickbait",
+    "seo_filler",
+    "opinion_only",
+    "future_guessing",
+    "thin_rewrite",
+    "ad_copy",
 }
 STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "your", "have",
@@ -122,11 +146,45 @@ def parse_text_array(value: Any, limit: int) -> list[str]:
 
 
 def normalize_token(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", text.lower()).strip()
+    lowered = unicodedata.normalize("NFKC", text).lower()
+    lowered = re.sub(r"(?<![^\W_])c\+\+(?![^\W_])", "c_plus_plus", lowered)
+    lowered = re.sub(r"(?<![^\W_])c#(?![^\W_])", "c_sharp", lowered)
+    lowered = re.sub(r"(?<![^\W_])f#(?![^\W_])", "f_sharp", lowered)
+    lowered = re.sub(r"(?<![^\W_])\.net(?![^\W_])", "dotnet", lowered)
+    lowered = re.sub(r"(?<![^\W_])node\.js(?![^\W_])", "nodejs", lowered)
+    return re.sub(r"^_+|_+$", "", re.sub(r"[\W_]+", "_", lowered)).strip()
 
 
 def normalize_label(text: str) -> str:
-    return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", text.lower())).strip()
+    return normalize_token(text)
+
+
+def parse_authors(raw_author: str) -> list[str]:
+    cleaned = re.sub(r"<[^>]*@[^>]*>", " ", raw_author)
+    cleaned = re.sub(r"\([^)]*@[^)]*\)", " ", cleaned)
+    cleaned = re.sub(r"^\s*by\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        return []
+    authors: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"\s*(?:,|;)\s*|\s+(?:&|and)\s+", cleaned, flags=re.IGNORECASE):
+        normalized = normalize_label(part)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        authors.append(normalized)
+        if len(authors) >= 4:
+            break
+    return authors
+
+
+def is_signal_allowed_for_polarity(label: str, polarity: str) -> bool:
+    signal = label[len("signal:"):] if label.startswith("signal:") else label
+    if polarity == "negative" and signal in POSITIVE_QUALITY_SIGNALS:
+        return False
+    if polarity == "positive" and signal in NEGATIVE_QUALITY_SIGNALS:
+        return False
+    return True
 
 
 def tokenize(text: str) -> list[str]:
@@ -160,8 +218,7 @@ def detect_content_type(title: str, summary: str, content: str) -> str:
 def article_features(row: sqlite3.Row, implicit: bool) -> list[tuple[str, str, float]]:
     """Python equivalent of preferences.ts extractFeatures()."""
     features: dict[tuple[str, str], float] = {}
-    author = normalize_label(row["author"] or "")
-    if author:
+    for author in parse_authors(row["author"] or ""):
         features[("author", f"author:{author}")] = 0.65
 
     for category in parse_text_array(row["categories"], 5):
@@ -187,7 +244,8 @@ def article_features(row: sqlite3.Row, implicit: bool) -> list[tuple[str, str, f
     content_type = normalize_token(row["ai_content_type"] or "") or detect_content_type(
         title, summary, content
     )
-    features[("content_type", f"content_type:{content_type}")] = 1.8
+    if content_type and content_type not in ("news", "other"):
+        features[("content_type", f"content_type:{content_type}")] = 1.8
     if content_type == "obituary":
         features[("negative_filter", "negative_filter:obituary")] = 2.5
 
@@ -243,9 +301,7 @@ def profile_from_current_memory(
         rows = connection.execute(
             """SELECT type, label, polarity, strength, evidence_count, last_reinforced
                FROM user_preference_memory
-               WHERE evidence_count > 0
-               ORDER BY evidence_count DESC, last_reinforced DESC
-               LIMIT 250"""
+               WHERE evidence_count > 0"""
         ).fetchall()
 
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -255,15 +311,33 @@ def profile_from_current_memory(
         if not kind or not label:
             continue
         key = (kind, label)
-        current = grouped.setdefault(key, {"type": kind, "label": label, "positive": 0.0, "negative": 0.0, "evidence_count": 0})
+        current = grouped.setdefault(
+            key,
+            {
+                "type": kind,
+                "label": label,
+                "positive": 0.0,
+                "negative": 0.0,
+                "positive_evidence_count": 0,
+                "negative_evidence_count": 0,
+            },
+        )
         age_days = max(0.0, (as_of_ms - int(row["last_reinforced"] or 0)) / (24 * 60 * 60 * 1000))
         decayed = max(0.0, min(1.0, float(row["strength"] or 0) * math.pow(0.5, age_days / 45.0)))
-        weighted = decayed * (1 + math.log1p(max(0, int(row["evidence_count"] or 0))))
+        evidence = max(0, int(row["evidence_count"] or 0))
         polarity = "negative" if row["polarity"] == "negative" else "positive"
-        current[polarity] += weighted
-        current["evidence_count"] += int(row["evidence_count"] or 0)
+        current[polarity] += decayed
+        current[f"{polarity}_evidence_count"] += evidence
 
-    return format_profile(grouped, source_counts(connection, as_of_ms, strict_before=False))
+    return format_profile(
+        grouped,
+        source_counts(
+            connection,
+            as_of_ms,
+            strict_before=False,
+            article_cols=tables["articles"],
+        ),
+    )
 
 
 def active_interaction_sql(alias: str, timestamp_ms: int) -> str:
@@ -274,28 +348,64 @@ def active_interaction_sql(alias: str, timestamp_ms: int) -> str:
 
 
 def source_counts(
-    connection: sqlite3.Connection, before_ms: int, *, strict_before: bool
+    connection: sqlite3.Connection,
+    before_ms: int,
+    *,
+    strict_before: bool,
+    article_cols: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     comparator = "<" if strict_before else "<="
+    cols = article_cols or set()
+    pos_guards: list[str] = []
+    if not strict_before:
+        if "thumbs_down" in cols:
+            pos_guards.append("COALESCE(a.thumbs_down, 0) = 0")
+        if "rejected" in cols:
+            pos_guards.append("COALESCE(a.rejected, 0) = 0")
+    current_pos_guard = ("AND " + " AND ".join(pos_guards)) if pos_guards else ""
+    current_neg_guard = (
+        "AND COALESCE(a.thumbs_up, 0) = 0"
+        if (not strict_before and "thumbs_up" in cols)
+        else ""
+    )
     positive = connection.execute(
-        f"""SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source, COUNT(DISTINCT a.id) AS interaction_count
+        f"""SELECT COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS source, COUNT(DISTINCT a.id) AS interaction_count
             FROM user_interactions ui JOIN articles a ON a.id = ui.article_id
             JOIN feeds f ON f.id = a.feed_id
-            WHERE ui.interaction_type IN ('open', 'read') AND ui.timestamp {comparator} ?
+            WHERE ui.interaction_type IN ('open', 'read', 'thumbs_up', 'boost', 'save')
+              AND ui.timestamp {comparator} ?
+              {current_pos_guard}
               AND {active_interaction_sql('ui', before_ms)}
+              AND NOT EXISTS (
+                SELECT 1 FROM user_interactions ui_neg
+                WHERE ui_neg.article_id = a.id
+                  AND ui_neg.interaction_type IN ('thumbs_down', 'hide')
+                  AND ui_neg.timestamp {comparator} ?
+                  AND {active_interaction_sql('ui_neg', before_ms)}
+                  AND (ui_neg.interaction_type = 'thumbs_down' OR COALESCE(json_extract(
+                       CASE WHEN json_valid(ui_neg.metadata) THEN ui_neg.metadata ELSE '{{}}' END, '$.auto'), 0) = 0)
+              )
             GROUP BY f.id ORDER BY interaction_count DESC, source ASC LIMIT 5""",
-        (before_ms,),
+        (before_ms, before_ms),
     ).fetchall()
     negative = connection.execute(
-        f"""SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source, COUNT(DISTINCT a.id) AS interaction_count
+        f"""SELECT COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS source, COUNT(DISTINCT a.id) AS interaction_count
             FROM user_interactions ui JOIN articles a ON a.id = ui.article_id
             JOIN feeds f ON f.id = a.feed_id
             WHERE ui.interaction_type IN ('thumbs_down', 'hide') AND ui.timestamp {comparator} ?
+              {current_neg_guard}
               AND {active_interaction_sql('ui', before_ms)}
               AND (ui.interaction_type = 'thumbs_down' OR COALESCE(json_extract(
                    CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{{}}' END, '$.auto'), 0) = 0)
+              AND NOT EXISTS (
+                SELECT 1 FROM user_interactions ui_pos
+                WHERE ui_pos.article_id = a.id
+                  AND ui_pos.interaction_type = 'thumbs_up'
+                  AND ui_pos.timestamp {comparator} ?
+                  AND {active_interaction_sql('ui_pos', before_ms)}
+              )
             GROUP BY f.id ORDER BY interaction_count DESC, source ASC LIMIT 5""",
-        (before_ms,),
+        (before_ms, before_ms),
     ).fetchall()
     preferred = [{"source": compact_text(row["source"], 100), "interactions": int(row["interaction_count"] or 0)} for row in positive]
     avoided = [{"source": compact_text(row["source"], 100), "interactions": int(row["interaction_count"] or 0)} for row in negative]
@@ -310,7 +420,12 @@ def format_profile(
     for item in grouped.values():
         net = item["positive"] - item["negative"]
         if abs(net) >= 0.08:
-            preferences.append({**item, "net": net})
+            evidence_count = (
+                item["positive_evidence_count"]
+                if net >= 0
+                else item["negative_evidence_count"]
+            )
+            preferences.append({**item, "net": net, "evidence_count": evidence_count})
     positive = sorted((p for p in preferences if p["net"] > 0), key=lambda p: p["net"], reverse=True)[:14]
     negative = sorted((p for p in preferences if p["net"] < 0), key=lambda p: p["net"])[:14]
 
@@ -349,7 +464,7 @@ def interaction_features(connection: sqlite3.Connection, tables: dict[str, set[s
     sql = f"""SELECT ui.article_id, ui.interaction_type, ui.timestamp, ui.metadata,
                      a.title, a.summary, substr(a.content, 1, 8000) AS content,
                      a.author, a.categories,
-                     f.id AS feed_id, COALESCE(NULLIF(f.title, ''), f.url) AS source,
+                     f.id AS feed_id, COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS source,
                      {ai_select}
               FROM user_interactions ui
               JOIN articles a ON a.id = ui.article_id
@@ -385,10 +500,9 @@ def temporal_profile(
 ) -> tuple[dict[str, Any], int, int]:
     """Replay pre-cutoff interactions, omitting this candidate's own history."""
     memory: dict[tuple[str, str, str], dict[str, float | int]] = {}
-    positives: Counter[str] = Counter()
-    negatives: Counter[str] = Counter()
-    seen_positive: set[str] = set()
-    seen_negative: set[str] = set()
+    pos_articles: dict[str, str] = {}
+    neg_articles: dict[str, str] = {}
+    thumbs_up_articles: set[str] = set()
     seen_opens: set[str] = set()
     used_events = 0
 
@@ -406,12 +520,13 @@ def temporal_profile(
             continue
 
         article_id = str(event["article_id"])
-        if interaction_type in ("open", "read") and article_id not in seen_positive:
-            positives[str(event["feed_id"])] += 1
-            seen_positive.add(article_id)
-        elif interaction_type in ("thumbs_down", "hide") and article_id not in seen_negative:
-            negatives[str(event["feed_id"])] += 1
-            seen_negative.add(article_id)
+        feed_id = str(event["feed_id"])
+        if interaction_type in ("open", "read", "thumbs_up", "boost", "save"):
+            pos_articles[article_id] = feed_id
+            if interaction_type == "thumbs_up":
+                thumbs_up_articles.add(article_id)
+        elif interaction_type in ("thumbs_down", "hide"):
+            neg_articles[article_id] = feed_id
         if interaction_type == "open":
             if article_id in seen_opens:
                 continue
@@ -429,6 +544,8 @@ def temporal_profile(
             for polarity, amount in (("positive", positive_delta), ("negative", negative_delta)):
                 if amount <= 0:
                     continue
+                if kind == "signal" and not is_signal_allowed_for_polarity(label, polarity):
+                    continue
                 key = (kind, label, polarity)
                 contribution = amount * weight
                 existing = memory.get(key)
@@ -442,21 +559,33 @@ def temporal_profile(
                     evidence = 1
                 memory[key] = {"strength": strength, "evidence_count": evidence, "last_reinforced": timestamp}
 
-    # Mirror the live builder's top-250 row cap before aggregation. A temporal
-    # reconstruction has one row per feature/polarity pair.
-    selected = sorted(
-        memory.items(),
-        key=lambda pair: (int(pair[1]["evidence_count"]), int(pair[1]["last_reinforced"])),
-        reverse=True,
-    )[:250]
+    positives: Counter[str] = Counter()
+    for article_id, feed_id in pos_articles.items():
+        if article_id not in neg_articles:
+            positives[feed_id] += 1
+    negatives: Counter[str] = Counter()
+    for article_id, feed_id in neg_articles.items():
+        if article_id not in thumbs_up_articles:
+            negatives[feed_id] += 1
+
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
-    for (kind, label, polarity), item in selected:
-        current = grouped.setdefault((kind, label), {"type": kind, "label": label, "positive": 0.0, "negative": 0.0, "evidence_count": 0})
+    for (kind, label, polarity), item in memory.items():
+        current = grouped.setdefault(
+            (kind, label),
+            {
+                "type": kind,
+                "label": label,
+                "positive": 0.0,
+                "negative": 0.0,
+                "positive_evidence_count": 0,
+                "negative_evidence_count": 0,
+            },
+        )
         age_days = max(0.0, (cutoff_ms - int(item["last_reinforced"])) / HALF_LIFE_MS)
         decayed = max(0.0, min(1.0, float(item["strength"]) * math.pow(0.5, age_days)))
-        weighted = decayed * (1 + math.log1p(max(0, int(item["evidence_count"]))))
-        current[polarity] += weighted
-        current["evidence_count"] += int(item["evidence_count"])
+        evidence = max(0, int(item["evidence_count"]))
+        current[polarity] += decayed
+        current[f"{polarity}_evidence_count"] += evidence
 
     def ranked_sources(counts: Counter[str]) -> list[dict[str, Any]]:
         names: dict[str, str] = {}
@@ -563,7 +692,7 @@ def candidate_select(
         rows = connection.execute(
             f"""SELECT a.id, a.feed_id, a.url, a.image_url, a.title, a.author, a.summary, a.content, a.categories,
                        a.published_at, a.fetched_at, a.heuristic_score, a.combined_score, a.jev_score,
-                       f.title AS feed_title, f.category AS feed_category, {ai_select}
+                       COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS feed_title, f.category AS feed_category, {ai_select}
                 {base_join} {ai_join}
                 WHERE {where}{extra}
                 ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id ASC LIMIT ?""",
@@ -624,7 +753,7 @@ def candidate_select(
     candidates = connection.execute(
         f"""SELECT a.id, a.feed_id, a.url, a.image_url, a.title, a.author, a.summary, a.content, a.categories,
                    a.published_at, a.fetched_at, a.heuristic_score, a.combined_score, a.jev_score,
-                   f.title AS feed_title, f.category AS feed_category,
+                   COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS feed_title, f.category AS feed_category,
                    ui.first_action_at, ui.has_open, ui.has_down, ui.open_count, ui.down_count,
                    (SELECT ui2.interaction_type FROM user_interactions ui2
                     WHERE ui2.article_id = a.id

@@ -2,10 +2,14 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { encrypt } from '#lib/server/ai/crypto.ts';
 import crypto from 'node:crypto';
-import { getDb } from '#lib/server/db/index.ts';
-import { assertPublicNetworkUrl, SafeFetchError } from '#lib/server/network.ts';
-import { getProvider } from '#lib/server/ai/models-dev.ts';
-import { enqueueAiProcess } from '#lib/server/feed/job-queue.ts';
+import { getDb } from '$lib/server/db';
+import { assertPublicNetworkUrl, SafeFetchError } from '$lib/server/network';
+import { getProvider } from '$lib/server/ai/models-dev';
+import {
+  enqueueAiBackfill,
+  enqueueAiProcess,
+} from '$lib/server/feed/job-queue';
+import { wakePoller } from '$lib/server/poller';
 import {
   decryptProviderCredentials,
   hasProviderCredentials,
@@ -159,6 +163,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
       .run(String(enabled), now);
+    if (enabled) {
+      enqueueAiBackfill({ now, limit: 25 });
+      wakePoller();
+    }
     return json({ success: true, aiEnabled: enabled });
   }
 
@@ -331,6 +339,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     ).run();
   })();
 
+  if (enqueueAiBackfill({ limit: 25 }) > 0) wakePoller();
+
   return json({ success: true });
 };
 
@@ -426,6 +436,29 @@ export const GET: RequestHandler = async ({ locals }) => {
   for (const row of activeJobRows) {
     aiJobCounts[row.status] = Number(row.count) || 0;
   }
+  const unindexedQueuedAiRow = db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM jobs j
+       WHERE j.type = 'ai_process'
+         AND j.status IN ('queued', 'processing')
+         AND NOT EXISTS (
+           SELECT 1 FROM article_ai_metadata am
+           WHERE am.article_id = CASE
+             WHEN json_valid(j.payload) = 1
+             THEN json_extract(j.payload, '$.articleId')
+           END
+         )`,
+    )
+    .get() as { count: number } | undefined;
+  analysisCounts.pending += Number(unindexedQueuedAiRow?.count) || 0;
+  const oldestQueuedRow = db
+    .prepare(
+      `SELECT MIN(created_at) AS oldest
+       FROM jobs
+       WHERE type = 'ai_process' AND status = 'queued'`,
+    )
+    .get() as { oldest: number | null } | undefined;
   const cooldownRow = db
     .prepare(
       "SELECT CAST(value AS INTEGER) AS due FROM app_settings WHERE key = 'provider_cooldown_ai_process'",
@@ -461,6 +494,11 @@ export const GET: RequestHandler = async ({ locals }) => {
     ),
     analysisCounts,
     aiJobCounts,
+    oldestQueuedJobAt:
+      typeof oldestQueuedRow?.oldest === 'number' &&
+      Number.isFinite(oldestQueuedRow.oldest)
+        ? oldestQueuedRow.oldest
+        : null,
     aiCooldownUntil: cooldownUntil > Date.now() ? cooldownUntil : null,
     recentFailures: recentFailures.map((item) => ({
       ...item,

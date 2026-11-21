@@ -257,6 +257,9 @@ function buildQueryParts(parsed: ParsedSearchQuery): QueryParts {
   if (filters.unread) where.push('a.read = 0');
   if (filters.read) where.push('a.read = 1');
   if (filters.saved) where.push('a.saved = 1');
+  if (!filters.feed && !filters.saved && !filters.hidden && !filters.rejected) {
+    where.push('f.enabled = 1');
+  }
   // Hidden articles are discoverable through an explicit state filter. A
   // regular search should match the visible reading surfaces by default.
   if (!filters.hidden && !filters.rejected) where.push('a.hidden = 0');

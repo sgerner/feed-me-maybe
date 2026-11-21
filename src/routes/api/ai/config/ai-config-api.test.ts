@@ -317,4 +317,33 @@ describe('AI configuration API', () => {
     });
     expect(invalid.status).toBe(400);
   });
+
+  it('queues backlog on config save and counts unindexed pending jobs in status', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('backlog-feed', 'https://example.com/backlog', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, fetched_at, created_at, updated_at)
+       VALUES ('backlog-1', 'backlog-feed', 'https://example.com/b1', 'Backlog', 'Readable summary text', ?, ?, ?)`,
+    ).run(now, now, now);
+
+    const saved = await post({
+      providerId: 'test-provider',
+      modelId: 'test-model',
+      config: { TEST_API_KEY: 'secret-key' },
+    });
+    expect(saved.status).toBe(200);
+
+    const status = await (
+      await GET({ locals: { sessionId: 'test-session' } } as Parameters<
+        typeof GET
+      >[0])
+    ).json();
+    expect(status.aiJobCounts.queued).toBe(1);
+    expect(status.analysisCounts.pending).toBe(1);
+    expect(status.oldestQueuedJobAt).toBeTypeOf('number');
+  });
 });

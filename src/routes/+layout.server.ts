@@ -32,9 +32,11 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
     .prepare(
       `
       SELECT COUNT(*) AS total,
-             COUNT(CASE WHEN read = 0 AND hidden = 0 AND thumbs_down = 0 THEN 1 END) AS unread,
-             COUNT(CASE WHEN saved = 1 THEN 1 END) AS saved
-      FROM articles
+             COUNT(CASE WHEN a.read = 0 AND a.hidden = 0 AND a.thumbs_down = 0 THEN 1 END) AS unread,
+             COUNT(CASE WHEN a.saved = 1 THEN 1 END) AS saved
+      FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
+      WHERE f.enabled = 1
     `,
     )
     .get() as { total: number; unread: number; saved: number };

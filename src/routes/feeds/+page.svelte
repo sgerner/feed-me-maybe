@@ -46,11 +46,16 @@
   });
 
   const totalUnread = $derived(
-    data.feeds.reduce((sum, feed) => sum + Number(feed.unread_count || 0), 0),
+    data.feeds.reduce(
+      (sum, feed) =>
+        feed.enabled ? sum + Number(feed.unread_count || 0) : sum,
+      0,
+    ),
   );
   const filteredUnread = $derived(
     filteredFeeds.reduce(
-      (sum, feed) => sum + Number(feed.unread_count || 0),
+      (sum, feed) =>
+        feed.enabled ? sum + Number(feed.unread_count || 0) : sum,
       0,
     ),
   );

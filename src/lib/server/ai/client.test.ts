@@ -179,4 +179,62 @@ describe('AI provider network restrictions', () => {
     const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(request).not.toHaveProperty('temperature');
   });
+
+  it('redacts secrets in HTTP errors, parses fenced JSON with newlines, and avoids retrying truncations', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response('Invalid token secret-api-key-123 and sk-abcdefgh123', {
+            status: 401,
+          }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            model: 'resolved-test-model',
+            usage: { prompt_tokens: 10, completion_tokens: 5 },
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: {
+                  content:
+                    'Here is the {note} output:\n```json\n{"summary":"Line 1\nLine 2","topics":["ai"],"entities":[],"contentType":"news","relevanceScore":0.8,"noveltyScore":0.7,"qualityScore":0.9,"signals":["cited_sources"]}\n```',
+                },
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            choices: [
+              {
+                finish_reason: 'length',
+                message: { content: '{"summary":"partial' },
+              },
+            ],
+          }),
+        ),
+    );
+    const client = createAiClient({
+      baseUrl: 'https://1.1.1.1/v1',
+      apiKey: 'secret-api-key-123',
+      model: 'test',
+    });
+
+    const authErr = await client.summarizeArticle('hello').catch((e) => e);
+    expect(authErr.message).not.toContain('secret-api-key-123');
+    expect(authErr.message).not.toContain('sk-abcdefgh123');
+    expect(authErr.message).toContain('[REDACTED]');
+
+    const analyzed = await client.analyzeArticleWithMeta({ title: 'Test' });
+    expect(analyzed.model).toBe('resolved-test-model');
+    expect(analyzed.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5 });
+    expect(analyzed.analysis.summary).toBe('Line 1 Line 2');
+
+    const truncatedErr = await client
+      .analyzeArticle({ title: 'Truncated' })
+      .catch((e) => e);
+    expect(truncatedErr.permanent).toBe(true);
+  });
 });

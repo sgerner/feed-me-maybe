@@ -1,11 +1,18 @@
 import { stripHtml } from '#lib/server/normalization.ts';
 import crypto from 'node:crypto';
-import { getDb } from '#lib/server/db/index.ts';
-import { getConfiguredAiClient } from '#lib/server/ai/runtime.ts';
-import { hasProviderCredentials } from '#lib/server/ai/credentials.ts';
+import { getDb } from '$lib/server/db';
+import { getConfiguredAiClient } from '$lib/server/ai/runtime';
+import { parseLlmJsonObject } from '$lib/server/ai/client';
+import { ProviderHttpError } from '$lib/server/ai/provider-error';
+import {
+  AI_PROCESS_JOB_TYPE,
+  getProviderCooldown,
+  setProviderCooldown,
+} from '$lib/server/feed/job-queue';
+import { hasProviderCredentials } from '$lib/server/ai/credentials';
 import {
   WEEKLY_DIGEST_SYSTEM_PROMPT,
-  buildWeeklyDigestPrompt,
+  buildWeeklyDigestPromptResult,
   WEEKLY_DIGEST_PROMPT_MAX_ARTICLES,
   type WeeklyDigestArticleContext,
 } from '#lib/server/ai/digest-prompts.ts';
@@ -26,6 +33,7 @@ export type WeeklyDigestOptions = {
   now?: number;
   windowDays?: number;
   forceRefresh?: boolean;
+  signal?: AbortSignal;
 };
 
 export type DigestQuery = {
@@ -220,14 +228,18 @@ function normalizeWindowDays(value: number | undefined): number {
   );
 }
 
-function getOptions(
-  input: number | WeeklyDigestOptions | undefined,
-): Required<WeeklyDigestOptions> {
+function getOptions(input: number | WeeklyDigestOptions | undefined): {
+  now: number;
+  windowDays: number;
+  forceRefresh: boolean;
+  signal?: AbortSignal;
+} {
   if (typeof input === 'number') {
     return {
       now: input,
       windowDays: WEEKLY_DIGEST_WINDOW_DAYS,
       forceRefresh: false,
+      signal: undefined,
     };
   }
 
@@ -235,6 +247,7 @@ function getOptions(
     now: input?.now ?? Date.now(),
     windowDays: normalizeWindowDays(input?.windowDays),
     forceRefresh: input?.forceRefresh ?? false,
+    signal: input?.signal,
   };
 }
 
@@ -535,6 +548,12 @@ function saveCache(
   key: string,
   cache: DigestCachePayload,
 ): void {
+  if (cache.source === 'fallback') {
+    const existing = loadCache(db, key);
+    if (existing?.signature === cache.signature && existing.source === 'ai') {
+      return;
+    }
+  }
   db.prepare(
     'INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
   ).run(key, JSON.stringify(cache), Date.now());
@@ -608,26 +627,25 @@ function normalizeStoryList(
       ) {
         return null;
       }
-      if (
-        item.status !== undefined &&
-        item.status !== 'new' &&
-        item.status !== 'ongoing'
-      ) {
+      const status = normalizeStoryStatus(item.status);
+      if (item.status !== undefined && item.status !== null && !status) {
         return null;
       }
-      const status = normalizeStoryStatus(item.status);
       if (
         item.uncertainty !== undefined &&
+        item.uncertainty !== null &&
         typeof item.uncertainty !== 'string'
       )
         return null;
+      const cleanUncertainty =
+        typeof item.uncertainty === 'string'
+          ? clipText(item.uncertainty, 220)
+          : '';
       return {
         articleId,
         reason: clipText(item.reason, 220),
         ...(status ? { status } : {}),
-        ...(clipText(item.uncertainty, 220)
-          ? { uncertainty: clipText(item.uncertainty, 220) }
-          : {}),
+        ...(cleanUncertainty ? { uncertainty: cleanUncertainty } : {}),
       } satisfies WeeklyDigestRawStory;
     })
     .filter((story): story is WeeklyDigestRawStory => Boolean(story))
@@ -767,6 +785,7 @@ function pickDigestSelection(articles: FeedArticleRow[]): FeedArticleRow[] {
   for (const article of byScore) {
     if (selected.length >= 45) break;
     if (selectedIds.has(article.id) || article.read) continue;
+    if ((feedCounts.get(article.feed_id) || 0) >= 3) continue;
     add(article);
   }
 
@@ -783,7 +802,25 @@ function pickDigestSelection(articles: FeedArticleRow[]): FeedArticleRow[] {
     add(article);
   }
 
-  return selected.slice(0, WEEKLY_DIGEST_LIMIT);
+  const byFeed = new Map<string, FeedArticleRow[]>();
+  for (const article of selected.slice(0, WEEKLY_DIGEST_LIMIT)) {
+    const queue = byFeed.get(article.feed_id) ?? [];
+    queue.push(article);
+    byFeed.set(article.feed_id, queue);
+  }
+  const interleaved: FeedArticleRow[] = [];
+  const queues = [...byFeed.values()];
+  for (let round = 0; interleaved.length < WEEKLY_DIGEST_LIMIT; round += 1) {
+    let addedInRound = false;
+    for (const queue of queues) {
+      if (round < queue.length) {
+        interleaved.push(queue[round]);
+        addedInRound = true;
+      }
+    }
+    if (!addedInRound) break;
+  }
+  return interleaved;
 }
 
 function buildArticleContext(
@@ -1122,12 +1159,21 @@ function deriveActiveFeeds(
     .slice(0, 3);
 }
 
+type DigestFlight = {
+  promise: Promise<WeeklyDigestResult>;
+  controller: AbortController;
+  waiters: number;
+};
+
+const inFlightDigests = new Map<string, DigestFlight>();
+
 async function buildWeeklyDigestRaw(
   articles: FeedArticleRow[],
   now: number,
   windowDays: number,
   clusters: DigestCluster[],
   digestClient: Awaited<ReturnType<typeof getConfiguredAiClient>>,
+  signal?: AbortSignal,
 ): Promise<{ raw: WeeklyDigestRaw; source: 'ai' | 'fallback' }> {
   const clusterMap = clusterLookup(clusters);
   // The AI receives a bounded, ranked sample; all eligible articles still
@@ -1141,25 +1187,28 @@ async function buildWeeklyDigestRaw(
   const windowStartLabel = formatWindowLabel(now - windowDays * DAY_MS);
   const windowEndLabel = formatWindowLabel(now);
 
-  if (digestClient && corpus.length > 0) {
+  if (
+    digestClient &&
+    corpus.length > 0 &&
+    getProviderCooldown(AI_PROCESS_JOB_TYPE) <= now
+  ) {
     try {
-      const prompt = buildWeeklyDigestPrompt(
+      const { prompt, includedArticleIds } = buildWeeklyDigestPromptResult(
         windowStartLabel,
         windowEndLabel,
         corpus,
         articles.length,
       );
-      const promptedArticleIds = new Set(
-        prompt
-          .split('\n')
-          .filter((line) => line.startsWith('- ID: '))
-          .map((line) => line.slice(6).split(' | ', 1)[0]),
-      );
+      const promptedArticleIds = new Set(includedArticleIds);
+      for (const item of corpus) {
+        if (!includedArticleIds.has(item.id)) continue;
+        promptedArticleIds.add(item.clusterId);
+      }
       const response = await digestClient.completeChat(
         WEEKLY_DIGEST_SYSTEM_PROMPT,
         prompt,
         1400,
-        { jsonMode: true },
+        { jsonMode: true, signal },
       );
 
       if (response) {
@@ -1170,6 +1219,22 @@ async function buildWeeklyDigestRaw(
         if (parsed) return { raw: parsed, source: 'ai' };
       }
     } catch (error) {
+      if (
+        signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        throw error;
+      }
+      if (
+        error instanceof ProviderHttpError &&
+        [400, 401, 402, 403, 404, 429].includes(error.status)
+      ) {
+        setProviderCooldown(
+          AI_PROCESS_JOB_TYPE,
+          Math.max(Date.now() + 60_000, error.retryAt ?? 0),
+          Date.now(),
+        );
+      }
       console.warn(
         '[digest] AI briefing failed; using deterministic fallback',
         error,
@@ -1257,26 +1322,10 @@ export function buildDeterministicBriefing(
 }
 
 export function extractDigestJson(value: string): unknown {
-  const trimmed = value.trim();
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    return null;
-  }
-
-  const candidate = trimmed.slice(firstBrace, lastBrace + 1);
   try {
-    return JSON.parse(candidate);
+    return parseLlmJsonObject(value);
   } catch {
-    try {
-      return JSON.parse(
-        candidate.replace(/"(?:[^"\\]|\\.)*"|,\s*(?=[}\]])/g, (match) =>
-          match.startsWith(',') ? '' : match,
-        ),
-      );
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
 
@@ -1535,11 +1584,16 @@ function buildDigestResult(
 export async function getWeeklyDigestArticles(
   input: number | WeeklyDigestOptions = {},
 ): Promise<WeeklyDigestResult> {
-  const { now, windowDays, forceRefresh } = getOptions(input);
+  const { now, windowDays, forceRefresh, signal } = getOptions(input);
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('Aborted', 'AbortError');
+  }
   const db = getDb();
   const windowStart = now - windowDays * DAY_MS;
   const windowEnd = now;
-  const select = `${buildFeedArticleSelect()} WHERE COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
+  const select = `${buildFeedArticleSelect()} WHERE f.enabled = 1 AND COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
   const windowArticles = db
     .prepare(select)
     .all(windowStart, windowEnd) as DigestArticleRow[];
@@ -1594,45 +1648,107 @@ export async function getWeeklyDigestArticles(
     );
   }
 
-  const digestClient = aiState.enabled ? await getConfiguredAiClient() : null;
-  const { raw, source } = await buildWeeklyDigestRaw(
-    allArticles,
-    now,
-    windowDays,
-    clusters,
-    digestClient,
-  );
-  saveCache(db, cacheKey(windowDays), {
-    signature,
-    generatedAt: now,
-    windowDays,
-    raw,
-    source,
-  });
-  const nextHistory = saveHistory(db, {
-    generatedAt: now,
-    windowDays,
-    headline: raw.headline || 'A calm look at your reading',
-    totalArticles: allArticles.length,
-    deduplicatedArticles: representatives.length,
-    signature,
-  });
+  const flightKey = `${windowDays}:${signature}`;
+  const runGeneration = async (
+    flightController: AbortController,
+  ): Promise<WeeklyDigestResult> => {
+    const digestClient = aiState.enabled ? await getConfiguredAiClient() : null;
+    const { raw, source } = await buildWeeklyDigestRaw(
+      allArticles,
+      now,
+      windowDays,
+      clusters,
+      digestClient,
+      flightController.signal,
+    );
+    if (flightController.signal.aborted) {
+      throw flightController.signal.reason instanceof Error
+        ? flightController.signal.reason
+        : new DOMException('Aborted', 'AbortError');
+    }
+    saveCache(db, cacheKey(windowDays), {
+      signature,
+      generatedAt: now,
+      windowDays,
+      raw,
+      source,
+    });
+    const nextHistory = saveHistory(db, {
+      generatedAt: now,
+      windowDays,
+      headline: raw.headline || 'A calm look at your reading',
+      totalArticles: allArticles.length,
+      deduplicatedArticles: representatives.length,
+      signature,
+    });
 
-  return buildDigestResult(
-    raw,
-    allArticles,
-    windowStart,
-    windowEnd,
-    now,
-    windowDays,
-    false,
-    now,
-    aiState.enabled,
-    source === 'ai',
-    inclusionCounts,
-    clusters,
-    nextHistory,
-  );
+    return buildDigestResult(
+      raw,
+      allArticles,
+      windowStart,
+      windowEnd,
+      now,
+      windowDays,
+      false,
+      now,
+      aiState.enabled,
+      source === 'ai',
+      inclusionCounts,
+      clusters,
+      nextHistory,
+    );
+  };
+
+  let flight = forceRefresh ? undefined : inFlightDigests.get(flightKey);
+  if (!flight) {
+    const controller = new AbortController();
+    const created: DigestFlight = {
+      controller,
+      waiters: 0,
+      promise: runGeneration(controller).finally(() => {
+        if (inFlightDigests.get(flightKey) === created) {
+          inFlightDigests.delete(flightKey);
+        }
+      }),
+    };
+    if (!forceRefresh) inFlightDigests.set(flightKey, created);
+    flight = created;
+  }
+
+  flight.waiters += 1;
+  return new Promise<WeeklyDigestResult>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      flight.waiters = Math.max(0, flight.waiters - 1);
+      if (flight.waiters === 0) {
+        flight.controller.abort(signal?.reason);
+      }
+      reject(
+        signal?.reason instanceof Error
+          ? signal.reason
+          : new DOMException('Aborted', 'AbortError'),
+      );
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    flight.promise.then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        flight.waiters = Math.max(0, flight.waiters - 1);
+        resolve(result);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        flight.waiters = Math.max(0, flight.waiters - 1);
+        reject(err);
+      },
+    );
+  });
 }
 
 export function getWeeklyDigestSelectionPreview(

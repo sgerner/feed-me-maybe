@@ -426,4 +426,53 @@ describe('feed ingester identity and duplicate handling', () => {
     expect(article.content).toBe(upgradedContent);
     expect(article.summary).toBe('Full summary');
   });
+
+  it('preserves ready AI metadata and combined_score on updates while AI is paused', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, source_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-paused-ai', 'https://example.com/paused.xml', 'rss', now, now);
+    db.prepare(
+      "INSERT INTO app_settings (key, value, updated_at) VALUES ('ai_enabled', 'false', ?) ON CONFLICT(key) DO UPDATE SET value = 'false'",
+    ).run(now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, guid, url, title, summary, content, heuristic_score, combined_score, fetched_at, created_at, updated_at)
+       VALUES ('paused-art', 'feed-paused-ai', 'p1', 'https://example.com/p1', 'Paused Story', 'Summary', 'Initial short', 50, 72, ?, ?, ?)`,
+    ).run(now, now, now);
+    db.prepare(
+      `INSERT INTO article_ai_metadata (id, article_id, summary, ai_relevance_score, quality_score, novelty_score, analysis_status, processed_at, created_at)
+       VALUES ('meta-paused', 'paused-art', 'AI summary', 0.9, 0.8, 0.7, 'ready', ?, ?)`,
+    ).run(now, now);
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'p1',
+          url: 'https://example.com/p1',
+          title: 'Paused Story',
+          summary: 'Summary',
+          content: 'a'.repeat(200),
+          categories: [],
+        },
+      ],
+    });
+
+    await ingestFeed({ feedId: 'feed-paused-ai' });
+
+    const meta = db
+      .prepare(
+        'SELECT analysis_status FROM article_ai_metadata WHERE article_id = ?',
+      )
+      .get('paused-art') as { analysis_status: string };
+    const art = db
+      .prepare('SELECT combined_score FROM articles WHERE id = ?')
+      .get('paused-art') as { combined_score: number | null };
+    expect(meta.analysis_status).toBe('ready');
+    expect(art.combined_score).not.toBeNull();
+  });
 });

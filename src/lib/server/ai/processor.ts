@@ -15,11 +15,34 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type ArticleAnalysisRow = {
   title: string;
+  url: string;
   summary: string | null;
   content: string | null;
   author: string | null;
   categories: string | null;
   published_at: number | string | Date | null;
+  hidden: number | null;
+  rejected: number | null;
+  thumbs_down: number | null;
+};
+
+type CachedAiMetadataRow = {
+  summary: string | null;
+  topics: string | null;
+  entities: string | null;
+  content_type: string | null;
+  ai_relevance_score: number | null;
+  novelty_score: number | null;
+  quality_score: number | null;
+  likely_user_interest: string | null;
+  signals: string | null;
+  explanation: string | null;
+};
+
+export type ProcessArticleTelemetry = {
+  model?: string;
+  usage?: Record<string, number>;
+  cached?: boolean;
 };
 
 function coerceTimestamp(value: number | string | Date | null): number | null {
@@ -95,21 +118,81 @@ function hasMeaningfulAnalysis(analysis: Record<string, any>): boolean {
   );
 }
 
-export async function processArticle(articleId: string): Promise<void> {
+function parseCachedStringArray(raw: string | null | undefined): string[] {
+  return parseJsonTextArray(raw);
+}
+
+function findReusableAnalysis(
+  articleId: string,
+  article: ArticleAnalysisRow,
+): Partial<ArticleScore> | null {
+  const db = getDb();
+  const hasContentMatch = (article.content || '').trim().length > 100;
+  const cached = db
+    .prepare(
+      `
+        SELECT am.summary, am.topics, am.entities, am.content_type,
+               am.ai_relevance_score, am.novelty_score, am.quality_score,
+               am.likely_user_interest, am.signals, am.explanation
+        FROM article_ai_metadata am
+        JOIN articles a ON a.id = am.article_id
+        WHERE a.id != ?
+          AND am.analysis_status = 'ready'
+          AND (
+            a.url = ?
+            OR (
+              ? = 1
+              AND LOWER(TRIM(a.title)) = LOWER(TRIM(?))
+              AND a.content = ?
+            )
+          )
+        ORDER BY am.processed_at DESC, am.created_at DESC
+        LIMIT 1
+      `,
+    )
+    .get(
+      articleId,
+      article.url,
+      hasContentMatch ? 1 : 0,
+      article.title || '',
+      article.content || '',
+    ) as CachedAiMetadataRow | undefined;
+  if (!cached) return null;
+
+  return {
+    summary: cached.summary || '',
+    topics: parseCachedStringArray(cached.topics),
+    entities: parseCachedStringArray(cached.entities),
+    contentType: cached.content_type || '',
+    relevanceScore: clampScore(cached.ai_relevance_score),
+    noveltyScore: clampScore(cached.novelty_score),
+    qualityScore: clampScore(cached.quality_score),
+    likelyUserInterest: cached.likely_user_interest || '',
+    signals: parseCachedStringArray(cached.signals),
+    explanation: cached.explanation || '',
+  };
+}
+
+export async function processArticle(
+  articleId: string,
+): Promise<ProcessArticleTelemetry | void> {
   const db = getDb();
 
   if (!isAiProcessingConfigured()) return;
 
   const selectArticle = db.prepare(
     `
-    SELECT a.title, a.summary, a.content, a.author, a.categories, a.published_at
+    SELECT a.title, a.url, a.summary, a.content, a.author, a.categories,
+           a.published_at, a.hidden, a.rejected, a.thumbs_down
     FROM articles a
     WHERE a.id = ?
   `,
   );
   const article = selectArticle.get(articleId) as
     ArticleAnalysisRow | undefined;
-  if (!article) return;
+  if (!article || article.hidden || article.rejected || article.thumbs_down) {
+    return;
+  }
   if (!hasArticleAnalysisText(article.summary, article.content)) {
     markAnalysisFailed(
       articleId,
@@ -120,30 +203,51 @@ export async function processArticle(articleId: string): Promise<void> {
   }
 
   let analysis: Partial<ArticleScore>;
-  try {
-    const client = await getConfiguredAiClient();
-    if (!client) {
-      markAnalysisFailed(
-        articleId,
-        'skipped',
-        'AI provider configuration is incomplete',
-      );
-      return;
+  let model: string | undefined;
+  let usage: Record<string, number> | undefined;
+  let cached = false;
+
+  const reusable = findReusableAnalysis(articleId, article);
+  if (reusable && hasMeaningfulAnalysis(reusable)) {
+    analysis = reusable;
+    cached = true;
+  } else {
+    try {
+      const client = await getConfiguredAiClient();
+      if (!client) {
+        markAnalysisFailed(
+          articleId,
+          'skipped',
+          'AI provider configuration is incomplete',
+        );
+        return;
+      }
+      const input = {
+        title: article.title,
+        summary: article.summary || '',
+        content: article.content || '',
+        author: article.author || '',
+        publishedAge: getAgeBucket(article.published_at),
+        categories: parseJsonTextArray(article.categories),
+      };
+      if (
+        'analyzeArticleWithMeta' in client &&
+        typeof client.analyzeArticleWithMeta === 'function'
+      ) {
+        const result = await client.analyzeArticleWithMeta(input);
+        analysis = result.analysis;
+        model = result.model;
+        usage = result.usage;
+      } else {
+        analysis = await client.analyzeArticle(input);
+      }
+    } catch (error) {
+      const message = truncateError(error);
+      markAnalysisFailed(articleId, 'failed', message);
+      throw new Error(`AI analysis failed for ${articleId}: ${message}`, {
+        cause: error,
+      });
     }
-    analysis = await client.analyzeArticle({
-      title: article.title,
-      summary: article.summary || '',
-      content: article.content || '',
-      author: article.author || '',
-      publishedAge: getAgeBucket(article.published_at),
-      categories: parseJsonTextArray(article.categories),
-    });
-  } catch (error) {
-    const message = truncateError(error);
-    markAnalysisFailed(articleId, 'failed', message);
-    throw new Error(`AI analysis failed for ${articleId}: ${message}`, {
-      cause: error,
-    });
   }
 
   if (!hasMeaningfulAnalysis(analysis)) {
@@ -164,105 +268,123 @@ export async function processArticle(articleId: string): Promise<void> {
   const likelyInterest = String(analysis.likelyUserInterest || '');
   const explanation = String(analysis.explanation || '');
 
-  db.transaction(() => {
-    const current = selectArticle.get(articleId) as
-      ArticleAnalysisRow | undefined;
-    if (!current) return;
-    if (
-      current.content !== article.content ||
-      current.summary !== article.summary
-    ) {
-      throw new Error('Article content changed while AI analysis was running');
-    }
-    const existing = db
-      .prepare('SELECT id FROM article_ai_metadata WHERE article_id = ?')
-      .get(articleId);
-    if (existing) {
-      db.prepare(
-        `
-        UPDATE article_ai_metadata
-        SET summary = ?, topics = ?, entities = ?, content_type = ?,
-            ai_relevance_score = ?, novelty_score = ?, quality_score = ?, likely_user_interest = ?,
-            signals = ?, explanation = ?, analysis_status = 'ready', analysis_error = '', processed_at = ?
-        WHERE article_id = ?
-      `,
-      ).run(
-        aiSummary,
-        topicsJson,
-        entitiesJson,
-        contentType,
-        aiRelevanceScore,
-        noveltyScore,
-        qualityScore,
-        likelyInterest,
-        signalsJson,
-        explanation,
-        now,
-        articleId,
-      );
-    } else {
-      db.prepare(
-        `
-        INSERT INTO article_ai_metadata (
-          id, article_id, summary, topics, entities, content_type,
-          ai_relevance_score, novelty_score, quality_score, likely_user_interest,
-          signals, explanation, processed_at, created_at
-          , analysis_status, analysis_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', '')
-      `,
-      ).run(
-        crypto.randomUUID(),
-        articleId,
-        aiSummary,
-        topicsJson,
-        entitiesJson,
-        contentType,
-        aiRelevanceScore,
-        noveltyScore,
-        qualityScore,
-        likelyInterest,
-        signalsJson,
-        explanation,
-        now,
-        now,
-      );
-    }
+  const committed = db
+    .transaction(() => {
+      if (!isAiProcessingConfigured()) return false;
+      const current = selectArticle.get(articleId) as
+        ArticleAnalysisRow | undefined;
+      if (!current || current.hidden || current.rejected || current.thumbs_down)
+        return false;
+      if (
+        current.content !== article.content ||
+        current.summary !== article.summary
+      ) {
+        throw new Error(
+          'Article content changed while AI analysis was running',
+        );
+      }
+      const existing = db
+        .prepare('SELECT id FROM article_ai_metadata WHERE article_id = ?')
+        .get(articleId);
+      if (existing) {
+        db.prepare(
+          `
+          UPDATE article_ai_metadata
+          SET summary = ?, topics = ?, entities = ?, content_type = ?,
+              ai_relevance_score = ?, novelty_score = ?, quality_score = ?, likely_user_interest = ?,
+              signals = ?, explanation = ?, analysis_status = 'ready', analysis_error = '', processed_at = ?
+          WHERE article_id = ?
+        `,
+        ).run(
+          aiSummary,
+          topicsJson,
+          entitiesJson,
+          contentType,
+          aiRelevanceScore,
+          noveltyScore,
+          qualityScore,
+          likelyInterest,
+          signalsJson,
+          explanation,
+          now,
+          articleId,
+        );
+      } else {
+        db.prepare(
+          `
+          INSERT INTO article_ai_metadata (
+            id, article_id, summary, topics, entities, content_type,
+            ai_relevance_score, novelty_score, quality_score, likely_user_interest,
+            signals, explanation, processed_at, created_at
+            , analysis_status, analysis_error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', '')
+        `,
+        ).run(
+          crypto.randomUUID(),
+          articleId,
+          aiSummary,
+          topicsJson,
+          entitiesJson,
+          contentType,
+          aiRelevanceScore,
+          noveltyScore,
+          qualityScore,
+          likelyInterest,
+          signalsJson,
+          explanation,
+          now,
+          now,
+        );
+      }
 
-    const readerState = db
-      .prepare(
-        'SELECT read, saved, hidden, rejected, thumbs_down FROM articles WHERE id = ?',
-      )
-      .get(articleId) as {
-      read: number;
-      saved: number;
-      hidden: number;
-      rejected: number;
-      thumbs_down: number;
+      const readerState = db
+        .prepare(
+          'SELECT read, saved, hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+        )
+        .get(articleId) as {
+        read: number;
+        saved: number;
+        hidden: number;
+        rejected: number;
+        thumbs_down: number;
+      };
+      const visible =
+        !readerState.hidden &&
+        !readerState.rejected &&
+        !readerState.thumbs_down;
+      const refreshRanking = visible && isRankingProviderConfigured();
+      if (refreshRanking) {
+        db.prepare(
+          "UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '' WHERE id = ?",
+        ).run(articleId);
+      }
+
+      if (visible && !readerState.read && !readerState.saved) {
+        applyPreferenceModelToArticle(articleId);
+      } else {
+        updateHeuristicScore(articleId);
+      }
+
+      if (
+        refreshRanking &&
+        db
+          .prepare('SELECT 1 FROM articles WHERE id = ? AND hidden = 0')
+          .get(articleId)
+      ) {
+        // Commit the refresh intent with enrichment even if the Jev job
+        // queue is full. The worker will submit it when capacity returns.
+        markArticleForRankingRefresh(articleId);
+      }
+      return true;
+    })
+    .immediate();
+
+  if (!committed) return;
+  if (cached || model || usage) {
+    return {
+      ...(cached ? { cached: true } : {}),
+      ...(model ? { model } : {}),
+      ...(usage ? { usage } : {}),
     };
-    const visible =
-      !readerState.hidden && !readerState.rejected && !readerState.thumbs_down;
-    const refreshRanking = visible && isRankingProviderConfigured();
-    if (refreshRanking) {
-      db.prepare(
-        "UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '' WHERE id = ?",
-      ).run(articleId);
-    }
-
-    if (visible && !readerState.read && !readerState.saved) {
-      applyPreferenceModelToArticle(articleId);
-    } else {
-      updateHeuristicScore(articleId);
-    }
-
-    if (
-      refreshRanking &&
-      db
-        .prepare('SELECT 1 FROM articles WHERE id = ? AND hidden = 0')
-        .get(articleId)
-    ) {
-      // Commit the refresh intent with enrichment even if the Jev job
-      // queue is full. The worker will submit it when capacity returns.
-      markArticleForRankingRefresh(articleId);
-    }
-  }).immediate();
+  }
 }

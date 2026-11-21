@@ -325,4 +325,35 @@ describe('article state foundation', () => {
       }),
     ]);
   });
+
+  it('excludes paused feeds from unread and state counts', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getUnreadCounts, getArticleStateCounts } =
+      await import('./article-state');
+    const db = getDb();
+    const beforeUnread = getUnreadCounts();
+    const beforeState = getArticleStateCounts();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run('feed-paused', 'https://paused.example.com/rss', 'Paused', now, now);
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, read, saved, hidden, rejected, thumbs_down, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 1, 0, 0, 0, ?, ?, ?)',
+    ).run(
+      'paused-unread-1',
+      'feed-paused',
+      'https://paused.example.com/1',
+      'Paused Unread',
+      now,
+      now,
+      now,
+    );
+
+    const unread = getUnreadCounts();
+    expect(unread.feeds.map((f) => f.feedId)).not.toContain('feed-paused');
+    expect(unread.totalUnread).toBe(beforeUnread.totalUnread);
+    const stateCounts = getArticleStateCounts();
+    expect(stateCounts.total).toBe(beforeState.total);
+    expect(getArticleStateCounts('feed-paused').total).toBe(0);
+  });
 });

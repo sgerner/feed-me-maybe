@@ -75,12 +75,13 @@ export function recordAppError(input: {
   }
 }
 
-/** Trim diagnostics without touching reader history or ranking job tombstones. */
+/** Trim operational history without touching reader history or active ranking tombstones. */
 export function pruneOperationalHistory(now: number): void {
   const db = getDb();
   const cutoff = now - 30 * 24 * 60 * 60 * 1000;
   db.transaction(() => {
     db.prepare('DELETE FROM app_error_logs WHERE created_at < ?').run(cutoff);
+    db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now);
     db.prepare(
       `DELETE FROM feed_fetch_logs
        WHERE status NOT IN ('pending', 'fetching') AND created_at < ?
@@ -97,8 +98,29 @@ export function pruneOperationalHistory(now: number): void {
          )`,
     ).run(cutoff);
     db.prepare(
-      `DELETE FROM jobs WHERE type IN ('feed_fetch', 'ai_process')
-         AND status IN ('completed', 'failed') AND completed_at < ?`,
+      `DELETE FROM jobs
+       WHERE status IN ('completed', 'failed')
+         AND completed_at < ?
+         AND (
+           type IN ('feed_fetch', 'ai_process')
+           OR (
+             type = 'jev_process'
+             AND NOT (
+               (
+                 (status = 'completed' AND json_valid(payload) = 1 AND COALESCE(json_extract(payload, '$.backfill'), 0) = 1)
+                 OR (status = 'failed' AND json_valid(payload) = 1 AND COALESCE(json_extract(payload, '$.backfillRecovery'), 0) = 1)
+               )
+               AND EXISTS (
+                 SELECT 1 FROM articles a
+                 WHERE a.id = CASE
+                   WHEN json_valid(jobs.payload) = 1
+                   THEN json_extract(jobs.payload, '$.articleId')
+                 END
+                   AND a.jev_score IS NULL
+               )
+             )
+           )
+         )`,
     ).run(cutoff);
   }).immediate();
 }

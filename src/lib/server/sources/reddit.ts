@@ -8,7 +8,8 @@ import {
   MAX_JSON_RESPONSE_BYTES,
   fetchSafe,
   readResponseText,
-} from '#lib/server/network.ts';
+} from '$lib/server/network';
+import { stripHtml } from '$lib/server/normalization';
 
 export type RedditKind =
   | 'subreddit'
@@ -240,17 +241,8 @@ function decodeHtmlEntities(str: string): string {
 
 function stripHtmlOrDecode(html: string | null | undefined): string | null {
   if (!html) return null;
-  // Reddit HTML entities are often escaped inside the JSON string
-  const text = html
-    .replace(/<!--.*?-->/g, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#39;/g, "'");
-  return text.trim() || null;
+  // Reddit HTML entities are often escaped inside the JSON string.
+  return stripHtml(html) || null;
 }
 
 export function parseRedditPost(post: any): FetchedItem {

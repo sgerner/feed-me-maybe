@@ -25,6 +25,13 @@
         activeProvider?: 'jev' | 'subq';
         activeProviderConfigured?: boolean;
         subqConfigured?: boolean;
+        cooldownUntil?: number | null;
+        errors?: Array<{
+          id: string;
+          title: string;
+          jev_error: string;
+          jev_processed_at: number | null;
+        }>;
         scored: number;
         missing: number | null;
         jobs: Array<{ status: string; count: number }>;
@@ -40,6 +47,8 @@
       feedCount?: number;
       articleCount?: number;
       jobCount?: number;
+      oldestQueuedJobAt?: number | null;
+      aiCooldownUntil?: number | null;
       recentJobs?: RecentJob[];
       failingFeeds?: Array<{
         id: string;
@@ -146,15 +155,37 @@
       </p>
     {/if}
     <p>
-      {pageData.jev.activeProvider
-        ? pageData.jev.activeProviderConfigured
+      {#if pageData.jev.cooldownUntil}
+        Cooldown active until {new Date(
+          pageData.jev.cooldownUntil,
+        ).toLocaleString()}
+      {:else if pageData.jev.activeProvider}
+        {pageData.jev.activeProviderConfigured
           ? 'Active provider ready'
-          : 'Paused: active provider API key not configured'
-        : pageData.jev.configured
+          : 'Paused: active provider API key not configured'}
+      {:else}
+        {pageData.jev.configured
           ? 'Configured'
-          : 'Paused: API key not configured'} · {pageData.jev.scored} scored · {pageData
-        .jev.missing ?? 0} missing scores
+          : 'Paused: API key not configured'}
+      {/if} · {pageData.jev.scored} scored · {pageData.jev.missing ?? 0} missing scores
     </p>
+    {#if pageData.aiCooldownUntil || pageData.oldestQueuedJobAt}
+      <p>
+        {#if pageData.aiCooldownUntil}
+          AI enrichment cooldown until {new Date(
+            pageData.aiCooldownUntil,
+          ).toLocaleString()}
+        {/if}
+        {#if pageData.aiCooldownUntil && pageData.oldestQueuedJobAt}
+          ·
+        {/if}
+        {#if pageData.oldestQueuedJobAt}
+          Oldest queued job {new Date(
+            pageData.oldestQueuedJobAt,
+          ).toLocaleString()}
+        {/if}
+      </p>
+    {/if}
     <p>
       {#each pageData.jev.jobs as group}
         <span class="mr-3">{group.count} {group.status}</span>
@@ -173,6 +204,19 @@
         {#if job.error_message}<p>{job.error_message}</p>{/if}
       </div>
     {/each}
+    {#if pageData.jev.errors?.length}
+      <div class="space-y-1 border-t border-white/10 pt-2">
+        <p class="font-medium">Recent ranking errors</p>
+        {#each pageData.jev.errors as item (item.id)}
+          <p class="text-error-300">
+            <a class="underline" href="/articles/{item.id}"
+              >{item.title || 'Untitled article'}</a
+            >
+            · {item.jev_error}
+          </p>
+        {/each}
+      </div>
+    {/if}
   </div>
 {/if}
 

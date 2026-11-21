@@ -99,12 +99,13 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
       if (field === 'enabled') val = body[field] ? 1 : 0;
       if (field === 'use_proxy') val = body[field] ? 1 : 0;
       if (field === 'open_mode' && val === '') val = null;
-      values.push(val);
-
-      // If user is setting a custom title, flag it so it won't be overwritten by ingester
       if (field === 'title') {
-        updates.push('custom_title = 1');
+        const trimmedTitle = typeof val === 'string' ? val.trim() : '';
+        val = trimmedTitle;
+        // Only flag custom_title when user supplies a non-empty title
+        updates.push(trimmedTitle ? 'custom_title = 1' : 'custom_title = 0');
       }
+      values.push(val);
     }
   }
 
