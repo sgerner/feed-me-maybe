@@ -5,7 +5,7 @@
   import { syncFeed } from '#lib/feeds.ts';
   import { ARTICLE_OPEN_MODES } from '#lib/constants/article-open-modes.ts';
   import { fly, fade } from 'svelte/transition';
-  import { goto, invalidateAll } from '$app/navigation';
+  import { goto, refreshAll } from '$app/navigation';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
 
   type FeedArticle = {
@@ -124,7 +124,7 @@
     syncing = true;
     try {
       const result = await syncFeed(pageData.feedId);
-      if (result) await invalidateAll();
+      if (result) await refreshAll();
     } finally {
       syncing = false;
     }

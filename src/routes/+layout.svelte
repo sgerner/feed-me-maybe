@@ -13,7 +13,7 @@
     setToastSuppressed,
   } from '#lib/stores/toast.svelte.ts';
   import { fade, fly } from 'svelte/transition';
-  import { afterNavigate, invalidateAll } from '$app/navigation';
+  import { afterNavigate, refreshAll } from '$app/navigation';
   import PWABanner from '#lib/components/PWABanner.svelte';
   import BrandMark from '#lib/components/BrandMark.svelte';
   import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
@@ -256,7 +256,7 @@
         result.blocked > 0 || result.conflicts > 0,
       );
       if (result.synced > 0) {
-        void invalidateAll();
+        void refreshAll();
         addToast(
           `${result.synced} offline action${result.synced === 1 ? '' : 's'} synced`,
           'success',
@@ -325,7 +325,7 @@
         const { addToast } = await import('#lib/stores/toast.svelte.ts');
         addToast('Feed added successfully', 'success');
         // Refresh the page to show the new feed in the sidebar
-        await invalidateAll();
+        await refreshAll();
       } else {
         const errData = await res.json();
         newFeedError = errData.error || 'Failed to add feed';
@@ -364,7 +364,7 @@
               result.blocked > 0 || result.conflicts > 0,
             );
             if (result.synced > 0) {
-              void invalidateAll();
+              void refreshAll();
               addToast(
                 `${result.synced} offline action${result.synced === 1 ? '' : 's'} synced`,
                 'success',

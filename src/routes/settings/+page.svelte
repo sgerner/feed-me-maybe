@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invalidateAll } from '$app/navigation';
+  import { refreshAll } from '$app/navigation';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { enhance } from '$app/forms';
   import ThemeChooser from '#lib/components/ThemeChooser.svelte';
@@ -85,7 +85,7 @@
         } else {
           addToast(imported, result.imported ? 'success' : 'info');
         }
-        if (result.imported > 0) await invalidateAll();
+        if (result.imported > 0) await refreshAll();
       } catch {
         addToast('Could not import OPML. Please try again.', 'error');
       } finally {

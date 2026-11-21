@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invalidateAll } from '$app/navigation';
+  import { refreshAll } from '$app/navigation';
   import { tick } from 'svelte';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { fly, fade } from 'svelte/transition';
@@ -60,7 +60,7 @@
         addError = '';
         addErrorField = null;
         addToast('Webhook added successfully', 'success');
-        await invalidateAll();
+        await refreshAll();
       } else {
         const err = await res.json();
         addError = err.error || 'Failed to add webhook';
@@ -90,7 +90,7 @@
           `Webhook ${!hook.enabled ? 'enabled' : 'disabled'}`,
           'success',
         );
-        await invalidateAll();
+        await refreshAll();
       }
     } catch (err) {
       addToast('Failed to update webhook', 'error');
@@ -110,7 +110,7 @@
 
       if (res.ok) {
         addToast('Webhook deleted', 'success');
-        await invalidateAll();
+        await refreshAll();
         await tick();
         const deleteButtons = Array.from(
           document.querySelectorAll<HTMLButtonElement>('[data-webhook-delete]'),
