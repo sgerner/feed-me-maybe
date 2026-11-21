@@ -2,6 +2,7 @@ import { stripHtml } from '$lib/server/normalization';
 import crypto from 'node:crypto';
 import { getDb } from '$lib/server/db';
 import { getConfiguredAiClient } from '$lib/server/ai/runtime';
+import { hasProviderCredentials } from '$lib/server/ai/credentials';
 import {
   WEEKLY_DIGEST_SYSTEM_PROMPT,
   buildWeeklyDigestPrompt,
@@ -485,19 +486,23 @@ function getAiCacheState(db: ReturnType<typeof getDb>): {
     .get() as { value: string } | undefined;
   const config = db
     .prepare(
-      'SELECT provider_id, model_id, custom_base_url, updated_at FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
+      'SELECT provider_id, model_id, custom_base_url, api_key_encrypted, api_key_nonce, updated_at FROM provider_configs WHERE enabled = 1 ORDER BY updated_at DESC, id DESC LIMIT 1',
     )
     .get() as
     | {
         provider_id: string;
         model_id: string;
         custom_base_url: string | null;
+        api_key_encrypted: string | null;
+        api_key_nonce: string | null;
         updated_at: number;
       }
     | undefined;
 
   return {
-    enabled: setting?.value !== 'false' && Boolean(config),
+    enabled:
+      setting?.value !== 'false' &&
+      hasProviderCredentials(config?.api_key_encrypted, config?.api_key_nonce),
     signature: JSON.stringify({
       setting: setting?.value ?? '',
       provider: config?.provider_id ?? '',
@@ -755,6 +760,7 @@ function pickDigestSelection(articles: FeedArticleRow[]): FeedArticleRow[] {
 
   for (const article of byScore) {
     if (selected.length >= 30) break;
+    if ((feedCounts.get(article.feed_id) || 0) >= 3) continue;
     add(article);
   }
 
@@ -1126,10 +1132,9 @@ async function buildWeeklyDigestRaw(
   const clusterMap = clusterLookup(clusters);
   // The AI receives a bounded, ranked sample; all eligible articles still
   // remain in the result and in deterministic fallback selection.
-  const promptArticles = pickDigestSelection(articles).slice(
-    0,
-    WEEKLY_DIGEST_PROMPT_MAX_ARTICLES,
-  );
+  const promptArticles = pickDigestSelection(
+    deduplicateDigestArticles(articles).representatives,
+  ).slice(0, WEEKLY_DIGEST_PROMPT_MAX_ARTICLES);
   const corpus = promptArticles.map((article) =>
     buildArticleContext(article, clusterMap),
   );
@@ -1154,6 +1159,7 @@ async function buildWeeklyDigestRaw(
         WEEKLY_DIGEST_SYSTEM_PROMPT,
         prompt,
         1400,
+        { jsonMode: true },
       );
 
       if (response) {
@@ -1262,7 +1268,15 @@ export function extractDigestJson(value: string): unknown {
   try {
     return JSON.parse(candidate);
   } catch {
-    return null;
+    try {
+      return JSON.parse(
+        candidate.replace(/"(?:[^"\\]|\\.)*"|,\s*(?=[}\]])/g, (match) =>
+          match.startsWith(',') ? '' : match,
+        ),
+      );
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -1624,9 +1638,9 @@ export async function getWeeklyDigestArticles(
 export function getWeeklyDigestSelectionPreview(
   articles: FeedArticleRow[],
 ): WeeklyDigestArticleContext[] {
-  const { clusters } = deduplicateDigestArticles(articles);
+  const { representatives, clusters } = deduplicateDigestArticles(articles);
   const clusterMap = clusterLookup(clusters);
-  return pickDigestSelection(articles).map((article) =>
+  return pickDigestSelection(representatives).map((article) =>
     buildArticleContext(article, clusterMap),
   );
 }
