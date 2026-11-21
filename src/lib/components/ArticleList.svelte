@@ -71,6 +71,7 @@
     showInfiniteScroll = true,
     liveUpdates = false,
     onLiveArticlesAdded,
+    onLiveArticleVisibilityChanged,
     savedOnly = false,
     feedbackMode = 'standard',
     emptyTitle = 'No articles yet',
@@ -86,7 +87,11 @@
     loadMoreSearchParams?: Record<string, string>;
     showInfiniteScroll?: boolean;
     liveUpdates?: boolean;
-    onLiveArticlesAdded?: (count: number) => void;
+    onLiveArticlesAdded?: (articleIds: string[]) => void;
+    onLiveArticleVisibilityChanged?: (
+      articleId: string,
+      visible: boolean,
+    ) => void;
     savedOnly?: boolean;
     feedbackMode?: 'standard' | 'boost';
     emptyTitle?: string;
@@ -304,6 +309,7 @@
   let liveArticleRequestController: AbortController | null = null;
   let liveUpdatesDisposed = false;
   let liveOnlyArticleIds = new Set<string>();
+  let lastSnapshotAt: number | null = null;
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
@@ -464,9 +470,15 @@
   }
 
   $effect(() => {
+    const rawSnapshotAt = Number(loadMoreSearchParams.snapshotAt);
+    const snapshotAt = Number.isFinite(rawSnapshotAt) ? rawSnapshotAt : null;
     hasMore = initialHasMore ?? totalPages > 1;
     page = initialPage;
     removedFromPage = 0;
+    if (snapshotAt !== lastSnapshotAt) {
+      liveOnlyArticleIds = new Set();
+      lastSnapshotAt = snapshotAt;
+    }
   });
 
   $effect(() => {
@@ -641,8 +653,12 @@
             offlineType,
           ).catch(() => undefined);
         }
-        if (shouldRemove && !liveOnlyArticleIds.has(articleId)) {
-          removedFromPage++;
+        if (shouldRemove) {
+          if (liveOnlyArticleIds.has(articleId)) {
+            onLiveArticleVisibilityChanged?.(articleId, false);
+          } else {
+            removedFromPage++;
+          }
         }
         void invalidate('app:reader-counts');
         const message = INTERACTION_LABELS[type] || type;
@@ -687,8 +703,13 @@
                         previousArticle,
                       );
                     articles = next;
-                    if (shouldRemove && !liveOnlyArticleIds.has(articleId))
-                      removedFromPage = Math.max(0, removedFromPage - 1);
+                    if (shouldRemove) {
+                      if (liveOnlyArticleIds.has(articleId)) {
+                        onLiveArticleVisibilityChanged?.(articleId, true);
+                      } else {
+                        removedFromPage = Math.max(0, removedFromPage - 1);
+                      }
+                    }
                     void invalidate('app:reader-counts');
                     addToast('Action undone', 'success');
                   }
@@ -983,13 +1004,15 @@
 
       if (newArticles.length > 0) {
         const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
-        const addedAfterSnapshot = newArticles.filter(
-          (article) =>
-            Number.isFinite(snapshotAt) &&
-            typeof article.fetched_at === 'number' &&
-            article.fetched_at > snapshotAt,
-        ).length;
-        if (addedAfterSnapshot > 0) {
+        const addedAfterSnapshot = newArticles
+          .filter(
+            (article) =>
+              Number.isFinite(snapshotAt) &&
+              typeof article.fetched_at === 'number' &&
+              article.fetched_at > snapshotAt,
+          )
+          .map((article) => article.id);
+        if (addedAfterSnapshot.length > 0) {
           onLiveArticlesAdded?.(addedAfterSnapshot);
         }
 

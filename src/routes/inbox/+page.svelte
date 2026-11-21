@@ -32,16 +32,35 @@
     };
   } = $props();
   let articles = $state<Article[]>([]);
-  let liveUnreadArticleCount = $state(0);
-  let unreadCount = $derived(data.totalArticles + liveUnreadArticleCount);
+  let liveUnreadArticleIds = $state<string[]>([]);
+  let unreadCount = $derived(data.totalArticles + liveUnreadArticleIds.length);
+  let unreadSnapshotAt = $state(0);
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(data.articles);
 
   $effect(() => {
+    if (data.snapshotAt !== unreadSnapshotAt) {
+      unreadSnapshotAt = data.snapshotAt;
+      liveUnreadArticleIds = [];
+    }
     articles = loadedArticles;
-    liveUnreadArticleCount = 0;
   });
+
+  function addLiveUnreadArticles(articleIds: string[]): void {
+    liveUnreadArticleIds = Array.from(
+      new Set([...liveUnreadArticleIds, ...articleIds]),
+    );
+  }
+
+  function updateLiveUnreadVisibility(
+    articleId: string,
+    visible: boolean,
+  ): void {
+    liveUnreadArticleIds = visible
+      ? Array.from(new Set([...liveUnreadArticleIds, articleId]))
+      : liveUnreadArticleIds.filter((id) => id !== articleId);
+  }
 
   onMount(() => {
     if (navigator.onLine !== false || articles.length > 0) return;
@@ -88,7 +107,8 @@
       bind:articles
       totalPages={data.totalPages}
       liveUpdates
-      onLiveArticlesAdded={(count) => (liveUnreadArticleCount += count)}
+      onLiveArticlesAdded={addLiveUnreadArticles}
+      onLiveArticleVisibilityChanged={updateLiveUnreadVisibility}
       loadMoreSearchParams={data.category
         ? {
             unread: '1',
