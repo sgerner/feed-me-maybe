@@ -24,6 +24,10 @@ The database runs in WAL (Write-Ahead Logging) mode, which creates two additiona
 
 ### Method 1: File Copy (Docker Named Volume)
 
+These commands reuse the stopped container’s mounted volume, including a
+Compose project volume. Keep the container in place during backup and restore.
+Replace `feed-me-maybe` with the actual container name if it differs.
+
 ```bash
 # Stop the container to ensure the database and WAL files form a consistent snapshot.
 docker stop feed-me-maybe
@@ -32,9 +36,9 @@ docker stop feed-me-maybe
 backup_dir="$(pwd)/backups/feed-me-maybe-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$backup_dir"
 docker run --rm \
-  -v feed-me-maybe-data:/source:ro \
+  --volumes-from feed-me-maybe:ro \
   -v "$backup_dir:/backup" \
-  alpine cp -a /source/. /backup/
+  alpine sh -ec 'test -s /app/data/feed-me-maybe.db; cp -a /app/data/. /backup/'
 
 docker start feed-me-maybe
 ```
@@ -58,10 +62,11 @@ does not include the `sqlite3` command-line program.
 
 ```bash
 # Perform the online backup inside the running container
-docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); await db.backup('/app/data/feed-me-maybe.backup.db'); db.close();"
+docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); await db.backup('/tmp/feed-me-maybe.backup.db'); db.close();"
 
 # Copy the backup out of the container
-docker cp feed-me-maybe:/app/data/feed-me-maybe.backup.db ./feed-me-maybe-$(date +%Y%m%d).db
+docker cp feed-me-maybe:/tmp/feed-me-maybe.backup.db ./feed-me-maybe-$(date +%Y%m%d).db
+docker exec feed-me-maybe rm -f /tmp/feed-me-maybe.backup.db
 ```
 
 ### Method 4: Automated Cron Backup
@@ -73,7 +78,7 @@ Add a cron job to back up the database daily:
 crontab -e
 
 # Add this line (daily backup at 2 AM)
-0 2 * * * docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); await db.backup('/app/data/feed-me-maybe.backup.db'); db.close();" && docker cp feed-me-maybe:/app/data/feed-me-maybe.backup.db /backups/feed-me-maybe-$(date +\%Y\%m\%d).db && find /backups -name "feed-me-maybe-*.db" -mtime +30 -delete
+0 2 * * * docker exec feed-me-maybe node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database('/app/data/feed-me-maybe.db', { readonly: true }); await db.backup('/tmp/feed-me-maybe.backup.db'); db.close();" && docker cp feed-me-maybe:/tmp/feed-me-maybe.backup.db /backups/feed-me-maybe-$(date +\%Y\%m\%d).db && docker exec feed-me-maybe rm -f /tmp/feed-me-maybe.backup.db && find /backups -name "feed-me-maybe-*.db" -mtime +30 -delete
 ```
 
 This keeps 30 days of backups and removes older ones automatically.
@@ -83,7 +88,9 @@ This keeps 30 days of backups and removes older ones automatically.
 Stop every process using the destination database and keep it stopped until
 the restore completes. Keep a separate copy of the current database and any
 matching WAL file before replacing them. A WAL is part of its original
-database snapshot and must never be reused with a standalone backup.
+database snapshot and must never be reused with a standalone backup. The
+restore commands set ownership to UID and GID 1000 for the standard image’s
+`node` user. Adjust those IDs if you run the container with a custom user.
 
 ### From File Copy
 
@@ -93,15 +100,16 @@ docker stop feed-me-maybe
 
 # Copy the backup into the volume
 docker run --rm \
-  -v feed-me-maybe-data:/data \
+  --volumes-from feed-me-maybe \
   -v "$(pwd)/backups/feed-me-maybe-20250101:/source:ro" \
   alpine sh -ec 'test -s /source/feed-me-maybe.db
-    cp /source/feed-me-maybe.db /data/feed-me-maybe.db.restore
-    rm -f /data/feed-me-maybe.db-wal /data/feed-me-maybe.db-shm
-    mv /data/feed-me-maybe.db.restore /data/feed-me-maybe.db
+    cp /source/feed-me-maybe.db /app/data/feed-me-maybe.db.restore
+    rm -f /app/data/feed-me-maybe.db-wal /app/data/feed-me-maybe.db-shm
+    mv /app/data/feed-me-maybe.db.restore /app/data/feed-me-maybe.db
     if [ -f /source/feed-me-maybe.db-wal ]; then
-      cp /source/feed-me-maybe.db-wal /data/feed-me-maybe.db-wal
-    fi'
+      cp /source/feed-me-maybe.db-wal /app/data/feed-me-maybe.db-wal
+    fi
+    chown 1000:1000 /app/data/feed-me-maybe.db*'
 
 # Start the container
 docker start feed-me-maybe
@@ -115,12 +123,13 @@ docker stop feed-me-maybe
 
 # Restore using a helper container while the application stays stopped.
 docker run --rm \
-  -v feed-me-maybe-data:/data \
+  --volumes-from feed-me-maybe \
   -v "$(pwd)/feed-me-maybe-20250101.db:/backup.db:ro" \
   alpine sh -ec 'test -s /backup.db
-    cp /backup.db /data/feed-me-maybe.db.restore
-    rm -f /data/feed-me-maybe.db-wal /data/feed-me-maybe.db-shm
-    mv /data/feed-me-maybe.db.restore /data/feed-me-maybe.db'
+    cp /backup.db /app/data/feed-me-maybe.db.restore
+    rm -f /app/data/feed-me-maybe.db-wal /app/data/feed-me-maybe.db-shm
+    mv /app/data/feed-me-maybe.db.restore /app/data/feed-me-maybe.db
+    chown 1000:1000 /app/data/feed-me-maybe.db'
 
 # Start the container
 docker start feed-me-maybe
