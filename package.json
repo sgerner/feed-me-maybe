@@ -55,7 +55,7 @@
     "@mozilla/readability": "^0.6.0",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
-    "linkedom": "^0.18.13",
+    "linkedom": "^0.18.15",
     "marked": "^18.0.13",
     "rss-parser": "^3.13.0",
     "sanitize-html": "^2.18.2",
