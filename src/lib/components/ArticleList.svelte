@@ -3,12 +3,7 @@
   import { formatContent, sanitizeHtml } from '#lib/utils/format.ts';
   import { getContext, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
-  import {
-    afterNavigate,
-    goto,
-    invalidate,
-    invalidateAll,
-  } from '$app/navigation';
+  import { afterNavigate, goto, invalidate, refreshAll } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
@@ -176,7 +171,7 @@
 
     returnRefreshPromise = (async () => {
       try {
-        await invalidateAll();
+        await refreshAll();
         sessionStorage.removeItem(RETURNING_FROM_ARTICLE_KEY);
       } catch (error) {
         // Leave the marker in place so a later navigation can retry.
