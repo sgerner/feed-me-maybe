@@ -1,4 +1,4 @@
-import { building } from '$app/environment';
+import { building, dev } from '$app/environment';
 import {
   initializeDatabase,
   runPendingRankingRepair,
@@ -14,6 +14,7 @@ import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
 import { closeDb, getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
+import { closeRealtimeClients } from '$lib/server/realtime';
 import {
   CSRF_COOKIE_NAME,
   CSRF_MAX_AGE_SECONDS,
@@ -26,8 +27,16 @@ if (!building) {
   initializeDatabase();
   runPendingRankingRepair(rebuildArticleHeuristicScores);
   startPolling();
-  process.once('sveltekit:shutdown', () => {
+  const beginShutdown = () => {
     stopPolling();
+    closeRealtimeClients();
+  };
+  if (!dev) {
+    process.once('SIGTERM', beginShutdown);
+    process.once('SIGINT', beginShutdown);
+  }
+  process.once('sveltekit:shutdown', () => {
+    beginShutdown();
     // Existing background requests may still need the database to finish.
     process.once('beforeExit', closeDb);
   });

@@ -5,7 +5,7 @@
   import { syncFeed } from '$lib/feeds';
   import { ARTICLE_OPEN_MODES } from '$lib/constants/article-open-modes';
   import { fly, fade } from 'svelte/transition';
-  import { goto } from '$app/navigation';
+  import { goto, invalidateAll } from '$app/navigation';
   import { fetchWithCsrf } from '$lib/client/csrf';
 
   type FeedArticle = {
@@ -123,7 +123,8 @@
     if (syncing) return;
     syncing = true;
     try {
-      await syncFeed(pageData.feedId);
+      const result = await syncFeed(pageData.feedId);
+      if (result) await invalidateAll();
     } finally {
       syncing = false;
     }
@@ -203,7 +204,7 @@
   async function clearFeedItems() {
     if (
       !confirm(
-        'Remove all current articles from this feed? This will not clear your learned preferences.',
+        'Hide all unsaved articles currently in this feed? Saved articles will stay visible, and new articles will still sync.',
       )
     ) {
       return;

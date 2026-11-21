@@ -46,9 +46,35 @@ const parser: FeedParser = new Parser({
       ['media:content', 'mediaContent', { keepArray: false }],
       ['media:thumbnail', 'mediaThumbnail', { keepArray: false }],
       ['dc:creator', 'dcCreator'],
+      ['dc:date', 'dcDate'],
     ],
   },
 });
+
+const RSS_TIMEZONE_OFFSETS: Record<string, string> = {
+  BST: '+0100',
+  CET: '+0100',
+  CEST: '+0200',
+  EET: '+0200',
+  EEST: '+0300',
+  JST: '+0900',
+  KST: '+0900',
+};
+
+function parsePublicationDate(...candidates: unknown[]): Date | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const value = candidate
+      .trim()
+      .replace(/\s([A-Z]{3,4})$/i, (full, zone: string) =>
+        RSS_TIMEZONE_OFFSETS[zone.toUpperCase()]
+          ? ' ' + RSS_TIMEZONE_OFFSETS[zone.toUpperCase()]
+          : full,
+      );
+    const date = new Date(value);
+    if (Number.isFinite(date.getTime())) return date;
+  }
+}
 
 function safeHttpUrl(value: unknown, baseUrl: string): string {
   if (typeof value !== 'string' || !value.trim()) return '';
@@ -205,6 +231,7 @@ function parseJsonFeed(source: string) {
         {
           guid: item.id,
           link: item.url || item.external_url,
+          externalUrl: item.external_url,
           title: item.title,
           author: author?.name,
           summary: htmlText(item.summary),
@@ -318,22 +345,26 @@ export async function fetchFeed(
           finalUrl,
         ) || finalUrl;
       const candidates = new Set<string>();
-      for (const link of document.querySelectorAll('head link[href]')) {
-        const rel = (link.getAttribute('rel') || '').toLowerCase().split(/\s+/);
-        const type = (link.getAttribute('type') || '')
-          .toLowerCase()
-          .split(';')[0]
-          .trim();
+      for (const link of document.querySelectorAll('link')) {
+        const attrs = Object.fromEntries(
+          Array.from(link.attributes, ({ name, value }) => [
+            name.toLowerCase(),
+            value,
+          ]),
+        );
+        const rel = (attrs.rel || '').toLowerCase().split(/\s+/);
+        const type = (attrs.type || '').toLowerCase().split(';')[0].trim();
         if (
           !rel.includes('alternate') ||
           ![
             'application/rss+xml',
             'application/atom+xml',
             'application/feed+json',
+            'application/json',
           ].includes(type)
         )
           continue;
-        const candidate = safeHttpUrl(link.getAttribute('href'), base);
+        const candidate = safeHttpUrl(attrs.href, base);
         if (candidate && candidate !== finalUrl) candidates.add(candidate);
         if (candidates.size === 3) break;
       }
@@ -409,9 +440,17 @@ export async function fetchFeed(
           }
         }
 
-        const safeUrl = safeHttpUrl(item.link, finalUrl);
+        const identifier = coerceText(item.guid || item.id);
+        const safeUrl =
+          safeHttpUrl(item.link, finalUrl) ||
+          safeHttpUrl(item['rdf:about'], finalUrl) ||
+          safeHttpUrl(enclosure?.url, finalUrl) ||
+          (/^https?:\/\//i.test(identifier)
+            ? safeHttpUrl(identifier, finalUrl)
+            : '');
         if (!safeUrl) return null;
-        const safeImageUrl = safeHttpUrl(imageUrl, finalUrl);
+        const safeImageUrl = safeHttpUrl(imageUrl, safeUrl);
+        const externalUrl = safeHttpUrl(item.externalUrl, finalUrl);
 
         return {
           guid: coerceText(item.guid || item.id || item.link),
@@ -422,15 +461,17 @@ export async function fetchFeed(
             coerceText(item.author) ||
             coerceText(item['dc:creator']) ||
             undefined,
-          summary: sanitizeHtml(summary.slice(0, 500)) || undefined,
-          content: sanitizeHtml(content) || undefined,
+          summary: sanitizeHtml(summary.slice(0, 500), safeUrl) || undefined,
+          content: sanitizeHtml(content, safeUrl) || undefined,
           imageUrl: safeImageUrl || undefined,
+          externalUrl:
+            externalUrl && externalUrl !== safeUrl ? externalUrl : undefined,
           categories: normalizeTextArray(item.categories),
-          publishedAt: item.pubDate
-            ? new Date(item.pubDate as string)
-            : item.isoDate
-              ? new Date(item.isoDate as string)
-              : undefined,
+          publishedAt: parsePublicationDate(
+            item.pubDate,
+            item.isoDate,
+            item.dcDate,
+          ),
         } as FetchedItem;
       })
       .filter((item): item is FetchedItem => Boolean(item));

@@ -4,12 +4,14 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const MAX_REDIRECTS = 4;
 const ALLOWED_CONTENT_TYPES = [
   'application/atom+xml',
+  'application/feed+json',
   'application/json',
   'application/ld+json',
   'application/rss+xml',
   'application/rdf+xml',
   'application/octet-stream',
   'application/xml',
+  'application/xhtml+xml',
   'text/atom',
   'text/html',
   'text/plain',
@@ -194,15 +196,18 @@ function contentTypeIsAllowed(response) {
 /** @param {string} targetUrl @param {Request} request */
 async function fetchTarget(targetUrl, request) {
   let currentUrl = targetUrl;
+  const signal = AbortSignal.timeout(15000);
   for (let redirects = 0; ; redirects += 1) {
     if (!isSafeTargetUrl(currentUrl)) throw new Error('Unsafe target URL');
     const response = await fetch(currentUrl, {
       method: request.method,
       headers: buildForwardHeaders(request),
       redirect: 'manual',
+      signal,
     });
 
     if ([301, 302, 303, 307, 308].includes(response.status)) {
+      await response.body?.cancel();
       if (redirects >= MAX_REDIRECTS) throw new Error('Too many redirects');
       const location = response.headers.get('location');
       if (!location) throw new Error('Redirect did not include a location');
@@ -214,10 +219,13 @@ async function fetchTarget(targetUrl, request) {
 
     const contentLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+      await response.body?.cancel();
       throw new Error('Response too large');
     }
-    if (response.ok && !contentTypeIsAllowed(response))
+    if (response.ok && !contentTypeIsAllowed(response)) {
+      await response.body?.cancel();
       throw new Error('Unsupported content type');
+    }
     return response;
   }
 }

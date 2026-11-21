@@ -1,20 +1,31 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
-import { scheduleNextPoll } from '$lib/server/poller';
+import { scheduleNextPoll, wakePoller } from '$lib/server/poller';
 import { enqueueFeedFetch, runDueJobs } from '$lib/server/feed/job-queue';
 import { recordAppError } from '$lib/server/logging';
 
-export const POST: RequestHandler = async ({ locals }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
     return json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let force = true;
+  try {
+    const body = (await request.json()) as { force?: unknown };
+    if (body?.force === false) force = false;
+  } catch {
+    // Older clients send no JSON body; keep their manual refresh behavior.
+  }
+  if (!force) {
+    wakePoller();
+    return json({ success: true, queued: 0, alreadyActive: 0, jobs: [] });
   }
 
   const db = getDb();
   const feeds = db.prepare('SELECT id FROM feeds WHERE enabled = 1').all() as {
     id: string;
   }[];
-
   const jobs = feeds.map((feed) => enqueueFeedFetch(feed.id, { force: true }));
   // Queue insertion is the durable operation. The in-process worker provides
   // fast feedback when possible, while the poller remains the restart-safe

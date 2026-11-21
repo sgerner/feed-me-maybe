@@ -1,6 +1,7 @@
 type Client = {
   id: string;
   controller: ReadableStreamDefaultController;
+  onClose: () => void;
 };
 
 const clients = new Set<Client>();
@@ -12,8 +13,9 @@ const clients = new Set<Client>();
 export function registerClient(
   id: string,
   controller: ReadableStreamDefaultController,
+  onClose: () => void,
 ) {
-  const client = { id, controller };
+  const client = { id, controller, onClose };
   clients.add(client);
 
   console.log(`[realtime] Client connected: ${id} (Total: ${clients.size})`);
@@ -24,6 +26,18 @@ export function registerClient(
       `[realtime] Client disconnected: ${id} (Total: ${clients.size})`,
     );
   };
+}
+
+export function closeRealtimeClients(): void {
+  for (const client of clients) {
+    try {
+      client.controller.close();
+    } catch {
+      // The connection may already be closing.
+    } finally {
+      client.onClose();
+    }
+  }
 }
 
 /**
@@ -45,7 +59,7 @@ export function broadcast(event: string, data: any) {
       client.controller.enqueue(encoded);
     } catch (err) {
       // If we can't send, the connection is likely closed
-      clients.delete(client);
+      client.onClose();
     }
   }
 }

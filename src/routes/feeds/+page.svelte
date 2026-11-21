@@ -14,6 +14,7 @@
     last_fetch_at?: number | null;
     last_error?: string | null;
     poll_interval_mins?: number | null;
+    health_status?: string;
     unread_count: number;
     visible_count: number;
     article_count: number;
@@ -59,21 +60,52 @@
   }
 
   function statusLabel(feed: Feed): string {
-    if (!feed.enabled) return 'Paused';
-    if (feed.error_count > 0 || feed.last_fetch_status === 'error')
-      return 'Needs attention';
-    if (feed.last_fetch_status === 'success') return 'Healthy';
-    return 'Waiting for first sync';
+    switch (feed.health_status) {
+      case 'disabled':
+        return 'Paused';
+      case 'error':
+        return 'Needs attention';
+      case 'queued':
+        return 'Queued';
+      case 'fetching':
+        return 'Syncing';
+      case 'stale':
+        return 'Stale';
+      case 'never':
+        return 'Waiting for first sync';
+      case 'healthy':
+        return 'Healthy';
+      default:
+        if (!feed.enabled) return 'Paused';
+        if (feed.error_count > 0 || feed.last_fetch_status === 'error')
+          return 'Needs attention';
+        if (feed.last_fetch_status === 'success') return 'Healthy';
+        return 'Waiting for first sync';
+    }
   }
 
   function statusClass(feed: Feed): string {
-    if (!feed.enabled) return 'text-surface-300 bg-surface-200/10';
-    if (feed.error_count > 0 || feed.last_fetch_status === 'error') {
-      return 'text-error-300 bg-error-500/10';
+    switch (feed.health_status) {
+      case 'disabled':
+        return 'text-surface-300 bg-surface-200/10';
+      case 'error':
+        return 'text-error-300 bg-error-500/10';
+      case 'healthy':
+        return 'text-success-300 bg-success-500/10';
+      case 'stale':
+      case 'queued':
+      case 'fetching':
+      case 'never':
+        return 'text-warning-300 bg-warning-500/10';
+      default:
+        if (!feed.enabled) return 'text-surface-300 bg-surface-200/10';
+        if (feed.error_count > 0 || feed.last_fetch_status === 'error') {
+          return 'text-error-300 bg-error-500/10';
+        }
+        if (feed.last_fetch_status === 'success')
+          return 'text-success-300 bg-success-500/10';
+        return 'text-warning-300 bg-warning-500/10';
     }
-    if (feed.last_fetch_status === 'success')
-      return 'text-success-300 bg-success-500/10';
-    return 'text-warning-300 bg-warning-500/10';
   }
 
   function relativeTime(value?: number | null): string {
