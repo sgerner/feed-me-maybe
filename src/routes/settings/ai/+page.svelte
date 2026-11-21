@@ -8,6 +8,7 @@
   let searchQuery = $state('');
   let selectedProviderId = $state('');
   let selectedModelId = $state('');
+  let customModelId = $state('');
   let activeModelIndex = $state(-1);
   let modelSuggestionsDismissed = $state(false);
   let envConfig = $state<Record<string, string>>({});
@@ -22,6 +23,8 @@
   let saving = $state(false);
   let aiEnabled = $state(true);
   let aiConfigured = $state(false);
+  let savedConfigModelUnavailable = $state(false);
+  let savedConfigMissingCredentials = $state(false);
   let savingAiEnabled = $state(false);
   let aiStatusMessage = $state('');
   let analysisCounts = $state({
@@ -30,7 +33,9 @@
     failed: 0,
     skipped: 0,
   });
-  let aiJobCounts = $state({ queued: 0, processing: 0 });
+  let aiJobCounts = $state({ queued: 0, processing: 0, failed: 0 });
+  let aiCooldownUntil = $state<number | null>(null);
+  let retryingFailures = $state(false);
   let recentFailures = $state<
     Array<{
       article_id: string;
@@ -48,16 +53,30 @@
   );
 
   const filteredModels = $derived(
-    searchQuery.length < 2
-      ? []
-      : allModels
-          .filter(
-            (m) =>
-              m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-              m.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-              m.provider.name.toLowerCase().includes(searchQuery.toLowerCase()),
-          )
-          .slice(0, 10),
+    (() => {
+      const query = searchQuery.trim().toLowerCase();
+      if (query.length < 2) return [];
+      const rank = (model: AiModel & { provider: AiProvider }) => {
+        const id = model.id.toLowerCase();
+        const name = model.name.toLowerCase();
+        const provider = model.provider.name.toLowerCase();
+        if (id === query) return 0;
+        if (name === query) return 1;
+        if (id.startsWith(query)) return 2;
+        if (name.startsWith(query)) return 3;
+        if (provider.startsWith(query)) return 4;
+        if (id.includes(query)) return 5;
+        if (name.includes(query)) return 6;
+        return 7;
+      };
+      return allModels
+        .filter((m) =>
+          [m.name, m.id, m.provider.name].some((value) =>
+            value.toLowerCase().includes(query),
+          ),
+        )
+        .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    })(),
   );
   const showModelOptions = $derived(
     !modelSuggestionsDismissed && filteredModels.length > 0,
@@ -68,6 +87,12 @@
     aiConfigured = Boolean(data.aiConfigured);
     analysisCounts = data.analysisCounts || analysisCounts;
     aiJobCounts = data.aiJobCounts || aiJobCounts;
+    aiCooldownUntil =
+      typeof data.aiCooldownUntil === 'number' &&
+      Number.isFinite(data.aiCooldownUntil) &&
+      data.aiCooldownUntil > Date.now()
+        ? data.aiCooldownUntil
+        : null;
     recentFailures = Array.isArray(data.recentFailures)
       ? data.recentFailures
       : [];
@@ -76,11 +101,21 @@
     const cfg =
       configs.find((item: { enabled?: number }) => item.enabled) ?? configs[0];
     hasSavedConfig = Boolean(cfg);
+    savedConfigModelUnavailable = Boolean(cfg && cfg.model_available === false);
+    savedConfigMissingCredentials = Boolean(cfg && !cfg.has_api_key);
     savedProviderId = cfg?.provider_id ?? '';
     hasSavedCredential = Boolean(cfg?.has_api_key);
     selectedProviderId = cfg?.provider_id ?? '';
     selectedModelId = cfg?.model_id ?? '';
     customBaseUrl = cfg?.custom_base_url ?? '';
+    const currentProvider = providers.find(
+      (provider) => provider.id === selectedProviderId,
+    );
+    customModelId =
+      customBaseUrl &&
+      !currentProvider?.models.some((model) => model.id === selectedModelId)
+        ? selectedModelId
+        : '';
     envConfig = {};
   }
 
@@ -95,6 +130,17 @@
   );
   const selectedModel = $derived(
     selectedProvider?.models.find((m) => m.id === selectedModelId),
+  );
+  const effectiveModelId = $derived(
+    customBaseUrl.trim() && customModelId.trim()
+      ? customModelId.trim()
+      : selectedModelId,
+  );
+  const hasUsableSelection = $derived(
+    Boolean(
+      selectedProvider &&
+      (selectedModel || (customBaseUrl.trim() && customModelId.trim())),
+    ),
   );
 
   async function loadProviders() {
@@ -201,6 +247,31 @@
     }
   }
 
+  async function retryFailedAnalyses() {
+    retryingFailures = true;
+    aiStatusMessage = '';
+    try {
+      const response = await fetchWithCsrf('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retryFailed: true }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Retry failed.');
+      await refreshAiSettings();
+      aiStatusMessage = result.queued
+        ? `Queued ${result.queued} failed or skipped article analyses for retry.`
+        : 'No failed or skipped analyses are available to retry.';
+    } catch (error) {
+      aiStatusMessage =
+        error instanceof Error
+          ? error.message
+          : 'Could not retry failed analyses.';
+    } finally {
+      retryingFailures = false;
+    }
+  }
+
   function selectModel(model: AiModel & { provider: AiProvider }) {
     if (selectedProviderId !== model.provider.id) {
       envConfig = {};
@@ -209,6 +280,7 @@
     }
     selectedProviderId = model.provider.id;
     selectedModelId = model.id;
+    customModelId = '';
     searchQuery = '';
     activeModelIndex = -1;
     modelSuggestionsDismissed = false;
@@ -229,7 +301,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           providerId: selectedProviderId,
-          modelId: selectedModelId,
+          modelId: effectiveModelId,
           config: Object.fromEntries(
             Object.entries(envConfig).filter(
               ([, value]) => value.trim().length > 0,
@@ -359,21 +431,56 @@
         <p
           class="rounded-sm border border-white/10 bg-white/5 px-3 py-2 text-sm opacity-75"
         >
-          No AI provider is configured. Select a compatible model below to start
-          enrichment.
+          {savedConfigMissingCredentials
+            ? 'The saved provider configuration needs credentials. Enter the API key below and save it to resume enrichment.'
+            : savedConfigModelUnavailable
+              ? 'The saved provider or model is no longer available in the compatible catalog. Choose a replacement or configure a custom endpoint below.'
+              : 'No AI provider is configured. Select a compatible model below to start enrichment.'}
         </p>
       {/if}
       <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {aiStatusMessage}
       </p>
 
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        {#each [{ label: 'Ready', value: analysisCounts.ready }, { label: 'Failed', value: analysisCounts.failed }, { label: 'Skipped', value: analysisCounts.skipped }, { label: 'Pending metadata', value: analysisCounts.pending }, { label: 'Queued jobs', value: aiJobCounts.queued }, { label: 'Running jobs', value: aiJobCounts.processing }] as item (item.label)}
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        {#each [{ label: 'Ready', value: analysisCounts.ready }, { label: 'Failed', value: analysisCounts.failed }, { label: 'Skipped', value: analysisCounts.skipped }, { label: 'Pending metadata', value: analysisCounts.pending }, { label: 'Queued jobs', value: aiJobCounts.queued }, { label: 'Running jobs', value: aiJobCounts.processing }, { label: 'Failed jobs', value: aiJobCounts.failed }] as item (item.label)}
           <div class="rounded-sm border border-white/10 bg-white/5 px-3 py-3">
             <div class="text-xl font-semibold text-white">{item.value}</div>
             <div class="mt-1 text-xs opacity-65">{item.label}</div>
           </div>
         {/each}
+      </div>
+
+      {#if aiCooldownUntil}
+        <p
+          class="rounded-sm border border-warning-500/20 bg-warning-500/10 px-3 py-2 text-sm"
+        >
+          Provider cooldown is active until {new Date(
+            aiCooldownUntil,
+          ).toLocaleString()}. Queued enrichment will resume after that time.
+        </p>
+      {/if}
+
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          class="btn preset-tonal-surface btn-sm"
+          onclick={retryFailedAnalyses}
+          disabled={retryingFailures ||
+            !aiEnabled ||
+            !aiConfigured ||
+            analysisCounts.failed +
+              analysisCounts.skipped +
+              aiJobCounts.failed ===
+              0}
+        >
+          {retryingFailures
+            ? 'Queueing retries…'
+            : 'Retry failed or skipped analyses'}
+        </button>
+        <span class="text-xs opacity-60"
+          >Queues up to 25 articles per request.</span
+        >
       </div>
 
       <div>
@@ -515,7 +622,25 @@
       </div>
     {/if}
 
-    {#if selectedModel}
+    {#if hasSavedConfig && !hasUsableSelection}
+      <div
+        class="glass-card flex flex-wrap items-center justify-between gap-4 p-5"
+        role="status"
+      >
+        <p class="text-sm opacity-80">
+          The saved model is no longer in the compatible catalog. Choose a
+          replacement or clear the saved configuration.
+        </p>
+        <button
+          type="button"
+          class="btn preset-tonal-error btn-sm"
+          onclick={clearSelectedModel}
+          disabled={saving}>Clear saved configuration</button
+        >
+      </div>
+    {/if}
+
+    {#if hasUsableSelection}
       <div
         class="glass-card space-y-6 p-5 md:p-6"
         in:fly={{ y: 20, duration: 400 }}
@@ -535,24 +660,30 @@
             />
           </div>
           <div class="flex-1">
-            <h3 class="text-xl font-bold text-white">{selectedModel.name}</h3>
+            <h3 class="text-xl font-bold text-white">
+              {customModelId.trim() && customBaseUrl.trim()
+                ? customModelId.trim()
+                : (selectedModel?.name ?? effectiveModelId)}
+            </h3>
             <p class="text-sm opacity-70">
-              {selectedProvider?.name} — {selectedModel.id}
+              {selectedProvider?.name} — {effectiveModelId}
             </p>
 
             <div class="mt-3 flex flex-wrap gap-2">
-              <span class="badge variant-soft-surface text-[10px]"
-                >{selectedModel.contextWindow.toLocaleString()} tokens</span
-              >
-              {#if selectedModel.reasoning}<span
+              {#if selectedModel}<span
+                  class="badge variant-soft-surface text-[10px]"
+                  >{selectedModel.contextWindow.toLocaleString()} tokens</span
+                >{/if}
+              {#if selectedModel?.reasoning}<span
                   class="badge variant-soft-primary text-[10px]">Reasoning</span
                 >{/if}
-              {#if selectedModel.toolCall}<span
+              {#if selectedModel?.toolCall}<span
                   class="badge variant-soft-secondary text-[10px]">Tools</span
                 >{/if}
-              <span class="badge variant-soft-tertiary text-[10px]"
-                >${selectedModel.inputPrice}/1M in</span
-              >
+              {#if selectedModel}<span
+                  class="badge variant-soft-tertiary text-[10px]"
+                  >${selectedModel.inputPrice}/1M in</span
+                >{/if}
             </div>
           </div>
           <button
@@ -636,6 +767,26 @@
               />
             </label>
           </div>
+
+          {#if customBaseUrl.trim() && selectedProvider}
+            <label class="label">
+              <span class="mb-1 block text-xs font-medium opacity-80"
+                >Custom model ID (optional)</span
+              >
+              <input
+                class="input glass-input w-full"
+                type="text"
+                bind:value={customModelId}
+                maxlength="200"
+                autocomplete="off"
+                placeholder={selectedModelId || 'e.g. llama3.1:8b'}
+              />
+              <span class="mt-1 block text-xs opacity-60">
+                Use this when your compatible endpoint serves a model that is
+                not listed in the registry.
+              </span>
+            </label>
+          {/if}
         </div>
 
         <div class="flex items-center justify-between pt-4">

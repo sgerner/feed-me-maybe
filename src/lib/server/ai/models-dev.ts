@@ -6,6 +6,7 @@ const OPENAI_API_URL = 'https://api.openai.com/v1';
 const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
 
 let cache: { data: any; timestamp: number } | null = null;
+let pendingFetch: Promise<any> | null = null;
 
 function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -24,7 +25,16 @@ function compatibleBaseUrl(id: string, provider: Record<string, any>): string {
 
   try {
     const url = new URL(api);
-    if (url.protocol !== 'https:' || !url.hostname) return '';
+    if (
+      url.protocol !== 'https:' ||
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      return '';
+    }
     return url.toString().replace(/\/$/, '');
   } catch {
     return '';
@@ -33,9 +43,11 @@ function compatibleBaseUrl(id: string, provider: Record<string, any>): string {
 
 function isTextChatModel(model: Record<string, any>): boolean {
   const modalities = model.modalities;
+  const contextWindow = Number(model.limit?.context);
   return (
     model.status !== 'deprecated' &&
-    Number(model.limit?.context) > 0 &&
+    Number.isFinite(contextWindow) &&
+    contextWindow > 0 &&
     isRecord(modalities) &&
     Array.isArray(modalities.input) &&
     modalities.input.includes('text') &&
@@ -49,21 +61,28 @@ async function fetchModelsDev() {
     return cache.data;
   }
 
-  try {
-    const response = await fetch(MODELS_DEV_URL, {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch models.dev: ${response.statusText}`);
-    }
+  if (pendingFetch) return pendingFetch;
 
-    const data = await response.json();
-    cache = { data, timestamp: Date.now() };
-    return data;
-  } catch (error) {
-    if (cache) return cache.data;
-    throw error;
-  }
+  pendingFetch = (async () => {
+    try {
+      const response = await fetch(MODELS_DEV_URL, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch models.dev: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      cache = { data, timestamp: Date.now() };
+      return data;
+    } catch (error) {
+      if (cache) return cache.data;
+      throw error;
+    } finally {
+      pendingFetch = null;
+    }
+  })();
+  return pendingFetch;
 }
 
 export async function getProviders(): Promise<AiProvider[]> {
@@ -84,8 +103,8 @@ export async function getProviders(): Promise<AiProvider[]> {
         name: model.name || modelId,
         family: model.family,
         contextWindow: Number(model.limit?.context),
-        inputPrice: Number(model.cost?.input) || 0,
-        outputPrice: Number(model.cost?.output) || 0,
+        inputPrice: safeNonNegativeNumber(model.cost?.input),
+        outputPrice: safeNonNegativeNumber(model.cost?.output),
         reasoning: Boolean(model.reasoning),
         toolCall: Boolean(model.tool_call),
         structuredOutput: Boolean(model.structured_output),
@@ -109,6 +128,11 @@ export async function getProviders(): Promise<AiProvider[]> {
       models,
     };
   });
+}
+
+function safeNonNegativeNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 export async function getProvider(id: string): Promise<AiProvider | undefined> {

@@ -47,17 +47,28 @@ export async function getConfiguredAiClient() {
   if (Object.keys(decryptedConfig).length === 0) return null;
 
   const providerInfo = await getProvider(config.provider_id);
+  if (!providerInfo) return null;
   const modelInfo = providerInfo?.models.find(
     (model) => model.id === config.model_id,
   );
-  if (!providerInfo || !modelInfo) return null;
+  if (!modelInfo && !config.custom_base_url) return null;
   const baseUrl = config.custom_base_url || providerInfo.baseUrl;
 
-  const apiKey = providerInfo.requiredEnvVars.length
-    ? decryptedConfig[providerInfo.requiredEnvVars[0]] ||
-      Object.values(decryptedConfig)[0] ||
-      ''
-    : decryptedConfig.apiKey || Object.values(decryptedConfig)[0] || '';
+  const keyVariable = [
+    ...providerInfo.requiredEnvVars.filter((name) =>
+      /(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|(?:^|[_-])TOKEN)$/i.test(
+        name,
+      ),
+    ),
+    ...Object.keys(decryptedConfig).filter((name) =>
+      /(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|(?:^|[_-])TOKEN)$/i.test(
+        name,
+      ),
+    ),
+  ].find((name) => decryptedConfig[name]?.trim());
+  const apiKey =
+    decryptedConfig.apiKey?.trim() ||
+    (keyVariable ? decryptedConfig[keyVariable].trim() : '');
 
   if (!apiKey || !baseUrl) return null;
 
@@ -66,6 +77,6 @@ export async function getConfiguredAiClient() {
     apiKey,
     model: config.model_id,
     providerId: config.provider_id,
-    supportsTemperature: modelInfo.temperature !== false,
+    supportsTemperature: modelInfo?.temperature !== false,
   });
 }
