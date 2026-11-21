@@ -73,6 +73,39 @@ function cachedArticle(id: string, updatedAt: number): CachedArticle {
 describe('offline article cache', () => {
   beforeEach(() => memory.reset());
 
+  it('normalizes SQLite flags and preserves full cached bodies during snapshot refresh', async () => {
+    const existing = cachedArticle('saved-body', 10);
+    existing.content = '<p>Full cached article</p>';
+    memory.stores.get('articles')!.set(existing.key, existing);
+
+    await refreshOfflineArticleBodies('reader', async () =>
+      Response.json({
+        articles: [],
+        savedArticles: [
+          {
+            id: existing.id,
+            title: existing.title,
+            url: existing.url,
+            saved: 1,
+            read: 0,
+            hidden: 1,
+            content: null,
+          },
+        ],
+      }),
+    );
+
+    expect(await getCachedSavedArticles('reader')).toMatchObject([
+      {
+        id: existing.id,
+        saved: true,
+        read: false,
+        hidden: true,
+        content: existing.content,
+      },
+    ]);
+  });
+
   it('keeps a queued save when a refreshed saved list omits it and the cache is full', async () => {
     const pendingArticle = cachedArticle('pending-save', 1);
     memory.stores.get('articles')!.set(pendingArticle.key, pendingArticle);

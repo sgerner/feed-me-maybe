@@ -89,6 +89,7 @@
       <p id="status" role="status">
         Looking for cached stories on this device…
       </p>
+      <button id="reconnect" type="button" hidden>Reload online</button>
       <label id="search-label" hidden>
         Search cached articles
         <input type="search" id="query" />
@@ -100,6 +101,14 @@
         const databaseName = 'feed-me-maybe-offline';
         const cacheVersion = 'v1';
         const status = document.getElementById('status');
+        const reconnect = document.getElementById('reconnect');
+        const updateConnection = () => {
+          reconnect.hidden = !navigator.onLine;
+        };
+        reconnect.addEventListener('click', () => location.reload());
+        window.addEventListener('online', updateConnection);
+        window.addEventListener('offline', updateConnection);
+        updateConnection();
 
         function addStore(database, name, options, indexes = []) {
           if (database.objectStoreNames.contains(name)) return;
@@ -191,6 +200,7 @@
           '/saved': 'Saved articles',
           '/digest': 'Offline digest',
           '/search': 'Search offline articles',
+          '/recovery': 'Offline recovery',
         };
         heading.textContent = path.startsWith('/articles/')
           ? 'Offline article'
@@ -323,6 +333,19 @@
               search();
             } else if (path === '/saved') {
               renderArticles(ownArticles.filter((article) => article.saved));
+            } else if (path === '/recovery') {
+              renderArticles(
+                ownArticles.filter(
+                  (article) => article.hidden || article.thumbs_down,
+                ),
+              );
+            } else if (path.startsWith('/feeds/')) {
+              renderArticles(
+                visible.filter(
+                  (article) =>
+                    '/feeds/' + encodeURIComponent(article.feed_id) === path,
+                ),
+              );
             } else {
               renderArticles(
                 path === '/inbox'

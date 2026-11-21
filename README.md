@@ -15,6 +15,18 @@ A self-hosted, AI-powered RSS reader built with SvelteKit, SQLite, and modern we
 - **Password-Gated Auth** — Simple single-user authentication with HttpOnly session cookies
 - **Responsive UI** — Built with Skeleton UI v4 and Tailwind CSS v4, works on mobile and desktop
 
+## Offline reading
+
+Open the app once while signed in to prepare the offline library on that device.
+The app caches up to 150 recent articles, 100 saved articles, and eight digests.
+The background snapshot includes complete bodies up to 30,000 characters.
+Longer articles use their cached full text when available, with the summary as
+a fallback. Signing out clears the private offline library.
+
+The already-open app can queue read, save, hide, and restore actions for sync.
+A fresh navigation while offline loads a read-only library. Feed refresh and
+publisher full-text retrieval require a connection.
+
 ## Prerequisites
 
 - **Node.js** 22.12.0 or later (CI and the Docker image use Node 24)
@@ -122,9 +134,9 @@ The application will be available at `http://localhost:3000`.
 ### Persistent Storage
 
 **In Docker, you must mount `/app/data` to a persistent volume.** The Dockerfile
-already sets `DATABASE_URL=/app/data/feed-me-maybe.db`, so the database, WAL files,
-PWA manifest, and processed images all live in that directory. If you do not mount
-a persistent volume, all data will be lost when the container restarts.
+already sets `DATABASE_URL=/app/data/feed-me-maybe.db`. That directory holds
+the SQLite database and its WAL files. Mount it to retain your data when you
+replace the container.
 
 ```bash
 # Named volume (recommended)

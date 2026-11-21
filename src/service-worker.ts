@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { clientsClaim, setCacheNameDetails, skipWaiting } from 'workbox-core';
+import { clientsClaim, setCacheNameDetails } from 'workbox-core';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { ExpirationPlugin } from 'workbox-expiration';
 import {
@@ -19,7 +19,7 @@ const OFFLINE_SYNC_TAG = 'feed-me-maybe-outbox-v1';
 const PRIVATE_CACHE_NAMES = ['feed-me-maybe-article-images-v1'];
 
 setCacheNameDetails({ prefix: 'feed-me-maybe' });
-skipWaiting();
+// Activate updates after existing tabs close so their lazy chunks stay cached.
 clientsClaim();
 precacheAndRoute(self.__WB_MANIFEST);
 cleanupOutdatedCaches();

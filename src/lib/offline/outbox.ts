@@ -5,6 +5,7 @@ import {
   putRecords,
   putMetaValue,
   replaceRecords,
+  settleOutboxReplay,
 } from './db';
 import { mutationDedupeKey } from './state';
 import {
@@ -413,6 +414,21 @@ export async function replayOfflineMutations(
   } = {},
 ): Promise<OfflineReplayResult> {
   const scope = normalizeOfflineScope(userScope);
+  const replay = () => replayScopedMutations(scope, options);
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks.request(`feed-me-maybe-outbox:${scope}`, replay);
+  }
+  return replay();
+}
+
+async function replayScopedMutations(
+  scope: string,
+  options: {
+    fetchImpl?: typeof fetch;
+    now?: number;
+    maxMutations?: number;
+  },
+): Promise<OfflineReplayResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const all = await getOfflineMutations(scope);
   const currentTime = options.now ?? Date.now();
@@ -443,10 +459,12 @@ export async function replayOfflineMutations(
     { now: currentTime, maxMutations: options.maxMutations },
   );
 
-  await replaceRecords('outbox', result.updated, result.removedIds);
-  const remaining = result.updated.filter(
-    (mutation) => !result.removedIds.includes(mutation.id),
+  const original = new Map(all.map((mutation) => [mutation.id, mutation]));
+  await settleOutboxReplay(
+    result.updated.filter((mutation) => original.get(mutation.id) !== mutation),
+    result.removedIds,
   );
+  const remaining = await getOfflineMutations(scope);
   if (result.synced > 0) {
     await putMetaValue(`outbox-last-synced:${scope}`, currentTime);
   }
@@ -504,6 +522,10 @@ export async function getOfflineSyncStatus(
   );
   return {
     state: blocked ? 'blocked' : 'idle',
+    needsSignIn: mutations.some(
+      (mutation) =>
+        mutation.state === 'blocked' && mutation.blockedStatus === 401,
+    ),
     pendingCount: pending.length,
     lastSyncedAt: typeof lastSyncedAt === 'number' ? lastSyncedAt : null,
     nextAttemptAt:
@@ -549,6 +571,7 @@ export function installOfflineSync(
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let lastSnapshotRefreshAt = 0;
   let snapshotRefresh: Promise<boolean> | undefined;
+  let retryExpiredSession = true;
 
   const refreshSnapshot = (force = false) => {
     if (navigator.onLine === false || snapshotRefresh) return;
@@ -581,7 +604,7 @@ export function installOfflineSync(
     );
   };
 
-  const replay = () => {
+  const replay = (forceSnapshot = false) => {
     if (
       replaying ||
       navigator.onLine === false ||
@@ -593,10 +616,15 @@ export function installOfflineSync(
     clearRetryTimer();
     void (async () => {
       try {
-        await retryUnauthorizedMutations(userScope);
+        await snapshotRefresh;
+        if (retryExpiredSession) {
+          retryExpiredSession = false;
+          await retryUnauthorizedMutations(userScope);
+        }
         const result = await replayOfflineMutations(userScope);
         options.onReplay?.(result);
         scheduleRetry(result);
+        refreshSnapshot(forceSnapshot || result.synced > 0);
       } finally {
         replaying = false;
       }
@@ -606,15 +634,13 @@ export function installOfflineSync(
   };
   const handleOnline = () => {
     clearRetryTimer();
-    refreshSnapshot(true);
-    replay();
+    replay(true);
   };
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'hidden') {
       clearRetryTimer();
       return;
     }
-    refreshSnapshot();
     replay();
   };
   const handleWorkerMessage = (event: MessageEvent<unknown>) => {
@@ -642,8 +668,7 @@ export function installOfflineSync(
   window.addEventListener('online', handleOnline);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   navigator.serviceWorker?.addEventListener('message', handleWorkerMessage);
-  refreshSnapshot(true);
-  replay();
+  replay(true);
   void requestOfflineBackgroundSync(userScope);
 
   return () => {

@@ -17,7 +17,7 @@ export default defineConfig({
       // SvelteKit SSR does not inject the generated registration script into
       // app.html; the deferred script tag is declared there explicitly.
       injectRegister: 'auto',
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'service-worker.ts',
