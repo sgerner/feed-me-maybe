@@ -64,6 +64,29 @@ const SIGNAL_WEIGHTS: Record<string, number> = {
   thin_rewrite: 1.1,
   ad_copy: 1.1,
 };
+const POSITIVE_QUALITY_SIGNALS = new Set([
+  'official_announcement',
+  'primary_source',
+  'specific_details',
+  'technical_depth',
+  'data_driven',
+  'actionable',
+  'hands_on',
+  'concrete_update',
+  'cited_sources',
+]);
+const NEGATIVE_QUALITY_SIGNALS = new Set([
+  'speculation',
+  'rumor',
+  'leak',
+  'hype',
+  'clickbait',
+  'seo_filler',
+  'opinion_only',
+  'future_guessing',
+  'thin_rewrite',
+  'ad_copy',
+]);
 const STOPWORDS = new Set([
   'the',
   'and',
@@ -117,17 +140,56 @@ const STOPWORDS = new Set([
 
 function normalizeToken(text: string): string {
   return text
+    .normalize('NFKC')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '')
+    .replace(/(?<![\p{L}\p{N}])c\+\+(?![\p{L}\p{N}])/gu, 'c_plus_plus')
+    .replace(/(?<![\p{L}\p{N}])c#(?![\p{L}\p{N}])/gu, 'c_sharp')
+    .replace(/(?<![\p{L}\p{N}])f#(?![\p{L}\p{N}])/gu, 'f_sharp')
+    .replace(/(?<![\p{L}\p{N}])\.net(?![\p{L}\p{N}])/gu, 'dotnet')
+    .replace(/(?<![\p{L}\p{N}])node\.js(?![\p{L}\p{N}])/gu, 'nodejs')
+    .replace(/[^\p{L}\p{N}]+/gu, '_')
+    .replace(/^_+|_+$/g, '')
     .trim();
 }
 
 function normalizeLabel(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
+  return normalizeToken(text);
+}
+
+function parseAuthors(rawAuthor: string): string[] {
+  const cleaned = rawAuthor
+    .replace(/<[^>]*@[^>]*>/g, ' ')
+    .replace(/\([^)]*@[^)]*\)/g, ' ')
+    .replace(/^\s*by\s+/i, '')
     .trim();
+  if (!cleaned) return [];
+
+  const authors: string[] = [];
+  const seen = new Set<string>();
+  for (const part of cleaned.split(/\s*(?:,|;)\s*|\s+(?:&|and)\s+/i)) {
+    const normalized = normalizeLabel(part);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    authors.push(normalized);
+    if (authors.length >= 4) break;
+  }
+  return authors;
+}
+
+function isSignalAllowedForPolarity(
+  label: string,
+  polarity: 'positive' | 'negative',
+): boolean {
+  const signal = label.startsWith('signal:')
+    ? label.slice('signal:'.length)
+    : label;
+  if (polarity === 'negative' && POSITIVE_QUALITY_SIGNALS.has(signal)) {
+    return false;
+  }
+  if (polarity === 'positive' && NEGATIVE_QUALITY_SIGNALS.has(signal)) {
+    return false;
+  }
+  return true;
 }
 
 function parseJsonStringArray(
@@ -217,8 +279,7 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
   const summary = ctx.summary || '';
   const content = ctx.content || '';
 
-  const author = normalizeLabel(ctx.author || '');
-  if (author) {
+  for (const author of parseAuthors(ctx.author || '')) {
     features.push({
       type: 'author',
       label: `author:${author}`,
@@ -277,11 +338,13 @@ function extractFeatures(ctx: ArticleContext): Feature[] {
   const contentType =
     normalizeToken(ctx.ai_content_type || '') ||
     detectContentType(title, summary, content);
-  features.push({
-    type: 'content_type',
-    label: `content_type:${contentType}`,
-    weight: 1.8,
-  });
+  if (contentType && contentType !== 'news' && contentType !== 'other') {
+    features.push({
+      type: 'content_type',
+      label: `content_type:${contentType}`,
+      weight: 1.8,
+    });
+  }
   if (contentType === 'obituary') {
     features.push({
       type: 'negative_filter',
@@ -381,14 +444,21 @@ export function getPreferenceFeatureKeysForArticles(
   return result;
 }
 
-function getDecayedStrength(strength: number, lastReinforced: number): number {
+function getDecayMultiplier(lastReinforced: number, now = Date.now()): number {
+  if (!lastReinforced || !Number.isFinite(lastReinforced)) return 1;
+  const ageDays = Math.max(0, (now - lastReinforced) / (24 * 60 * 60 * 1000));
+  return Math.pow(0.5, ageDays / DECAY_HALF_LIFE_DAYS);
+}
+
+export function getDecayedStrength(
+  strength: number,
+  lastReinforced: number,
+): number {
   if (!lastReinforced || !Number.isFinite(lastReinforced)) return strength;
-  const ageDays = Math.max(
+  return Math.max(
     0,
-    (Date.now() - lastReinforced) / (24 * 60 * 60 * 1000),
+    Math.min(1, strength * getDecayMultiplier(lastReinforced)),
   );
-  const decayFactor = Math.pow(0.5, ageDays / DECAY_HALF_LIFE_DAYS);
-  return Math.max(0, Math.min(1, strength * decayFactor));
 }
 
 function upsertPreference(
@@ -461,6 +531,22 @@ export function updatePreferenceMemoryFromInteraction(
 
   for (const feature of features) {
     if (isImplicitFeedback && feature.type === 'phrase') continue;
+    if (feature.type === 'signal') {
+      if (
+        negativeDelta > 0 &&
+        positiveDelta === 0 &&
+        !isSignalAllowedForPolarity(feature.label, 'negative')
+      ) {
+        continue;
+      }
+      if (
+        positiveDelta > 0 &&
+        negativeDelta === 0 &&
+        !isSignalAllowedForPolarity(feature.label, 'positive')
+      ) {
+        continue;
+      }
+    }
     changedFeatureKeys.push(`${feature.type}|${feature.label}`);
     if (negativeDelta) {
       const update = upsertPreference(
@@ -578,9 +664,6 @@ export function getPreferenceStateForArticle(
   const features = extractFeatures(ctx);
   if (!features.length) return { adjustment: 0, totalNegativeEvidence: 0 };
 
-  let signal = 0;
-  let totalNegativeEvidence = 0;
-
   const placeholders = features.map(() => '(?, ?)').join(', ');
   const params = features.flatMap((feature) => [feature.type, feature.label]);
   const rows = db
@@ -605,19 +688,58 @@ export function getPreferenceStateForArticle(
     featureWeightMap.set(`${feature.type}|${feature.label}`, feature.weight);
   }
 
+  const now = Date.now();
+  const byFeature = new Map<
+    string,
+    {
+      posContribution: number;
+      negContribution: number;
+      posDecayedEvidence: number;
+      negDecayedEvidence: number;
+    }
+  >();
+
   for (const row of rows) {
-    const weight = featureWeightMap.get(`${row.type}|${row.label}`) || 0;
+    const key = `${row.type}|${row.label}`;
+    const weight = featureWeightMap.get(key) || 0;
     if (!weight) continue;
-    const decayedStrength = getDecayedStrength(
-      row.strength || 0,
-      row.last_reinforced || 0,
+    const decayMultiplier = getDecayMultiplier(row.last_reinforced || 0, now);
+    const decayedStrength = Math.max(
+      0,
+      Math.min(1, Number(row.strength || 0) * decayMultiplier),
     );
+    const decayedEvidence =
+      Math.max(0, Number(row.evidence_count || 0)) * decayMultiplier;
     const contribution = weight * decayedStrength;
+    const current = byFeature.get(key) || {
+      posContribution: 0,
+      negContribution: 0,
+      posDecayedEvidence: 0,
+      negDecayedEvidence: 0,
+    };
     if (row.polarity === 'negative') {
-      signal -= contribution;
-      totalNegativeEvidence += row.evidence_count || 0;
+      current.negContribution += contribution;
+      current.negDecayedEvidence += decayedEvidence;
     } else if (row.polarity === 'positive') {
-      signal += contribution;
+      current.posContribution += contribution;
+      current.posDecayedEvidence += decayedEvidence;
+    }
+    byFeature.set(key, current);
+  }
+
+  let signal = 0;
+  let totalNegativeEvidence = 0;
+  for (const item of byFeature.values()) {
+    signal += item.posContribution - item.negContribution;
+    if (item.negContribution > item.posContribution) {
+      const effectiveNegativeEvidence = Math.max(
+        0,
+        item.negDecayedEvidence - item.posDecayedEvidence,
+      );
+      totalNegativeEvidence = Math.max(
+        totalNegativeEvidence,
+        effectiveNegativeEvidence,
+      );
     }
   }
 
@@ -625,14 +747,23 @@ export function getPreferenceStateForArticle(
   return { adjustment, totalNegativeEvidence };
 }
 
+const AUTO_HIDE_MIN_NEGATIVE_EVIDENCE = 2.5;
+
+function shouldAutoHideFromPreferenceState(
+  prefState: PreferenceState,
+): boolean {
+  return (
+    prefState.adjustment <= -18 &&
+    prefState.totalNegativeEvidence >= AUTO_HIDE_MIN_NEGATIVE_EVIDENCE
+  );
+}
+
 export function applyPreferenceModelToArticle(articleId: string): void {
   const db = getDb();
   updateHeuristicScore(articleId);
   const prefState = getPreferenceStateForArticle(articleId);
 
-  const shouldAutoHide =
-    prefState.adjustment <= -18 && prefState.totalNegativeEvidence >= 3;
-  if (shouldAutoHide) {
+  if (shouldAutoHideFromPreferenceState(prefState)) {
     db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(articleId);
     db.prepare(
       'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
@@ -644,6 +775,90 @@ export function applyPreferenceModelToArticle(articleId: string): void {
       '{"auto":true,"reason":"preference_model"}',
     );
   }
+}
+
+export function reconcileAutoHiddenArticles(): number {
+  const db = getDb();
+  const candidates = db
+    .prepare(
+      `
+      SELECT a.id
+      FROM articles a
+      WHERE a.hidden = 1
+        AND COALESCE(a.rejected, 0) = 0
+        AND COALESCE(a.thumbs_down, 0) = 0
+        AND EXISTS (
+          SELECT 1 FROM user_interactions ui
+          WHERE ui.article_id = a.id
+            AND ui.interaction_type = 'hide'
+            AND COALESCE(
+              json_extract(
+                CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                '$.auto'
+              ),
+              0
+            ) = 1
+            AND json_extract(
+              CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+              '$.reason'
+            ) = 'preference_model'
+            AND COALESCE(
+              json_extract(
+                CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
+                '$.undone_at'
+              ),
+              0
+            ) = 0
+        )
+    `,
+    )
+    .all() as Array<{ id: string }>;
+
+  if (!candidates.length) return 0;
+
+  const now = Date.now();
+  const unhideArticle = db.prepare(
+    'UPDATE articles SET hidden = 0 WHERE id = ?',
+  );
+  const markAutoHideUndone = db.prepare(
+    `UPDATE user_interactions
+     SET metadata = json_set(
+       CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+       '$.undone_at',
+       ?
+     )
+     WHERE article_id = ?
+       AND interaction_type = 'hide'
+       AND COALESCE(
+         json_extract(
+           CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+           '$.auto'
+         ),
+         0
+       ) = 1
+       AND json_extract(
+         CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+         '$.reason'
+       ) = 'preference_model'
+       AND COALESCE(
+         json_extract(
+           CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+           '$.undone_at'
+         ),
+         0
+       ) = 0`,
+  );
+
+  let unhidden = 0;
+  for (const { id } of candidates) {
+    if (hasExplicitHide(id)) continue;
+    const prefState = getPreferenceStateForArticle(id);
+    if (shouldAutoHideFromPreferenceState(prefState)) continue;
+    unhideArticle.run(id);
+    markAutoHideUndone.run(now, id);
+    unhidden += 1;
+  }
+  return unhidden;
 }
 
 export function hasExplicitHide(articleId: string): boolean {

@@ -785,4 +785,38 @@ describe('weekly digest', () => {
       else process.env.APP_SECRET = originalSecret;
     }
   });
+
+  it('excludes articles from paused feeds in weekly digest', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { getWeeklyDigestArticles } = await import('./digest');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run(
+      'digest-paused-feed',
+      'https://paused-digest.example.com/rss',
+      'Paused Digest',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, summary, published_at, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'digest-paused-article',
+      'digest-paused-feed',
+      'https://paused-digest.example.com/1',
+      'Paused Digest Story',
+      'Should not appear.',
+      now - 1000,
+      now - 1000,
+      now,
+      now,
+    );
+
+    const result = await getWeeklyDigestArticles({ now, forceRefresh: true });
+    expect(result.allArticles.map((a) => a.id)).not.toContain(
+      'digest-paused-article',
+    );
+  });
 });

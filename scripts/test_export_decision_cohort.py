@@ -170,7 +170,7 @@ class TemporalExportTests(unittest.TestCase):
         profile = by_id["new-open"]["state"]["reader_profile"]
         positive_values = {item["value"] for item in profile["positive_preferences"]}
         negative_values = {item["value"] for item in profile["negative_preferences"]}
-        self.assertIn("topic:precutofftopic", positive_values)
+        self.assertIn("topic:pre_cutoff_topic", positive_values)
         self.assertNotIn("topic:processedtoolate", positive_values)
         self.assertNotIn("topic:postcutofftopic", positive_values)
         # The later thumbs_down determines the row label, not the frozen
@@ -247,6 +247,142 @@ class TemporalExportTests(unittest.TestCase):
         before = self.db_path.read_bytes()
         self._export()
         self.assertEqual(self.db_path.read_bytes(), before)
+
+    def test_profile_alignment_normalization_gating_and_no_cap(self) -> None:
+        self.connection.execute(
+            "INSERT INTO feeds (id, title, url, category) VALUES (?, ?, ?, ?)",
+            ("blank-feed", "   ", "https://blank.test/rss", "tech"),
+        )
+        # Seed 260 stale high-evidence positive topics before cutoff plus 1 fresh boost
+        stale_ts = self.cutoff - (200 * 24 * 60 * 60 * 1000)
+        for i in range(260):
+            aid = f"stale-{i}"
+            self.connection.execute(
+                """INSERT INTO articles
+                   (id, feed_id, url, title, author, summary, content, categories, published_at, fetched_at)
+                   VALUES (?, 'feed', ?, ?, 'Writer', 's', 'c', ?, ?, ?)""",
+                (
+                    aid,
+                    f"https://example.test/{aid}",
+                    f"Stale {i}",
+                    json.dumps([f"oldtopic_{i}"]),
+                    stale_ts - 1000,
+                    stale_ts,
+                ),
+            )
+            for j in range(5):
+                self._interaction(aid, "open", stale_ts + j)
+
+        # Fresh normalized/multi-author article with release_note + clickbait + primary_source
+        self.assertEqual(
+            exporter.parse_authors("By Alice <a@ex.com>, Bob (b@ex.com) & Carol and Dave; Eve"),
+            ["alice", "bob", "carol", "dave"],
+        )
+        fresh_ts = self.cutoff - 1_000
+        self.connection.execute(
+            """INSERT INTO articles
+               (id, feed_id, url, title, author, summary, content, categories, published_at, fetched_at)
+               VALUES ('fresh-norm', 'blank-feed', 'https://blank.test/a1', 'Update',
+                       'By Alice <a@ex.com>, Bob (b@ex.com) & Carol and Dave; Eve',
+                       's', 'c', '["C++", "C#", "F#", ".NET", "Node.js"]', ?, ?)""",
+            (fresh_ts - 1000, fresh_ts),
+        )
+        self.connection.execute(
+            """INSERT INTO article_ai_metadata
+               (id, article_id, summary, topics, entities, content_type,
+                ai_relevance_score, quality_score, novelty_score, signals, processed_at)
+               VALUES ('meta-fresh-norm', 'fresh-norm', 'summary', '["Café"]', '[]',
+                       'release_note', 0.8, 0.7, 0.5, '["primary_source","clickbait"]', ?)""",
+            (fresh_ts - 500,),
+        )
+        self._interaction("fresh-norm", "boost", fresh_ts)
+        # Disliked article on blank-feed that also had open and primary_source
+        self.connection.execute(
+            """INSERT INTO articles
+               (id, feed_id, url, title, author, summary, content, categories, published_at, fetched_at)
+               VALUES ('blank-down', 'blank-feed', 'https://blank.test/down', 'Down story',
+                       'Writer', 's', 'c', '[]', ?, ?)""",
+            (fresh_ts - 2000, fresh_ts - 1000),
+        )
+        self.connection.execute(
+            """INSERT INTO article_ai_metadata
+               (id, article_id, summary, topics, entities, content_type,
+                ai_relevance_score, quality_score, novelty_score, signals, processed_at)
+               VALUES ('meta-blank-down', 'blank-down', 'summary', '[]', '[]',
+                       'news', 0.4, 0.4, 0.4, '["primary_source"]', ?)""",
+            (fresh_ts - 1500,),
+        )
+        self._interaction("blank-down", "open", fresh_ts - 900)
+        self._interaction("blank-down", "thumbs_down", fresh_ts - 800)
+        self.connection.commit()
+
+        result = self._export()
+        row = next(r for r in result["rows"] if r["id"] == "new-open")
+        profile = row["state"]["reader_profile"]
+        pos_values = {p["value"] for p in profile["positive_preferences"]}
+        neg_values = {p["value"] for p in profile["negative_preferences"]}
+
+        self.assertIn("topic:c_plus_plus", pos_values)
+        self.assertIn("topic:c_sharp", pos_values)
+        self.assertIn("topic:f_sharp", pos_values)
+        self.assertIn("topic:dotnet", pos_values)
+        self.assertIn("topic:nodejs", pos_values)
+        self.assertIn("topic:café", pos_values)
+        self.assertIn("content_type:release_note", pos_values)
+        self.assertNotIn("content_type:news", neg_values)
+        self.assertNotIn("signal:clickbait", pos_values)
+        self.assertNotIn("signal:primary_source", neg_values)
+        self.assertIn("author:alice", pos_values)
+        self.assertIn("author:dave", pos_values)
+        self.assertNotIn("author:eve", pos_values)
+        self.assertIn({"source": "https://blank.test/rss", "interactions": 1}, profile["preferred_sources"])
+        self.assertIn({"source": "https://blank.test/rss", "interactions": 1}, profile["avoided_sources"])
+
+        # Current mode: no LIMIT 250 truncation, no log1p magnification, polarity-specific evidence_count
+        for i in range(260):
+            self.connection.execute(
+                """INSERT INTO user_preference_memory
+                   (id, type, label, polarity, strength, evidence_count, last_reinforced)
+                   VALUES (?, 'topic', ?, 'positive', 0.9, 10, ?)""",
+                (f"stale-mem-{i}", f"stale_{i}", stale_ts),
+            )
+        self.connection.execute(
+            """INSERT INTO user_preference_memory
+               (id, type, label, polarity, strength, evidence_count, last_reinforced)
+               VALUES ('fresh-pos', 'topic', 'topic:systems', 'positive', 0.85, 3, ?)""",
+            (fresh_ts,),
+        )
+        self.connection.execute(
+            """INSERT INTO user_preference_memory
+               (id, type, label, polarity, strength, evidence_count, last_reinforced)
+               VALUES ('fresh-neg', 'topic', 'topic:systems', 'negative', 0.25, 40, ?)""",
+            (fresh_ts,),
+        )
+        self.connection.execute(
+            """INSERT INTO articles
+               (id, feed_id, url, title, author, summary, content, categories, published_at, fetched_at)
+               VALUES ('blank-unlabeled', 'blank-feed', 'https://blank.test/unlabeled', 'Unlabeled blank feed story',
+                       'Writer', 's', 'c', '[]', ?, ?)""",
+            (fresh_ts - 500, fresh_ts),
+        )
+        self.connection.commit()
+
+        current = exporter.export_cohort(
+            Namespace(
+                input=str(self.db_path),
+                profile="current",
+                cutoff="2026-09-22T00:00:00Z",
+                as_of=exporter.iso_timestamp(fresh_ts),
+                max_per_label=40,
+                current_limit=80,
+            )
+        )
+        cur_row = next(r for r in current["rows"] if r["id"] == "blank-unlabeled")
+        self.assertEqual(cur_row["state"]["candidate"]["source"], "https://blank.test/rss")
+        cur_pos = cur_row["state"]["reader_profile"]["positive_preferences"]
+        sys_pref = next(p for p in cur_pos if p["value"] == "topic:systems")
+        self.assertEqual(sys_pref["evidence_count"], 3)
+        self.assertAlmostEqual(sys_pref["strength"], 0.6, places=2)
 
 
 class EvaluatorMetricTests(unittest.TestCase):

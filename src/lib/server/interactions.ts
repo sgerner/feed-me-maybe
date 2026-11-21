@@ -227,7 +227,13 @@ export function recordInteraction(
       break;
   }
 
-  if (type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost') {
+  if (
+    type === 'thumbs_up' ||
+    type === 'thumbs_down' ||
+    type === 'boost' ||
+    type === 'save' ||
+    type === 'hide'
+  ) {
     refreshRankingAfterFeedback({
       articleIds: [articleId],
       type,
@@ -245,12 +251,7 @@ export function recordInteraction(
   }
 
   updatePreferenceMemoryFromInteraction(articleId, type);
-  if (
-    type === 'save' ||
-    type === 'hide' ||
-    type === 'open' ||
-    type === 'read'
-  ) {
+  if (type === 'open' || type === 'read') {
     refreshRankingAfterProfileMutation(articleId);
     return;
   }

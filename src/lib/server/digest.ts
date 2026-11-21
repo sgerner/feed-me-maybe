@@ -1593,7 +1593,7 @@ export async function getWeeklyDigestArticles(
   const db = getDb();
   const windowStart = now - windowDays * DAY_MS;
   const windowEnd = now;
-  const select = `${buildFeedArticleSelect()} WHERE COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
+  const select = `${buildFeedArticleSelect()} WHERE f.enabled = 1 AND COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
   const windowArticles = db
     .prepare(select)
     .all(windowStart, windowEnd) as DigestArticleRow[];

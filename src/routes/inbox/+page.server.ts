@@ -8,13 +8,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
   const db = getDb();
   const category = url.searchParams.get('category')?.trim() || '';
-  const conditions = category
-    ? ' AND TRIM(f.category) = ? AND f.enabled = 1'
-    : '';
+  const conditions = category ? ' AND TRIM(f.category) = ?' : '';
   const snapshotAt = Date.now();
   const parameters = category ? [category, snapshotAt] : [snapshotAt];
   const whereClause =
-    'a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0' +
+    'f.enabled = 1 AND a.hidden = 0 AND a.read = 0 AND a.thumbs_down = 0' +
     conditions +
     ' AND a.fetched_at <= ?';
 

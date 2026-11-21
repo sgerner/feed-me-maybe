@@ -376,4 +376,224 @@ describe('preference learning model', () => {
     expect(hideStrength).toBeLessThan(thumbsDownStrength);
     expect(boostStrength).toBeGreaterThan(thumbsUpStrength);
   });
+
+  it('uses peak decayed negative evidence, gates broad/quality features, normalizes symbols/authors, and reconciles auto-hides', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const {
+      updatePreferenceMemoryFromInteraction,
+      getPreferenceStateForArticle,
+      applyPreferenceModelToArticle,
+      reconcileAutoHiddenArticles,
+    } = await import('./preferences');
+    const { ARTICLE_ANALYSIS_CONTENT_TYPES } = await import('./ai/prompts');
+    expect(ARTICLE_ANALYSIS_CONTENT_TYPES).toContain('obituary');
+
+    const db = getDb();
+    db.prepare('DELETE FROM user_preference_memory').run();
+    db.prepare('DELETE FROM user_interactions').run();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-norm', 'https://example.com/norm.xml', 'Norm', now, now);
+
+    const insertWithAi = (
+      id: string,
+      opts: {
+        title: string;
+        author: string;
+        categories?: string[];
+        topics?: string[];
+        contentType?: string;
+        signals?: string[];
+      },
+    ) => {
+      db.prepare(
+        'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, summary, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 50, ?, ?, ?)',
+      ).run(
+        id,
+        'feed-norm',
+        `https://example.com/${id}`,
+        opts.title,
+        opts.author,
+        'Plain summary.',
+        JSON.stringify(opts.categories ?? []),
+        now,
+        now,
+        now,
+      );
+      db.prepare(
+        `INSERT OR REPLACE INTO article_ai_metadata
+           (id, article_id, summary, topics, entities, content_type, ai_relevance_score, novelty_score, quality_score, likely_user_interest, signals, explanation, analysis_status, processed_at, created_at)
+         VALUES (?, ?, ?, ?, '[]', ?, 0.5, 0.5, 0.5, 'medium', ?, '', 'ready', ?, ?)`,
+      ).run(
+        `meta-${id}`,
+        id,
+        'Plain summary.',
+        JSON.stringify(opts.topics ?? []),
+        opts.contentType ?? 'news',
+        JSON.stringify(opts.signals ?? []),
+        now,
+        now,
+      );
+    };
+
+    insertWithAi('norm-1', {
+      title: 'Systems release notes for C++ and C#',
+      author: 'By Alice <alice@ex.com>, Bob (bob@ex.com) & Carol and Dave; Eve',
+      topics: ['C++', 'C#', 'F#', '.NET', 'Node.js', 'Café'],
+      contentType: 'release_note',
+      signals: ['primary_source', 'clickbait'],
+    });
+    insertWithAi('norm-2', {
+      title: 'Unrelated generic update',
+      author: 'Someone Else',
+      topics: ['unrelated'],
+      contentType: 'news',
+      signals: ['primary_source', 'concrete_update'],
+    });
+
+    updatePreferenceMemoryFromInteraction('norm-1', 'thumbs_down');
+
+    const memRows = db
+      .prepare('SELECT type, label, polarity FROM user_preference_memory')
+      .all() as Array<{ type: string; label: string; polarity: string }>;
+    const negLabels = memRows
+      .filter((r) => r.polarity === 'negative')
+      .map((r) => r.label);
+    expect(negLabels).toEqual(
+      expect.arrayContaining([
+        'topic:c_plus_plus',
+        'topic:c_sharp',
+        'topic:f_sharp',
+        'topic:dotnet',
+        'topic:nodejs',
+        'topic:café',
+        'content_type:release_note',
+        'author:alice',
+        'author:bob',
+        'author:carol',
+        'author:dave',
+        'signal:clickbait',
+      ]),
+    );
+    expect(negLabels).not.toContain('author:eve');
+    expect(negLabels).not.toContain('signal:primary_source');
+
+    // Positive vote must not reward negative quality signals or store news/other
+    updatePreferenceMemoryFromInteraction('norm-1', 'thumbs_up');
+    updatePreferenceMemoryFromInteraction('norm-2', 'thumbs_up');
+    const allLabels = new Set(
+      (
+        db.prepare('SELECT label FROM user_preference_memory').all() as Array<{
+          label: string;
+        }>
+      ).map((r) => r.label),
+    );
+    expect(allLabels).not.toContain('content_type:news');
+    expect(allLabels).not.toContain('content_type:other');
+
+    const posSignals = new Set(
+      (
+        db
+          .prepare(
+            "SELECT label FROM user_preference_memory WHERE polarity = 'positive' AND type = 'signal'",
+          )
+          .all() as Array<{ label: string }>
+      ).map((r) => r.label),
+    );
+    expect(posSignals).toContain('signal:primary_source');
+    expect(posSignals).not.toContain('signal:clickbait');
+
+    // Correlated features from a single downvote stay below peak evidence threshold 2.5
+    insertWithAi('single-down-target', {
+      title: 'Systems release notes for C++ and C#',
+      author: 'Alice',
+      topics: ['C++', 'C#', 'F#'],
+      contentType: 'release_note',
+      signals: ['clickbait'],
+    });
+    const singleState = getPreferenceStateForArticle('single-down-target');
+    expect(singleState.totalNegativeEvidence).toBeLessThanOrEqual(1);
+    applyPreferenceModelToArticle('single-down-target');
+    expect(
+      db
+        .prepare('SELECT hidden FROM articles WHERE id = ?')
+        .get('single-down-target'),
+    ).toEqual({ hidden: 0 });
+
+    // Reconcile unhides model-auto-hidden article when memory decreases, keeping manual hide
+    insertWithAi('auto-hidden-reconcile', {
+      title: 'Obituary: Test',
+      author: 'Writer',
+      topics: ['reconcile_me'],
+      contentType: 'obituary',
+    });
+    insertWithAi('manual-hidden-reconcile', {
+      title: 'Manual hide test',
+      author: 'Writer',
+      topics: ['reconcile_me'],
+      contentType: 'obituary',
+    });
+    db.prepare(
+      'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'pref-reconcile',
+      'topic:reconcile_me',
+      'topic',
+      'negative',
+      1.0,
+      4,
+      now,
+      '',
+      now,
+    );
+    db.prepare(
+      'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'pref-reconcile-obit',
+      'negative_filter:obituary',
+      'negative_filter',
+      'negative',
+      1.0,
+      4,
+      now,
+      '',
+      now,
+    );
+    db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(
+      'auto-hidden-reconcile',
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'auto-hide-evt',
+      'auto-hidden-reconcile',
+      'hide',
+      now,
+      '{"auto":true,"reason":"preference_model"}',
+    );
+    db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(
+      'manual-hidden-reconcile',
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('manual-hide-evt', 'manual-hidden-reconcile', 'hide', now, '{}');
+
+    expect(reconcileAutoHiddenArticles()).toBe(0);
+    db.prepare(
+      "DELETE FROM user_preference_memory WHERE id IN ('pref-reconcile', 'pref-reconcile-obit')",
+    ).run();
+    expect(reconcileAutoHiddenArticles()).toBe(1);
+    expect(
+      db
+        .prepare('SELECT hidden FROM articles WHERE id = ?')
+        .get('auto-hidden-reconcile'),
+    ).toEqual({ hidden: 0 });
+    expect(
+      db
+        .prepare('SELECT hidden FROM articles WHERE id = ?')
+        .get('manual-hidden-reconcile'),
+    ).toEqual({ hidden: 1 });
+  });
 });

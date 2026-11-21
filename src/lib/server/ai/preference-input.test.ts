@@ -118,4 +118,37 @@ describe('preference input experiments', () => {
       input.reader_profile.avoided_sources,
     );
   });
+
+  it('converts underscores to spaces in buildRankingPreferenceInput after stripping type prefixes', () => {
+    const input = state();
+    input.reader_profile.positive_preferences = [
+      {
+        type: 'topic',
+        value: 'topic:c_plus_plus',
+        strength: 0.9,
+        evidence_count: 5,
+      },
+      {
+        type: 'content_type',
+        value: 'content_type:release_note',
+        strength: 0.7,
+        evidence_count: 4,
+      },
+    ];
+    const output = buildRankingPreferenceInput(input);
+    expect(output.reader_profile.positive_preferences).toEqual([
+      {
+        type: 'topic',
+        value: 'c plus plus',
+        strength: 0.9,
+        evidence_count: 5,
+      },
+      {
+        type: 'content_type',
+        value: 'release note',
+        strength: 0.7,
+        evidence_count: 4,
+      },
+    ]);
+  });
 });

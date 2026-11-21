@@ -453,4 +453,135 @@ describe('selected ranking provider', () => {
     const { getRankingProvider } = await import('$lib/server/ranking-provider');
     expect(getRankingProvider()).toBe('jev');
   });
+
+  it('aligns decayed preference weights, polarity evidence counts, source signals, and blank feed title fallback', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { scoreArticleWithJev } = await import('./jev');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare('DELETE FROM user_preference_memory').run();
+    db.prepare('DELETE FROM user_interactions').run();
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-blank-title', 'https://blank.example.com/rss', '   ', now, now);
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-good', 'https://good.example.com/rss', 'Good Source', now, now);
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, content, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 50, ?, ?, ?)',
+    ).run(
+      'profile-candidate',
+      'feed-blank-title',
+      'https://blank.example.com/cand',
+      'Candidate Story',
+      'Summary',
+      'Content',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, content, thumbs_up, thumbs_down, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, 1, 50, ?, ?, ?)',
+    ).run(
+      'mixed-down-article',
+      'feed-blank-title',
+      'https://blank.example.com/down',
+      'Downvoted Open',
+      'Summary',
+      'Content',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, content, thumbs_up, thumbs_down, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 50, ?, ?, ?)',
+    ).run(
+      'liked-saved-article',
+      'feed-good',
+      'https://good.example.com/saved',
+      'Saved Liked Story',
+      'Summary',
+      'Content',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, content, thumbs_up, thumbs_down, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 50, ?, ?, ?)',
+    ).run(
+      'hidden-then-up-article',
+      'feed-good',
+      'https://good.example.com/up',
+      'Hidden Then Liked Story',
+      'Summary',
+      'Content',
+      now,
+      now,
+      now,
+    );
+
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('i-open-down', 'mixed-down-article', 'open', now - 1000, '{}');
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('i-down', 'mixed-down-article', 'thumbs_down', now, '{}');
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('i-save-liked', 'liked-saved-article', 'save', now, '{}');
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('i-hide-up', 'hidden-then-up-article', 'hide', now - 1000, '{}');
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('i-up-override', 'hidden-then-up-article', 'thumbs_up', now, '{}');
+
+    db.prepare(
+      'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run('m-pos', 'topic:systems', 'topic', 'positive', 0.8, 5, now, '', now);
+    db.prepare(
+      'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run('m-neg', 'topic:systems', 'topic', 'negative', 0.3, 20, now, '', now);
+
+    let sentState: Record<string, unknown> | null = null;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        state: Record<string, unknown>;
+      };
+      sentState = body.state;
+      return new Response(
+        JSON.stringify({ answers: { would_open: { noul: 0.7 } } }),
+        { status: 200 },
+      );
+    });
+
+    await scoreArticleWithJev('profile-candidate');
+    const state = sentState as unknown as {
+      candidate: { source: string };
+      reader_profile: {
+        positive_preferences: Array<{
+          type: string;
+          value: string;
+          strength: number;
+          evidence_count: number;
+        }>;
+        preferred_sources: Array<{ source: string; interactions: number }>;
+        avoided_sources: Array<{ source: string; interactions: number }>;
+      };
+    };
+    expect(state.candidate.source).toBe('https://blank.example.com/rss');
+    const sysPref = state.reader_profile.positive_preferences.find(
+      (p) => p.value === 'systems',
+    );
+    expect(sysPref).toBeDefined();
+    expect(sysPref!.evidence_count).toBe(5);
+    expect(sysPref!.strength).toBeCloseTo(0.5, 2);
+    expect(state.reader_profile.preferred_sources).toEqual([
+      { source: 'Good Source', interactions: 1 },
+    ]);
+    expect(state.reader_profile.avoided_sources).toEqual([
+      { source: 'https://blank.example.com/rss', interactions: 1 },
+    ]);
+  });
 });
