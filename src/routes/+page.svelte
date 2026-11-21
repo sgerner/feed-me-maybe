@@ -12,7 +12,12 @@
   };
 
   let { data: pageData } = $props<{
-    data: { articles: Article[]; totalPages: number };
+    data: {
+      articles: Article[];
+      initialHasMore: boolean;
+      page: number;
+      snapshotAt: number;
+    };
   }>();
 
   let articles = $state<Article[]>([]);
@@ -49,10 +54,13 @@
     {/if}
     <ArticleList
       bind:articles
-      totalPages={pageData.totalPages}
-      loadMoreSearchParams={pageData.category
-        ? { category: pageData.category }
-        : {}}
+      initialHasMore={pageData.initialHasMore}
+      initialPage={pageData.page}
+      liveUpdates
+      loadMoreSearchParams={{
+        ...(pageData.category ? { category: pageData.category } : {}),
+        snapshotAt: String(pageData.snapshotAt),
+      }}
     />
   {/key}
 </PullToRefresh>

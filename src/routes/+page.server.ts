@@ -15,31 +15,32 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     : '';
   const parameters = category ? [category] : [];
 
-  const page = parseInt(url.searchParams.get('page') || '1', 10);
+  const page = Math.max(
+    1,
+    parseInt(url.searchParams.get('page') || '1', 10) || 1,
+  );
   const limit = 25;
   const offset = (page - 1) * limit;
+  const snapshotAt = Date.now();
+  const whereClause =
+    'a.hidden = 0 AND a.thumbs_down = 0' +
+    conditions +
+    ' AND a.fetched_at <= ?';
 
-  const countResult = db
-    .prepare(
-      `SELECT COUNT(*) as count FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.hidden = 0 AND a.thumbs_down = 0${conditions}`,
-    )
-    .get(...parameters) as { count: number };
-  const totalArticles = countResult.count;
-  const totalPages = Math.ceil(totalArticles / limit);
-
-  const articles = queryGlobalArticleRanking(
+  const initialRows = queryGlobalArticleRanking(
     db,
-    'a.hidden = 0 AND a.thumbs_down = 0' + conditions,
-    parameters,
-    limit,
+    whereClause,
+    [...parameters, snapshotAt],
+    limit + 1,
     offset,
   );
+  const articles = initialRows.slice(0, limit);
 
   return {
     category,
     articles,
     page,
-    totalPages,
-    totalArticles,
+    initialHasMore: initialRows.length > limit,
+    snapshotAt,
   };
 };

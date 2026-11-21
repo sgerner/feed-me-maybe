@@ -28,15 +28,19 @@
       totalPages: number;
       totalArticles: number;
       category: string;
+      snapshotAt: number;
     };
   } = $props();
   let articles = $state<Article[]>([]);
+  let liveUnreadArticleCount = $state(0);
+  let unreadCount = $derived(data.totalArticles + liveUnreadArticleCount);
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(data.articles);
 
   $effect(() => {
     articles = loadedArticles;
+    liveUnreadArticleCount = 0;
   });
 
   onMount(() => {
@@ -71,9 +75,7 @@
         {data.category ? `${data.category} inbox` : 'Inbox'}
       </h1>
       <p class="section-subtitle">
-        {data.totalArticles} unread {data.totalArticles === 1
-          ? 'story'
-          : 'stories'}.
+        {unreadCount} unread {unreadCount === 1 ? 'story' : 'stories'}.
       </p>
     </div>
     <a href="/search?q=is%3Aunread" class="btn preset-tonal no-underline"
@@ -85,9 +87,15 @@
     <ArticleList
       bind:articles
       totalPages={data.totalPages}
+      liveUpdates
+      onLiveArticlesAdded={(count) => (liveUnreadArticleCount += count)}
       loadMoreSearchParams={data.category
-        ? { unread: '1', category: data.category }
-        : { unread: '1' }}
+        ? {
+            unread: '1',
+            category: data.category,
+            snapshotAt: String(data.snapshotAt),
+          }
+        : { unread: '1', snapshotAt: String(data.snapshotAt) }}
       emptyTitle="No unread stories"
       emptyMessage="You are all caught up."
       emptyCtaHref="/"
