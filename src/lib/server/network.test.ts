@@ -20,6 +20,8 @@ describe('safe server-side networking', () => {
     expect(isPrivateIpAddress('::1')).toBe(true);
     expect(isPrivateIpAddress('fc00::1')).toBe(true);
     expect(isPrivateIpAddress('::ffff:127.0.0.1')).toBe(true);
+    expect(isPrivateIpAddress('198.51.100.1')).toBe(true);
+    expect(isPrivateIpAddress('198.51.101.1')).toBe(false);
     expect(isPrivateIpAddress('1.1.1.1')).toBe(false);
   });
 

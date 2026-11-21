@@ -16,8 +16,4 @@ if [ "$#" -gt 0 ]; then
   esac
 fi
 
-if [ "$(id -u)" = "0" ]; then
-  chown -R node:node "$DB_DIR" 2>/dev/null || true
-fi
-
 exec "$@"
