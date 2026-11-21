@@ -14,6 +14,7 @@ const testDbPath = join(process.cwd(), 'data', 'test-ranking-freshness.db');
 const originalDbUrl = process.env.DATABASE_URL;
 const originalJevKey = process.env.JEV_API_KEY;
 const originalTypesafeKey = process.env.TYPESAFE_API_KEY;
+const originalSubqKey = process.env.SUBQ_API_KEY;
 
 vi.mock('node:dns/promises', () => ({
   default: {
@@ -34,6 +35,7 @@ describe('ranking freshness after explicit feedback', () => {
     vi.restoreAllMocks();
     process.env.JEV_API_KEY = 'test-jev-key';
     process.env.TYPESAFE_API_KEY = '';
+    process.env.SUBQ_API_KEY = '';
     const { getDb } = await import('$lib/server/db');
     const db = getDb();
     db.prepare('DELETE FROM ranking_refresh_queue').run();
@@ -60,6 +62,8 @@ describe('ranking freshness after explicit feedback', () => {
     else process.env.JEV_API_KEY = originalJevKey;
     if (originalTypesafeKey === undefined) delete process.env.TYPESAFE_API_KEY;
     else process.env.TYPESAFE_API_KEY = originalTypesafeKey;
+    if (originalSubqKey === undefined) delete process.env.SUBQ_API_KEY;
+    else process.env.SUBQ_API_KEY = originalSubqKey;
     for (const suffix of ['', '-wal', '-shm']) {
       if (existsSync(`${testDbPath}${suffix}`))
         unlinkSync(`${testDbPath}${suffix}`);
@@ -218,6 +222,51 @@ describe('ranking freshness after explicit feedback', () => {
         )
         .get(),
     ).toEqual({ n: 1 });
+  });
+
+  it('drains local refresh work when the ranking provider key is missing', async () => {
+    await article('missing-key-refresh');
+    process.env.JEV_API_KEY = '';
+    process.env.TYPESAFE_API_KEY = '';
+    const { getDb } = await import('$lib/server/db');
+    const { markArticleForRankingRefresh, flushRankingRefreshQueue } =
+      await import('./ranking-freshness');
+    const { getNextQueuedJobAt } = await import('./feed/job-queue');
+    const now = Date.now();
+
+    markArticleForRankingRefresh('missing-key-refresh', 1, now);
+
+    expect(getNextQueuedJobAt()).toBeLessThanOrEqual(Date.now());
+    await flushRankingRefreshQueue(now + 1);
+    expect(
+      getDb()
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('missing-key-refresh'),
+    ).toBeUndefined();
+  });
+
+  it('removes orphaned refresh rows before selecting due work', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.prepare(
+      'INSERT INTO ranking_refresh_queue (article_id, requested_revision, heuristic_revision, not_before, created_at) VALUES (?, ?, NULL, ?, ?)',
+    ).run('deleted-article', 1, now, now);
+    db.exec('PRAGMA foreign_keys = ON');
+
+    const { flushRankingRefreshQueue } = await import('./ranking-freshness');
+    await flushRankingRefreshQueue(now);
+
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('deleted-article'),
+    ).toBeUndefined();
   });
 
   it('defers repeated scoring during the persisted cooldown without losing feedback', async () => {

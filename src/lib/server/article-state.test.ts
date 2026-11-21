@@ -109,6 +109,57 @@ describe('article state foundation', () => {
     expect(getArticleState('state-b')?.hidden).toBe(false);
   });
 
+  it('records explicit hide intent on an auto-hidden article and reverses it safely', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { applyArticleState, getArticleState, undoArticleState } =
+      await import('./article-state');
+    const { hasExplicitHide, calculateHeuristicScore } =
+      await import('./preferences');
+    const db = getDb();
+    db.prepare(
+      "UPDATE articles SET hidden = 1, hidden_at = 100 WHERE id = 'state-a'",
+    ).run();
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'automatic-hide',
+      'state-a',
+      'hide',
+      100,
+      '{"auto":true,"reason":"preference_model"}',
+    );
+
+    const scoreBeforeHide = calculateHeuristicScore('state-a');
+    const firstHide = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'hide',
+      idempotencyKey: 'explicit-hide-after-auto-v1',
+    });
+    expect(firstHide.changes[0].changed).toBe(true);
+    expect(getArticleState('state-a')?.hidden).toBe(true);
+    expect(hasExplicitHide('state-a')).toBe(true);
+    expect(
+      (
+        db
+          .prepare("SELECT heuristic_score FROM articles WHERE id = 'state-a'")
+          .get() as { heuristic_score: number }
+      ).heuristic_score,
+    ).toBeLessThanOrEqual(scoreBeforeHide - 10);
+
+    const undone = undoArticleState({ operationId: firstHide.operationId });
+    expect(undone.restoredArticleIds).toEqual(['state-a']);
+    expect(getArticleState('state-a')?.hidden).toBe(true);
+    expect(hasExplicitHide('state-a')).toBe(false);
+
+    const hiddenAgain = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'hide',
+      idempotencyKey: 'explicit-hide-after-restore-v1',
+    });
+    expect(hiddenAgain.changes[0].changed).toBe(true);
+    expect(hasExplicitHide('state-a')).toBe(true);
+  });
+
   it('undoes a hide when a compatibility trigger fills an existing saved timestamp', async () => {
     const { getDb } = await import('$lib/server/db');
     const { applyArticleState, getArticleState, undoArticleState } =

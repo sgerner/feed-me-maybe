@@ -83,6 +83,7 @@ export const articles = sqliteTable(
     savedAt: integer('saved_at', { mode: 'timestamp' }),
     hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
     hiddenAt: integer('hidden_at', { mode: 'timestamp' }),
+    clearedAt: integer('cleared_at', { mode: 'timestamp' }),
     thumbsUp: integer('thumbs_up', { mode: 'boolean' })
       .notNull()
       .default(false),

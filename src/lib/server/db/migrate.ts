@@ -57,7 +57,7 @@ const migrations: Migration[] = [
               WHEN read = 1 THEN COALESCE(
                 (SELECT MAX(timestamp) FROM user_interactions
                  WHERE article_id = articles.id AND interaction_type IN ('read', 'open')),
-                COALESCE(updated_at, created_at, fetched_at)
+                COALESCE(NULLIF(updated_at, 0), NULLIF(created_at, 0), fetched_at)
               )
               ELSE NULL
             END,
@@ -65,7 +65,7 @@ const migrations: Migration[] = [
               WHEN saved = 1 THEN COALESCE(
                 (SELECT MAX(timestamp) FROM user_interactions
                  WHERE article_id = articles.id AND interaction_type = 'save'),
-                COALESCE(updated_at, created_at, fetched_at)
+                COALESCE(NULLIF(updated_at, 0), NULLIF(created_at, 0), fetched_at)
               )
               ELSE NULL
             END,
@@ -73,7 +73,7 @@ const migrations: Migration[] = [
               WHEN hidden = 1 THEN COALESCE(
                 (SELECT MAX(timestamp) FROM user_interactions
                  WHERE article_id = articles.id AND interaction_type = 'hide'),
-                COALESCE(updated_at, created_at, fetched_at)
+                COALESCE(NULLIF(updated_at, 0), NULLIF(created_at, 0), fetched_at)
               )
               ELSE NULL
             END,
@@ -82,7 +82,7 @@ const migrations: Migration[] = [
               WHEN thumbs_down = 1 THEN COALESCE(
                 (SELECT MAX(timestamp) FROM user_interactions
                  WHERE article_id = articles.id AND interaction_type = 'thumbs_down'),
-                COALESCE(updated_at, created_at, fetched_at)
+                COALESCE(NULLIF(updated_at, 0), NULLIF(created_at, 0), fetched_at)
               )
               ELSE NULL
             END
@@ -513,18 +513,18 @@ const migrations: Migration[] = [
     name: 'recovery_and_digest_article_indexes',
     apply: (db) => {
       db.exec(`
-        CREATE INDEX idx_articles_recovery_order
+        CREATE INDEX IF NOT EXISTS idx_articles_recovery_order
           ON articles (COALESCE(hidden_at, rejected_at, fetched_at) DESC, id DESC)
           WHERE hidden = 1 OR rejected = 1 OR thumbs_down = 1;
-        CREATE INDEX idx_articles_feed_recovery_order
+        CREATE INDEX IF NOT EXISTS idx_articles_feed_recovery_order
           ON articles (feed_id, COALESCE(hidden_at, rejected_at, fetched_at) DESC, id DESC)
           WHERE hidden = 1 OR rejected = 1 OR thumbs_down = 1;
-        UPDATE articles SET published_at = NULL WHERE published_at > fetched_at;
-        CREATE INDEX idx_articles_effective_publication
+        UPDATE articles SET published_at = NULL WHERE fetched_at > 0 AND published_at > fetched_at;
+        CREATE INDEX IF NOT EXISTS idx_articles_effective_publication
           ON articles (COALESCE(published_at, fetched_at));
-        CREATE INDEX idx_app_error_logs_created
+        CREATE INDEX IF NOT EXISTS idx_app_error_logs_created
           ON app_error_logs (created_at);
-        CREATE INDEX idx_jobs_prunable_completed
+        CREATE INDEX IF NOT EXISTS idx_jobs_prunable_completed
           ON jobs (completed_at)
           WHERE type IN ('feed_fetch', 'ai_process') AND status IN ('completed', 'failed');
       `);
@@ -576,76 +576,64 @@ export function initializeDatabase(): void {
     "CREATE TABLE IF NOT EXISTS feeds (id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT DEFAULT '', custom_title INTEGER NOT NULL DEFAULT 0, description TEXT DEFAULT '', site_url TEXT DEFAULT '', category TEXT DEFAULT '', icon_url TEXT DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, error_count INTEGER NOT NULL DEFAULT 0, last_fetch_status TEXT DEFAULT 'never', last_fetch_at INTEGER, last_error TEXT DEFAULT '', etag TEXT, last_modified_header TEXT, poll_interval_mins INTEGER DEFAULT 15, open_mode TEXT, last_changed_at INTEGER, fetch_count_since_change INTEGER DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
 
-  try {
-    db.prepare(
-      "ALTER TABLE feeds ADD COLUMN source_metadata TEXT DEFAULT '{}'",
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
-  try {
-    db.prepare(
-      'ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0',
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
-  try {
-    db.prepare(
-      "ALTER TABLE feeds ADD COLUMN source_type TEXT DEFAULT 'rss'",
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
-  try {
-    db.prepare(
-      'ALTER TABLE feeds ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0',
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
+  ensureColumn(db, 'feeds', 'source_metadata', "TEXT DEFAULT '{}'");
+  ensureColumn(db, 'feeds', 'custom_title', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'feeds', 'source_type', "TEXT DEFAULT 'rss'");
+  ensureColumn(db, 'feeds', 'use_proxy', 'INTEGER NOT NULL DEFAULT 0');
 
   db.prepare(
     "CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT '', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', author TEXT DEFAULT '', summary TEXT DEFAULT '', content TEXT DEFAULT '', image_url TEXT DEFAULT '', categories TEXT DEFAULT '', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   ).run();
-  try {
-    db.prepare(
-      "ALTER TABLE articles ADD COLUMN external_url TEXT DEFAULT ''",
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
-  try {
-    db.prepare(
-      'ALTER TABLE articles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0',
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
+  // Feed clearing is a non-destructive hide operation. Keep a marker so these
+  // rows do not crowd the reader's recovery queue.
+  ensureColumn(db, 'articles', 'cleared_at', 'INTEGER');
+  ensureColumn(db, 'articles', 'external_url', "TEXT DEFAULT ''");
+  ensureColumn(db, 'articles', 'updated_at', 'INTEGER NOT NULL DEFAULT 0');
   db.prepare(
     "CREATE TABLE IF NOT EXISTS article_ai_metadata (id TEXT PRIMARY KEY, article_id TEXT NOT NULL UNIQUE REFERENCES articles(id) ON DELETE CASCADE, summary TEXT DEFAULT '', topics TEXT DEFAULT '[]', entities TEXT DEFAULT '[]', content_type TEXT DEFAULT '', ai_relevance_score REAL DEFAULT 0, novelty_score REAL DEFAULT 0, quality_score REAL DEFAULT 0, likely_user_interest TEXT DEFAULT '', signals TEXT DEFAULT '[]', explanation TEXT DEFAULT '', analysis_status TEXT NOT NULL DEFAULT 'pending', analysis_error TEXT NOT NULL DEFAULT '', processed_at INTEGER, created_at INTEGER NOT NULL)",
   ).run();
-  try {
-    db.prepare(
-      'ALTER TABLE article_ai_metadata DROP COLUMN positive_signals',
-    ).run();
-  } catch {
-    /* Legacy databases may not have this column. */
-  }
-  try {
-    db.prepare(
-      'ALTER TABLE article_ai_metadata DROP COLUMN negative_signals',
-    ).run();
-  } catch {
-    /* Legacy databases may not have this column. */
-  }
-  try {
-    db.prepare(
-      "ALTER TABLE article_ai_metadata ADD COLUMN signals TEXT DEFAULT '[]'",
-    ).run();
-  } catch {
-    /* Existing databases already have this column. */
-  }
+  db.transaction(() => {
+    ensureColumn(db, 'article_ai_metadata', 'signals', "TEXT DEFAULT '[]'");
+    const hasPositive = hasColumn(
+      db,
+      'article_ai_metadata',
+      'positive_signals',
+    );
+    const hasNegative = hasColumn(
+      db,
+      'article_ai_metadata',
+      'negative_signals',
+    );
+    if (!hasPositive && !hasNegative) return;
+    const rows = db
+      .prepare(
+        `SELECT id, ${hasPositive ? 'positive_signals' : 'NULL'} AS positive,
+                  ${hasNegative ? 'negative_signals' : 'NULL'} AS negative
+       FROM article_ai_metadata WHERE signals IS NULL OR signals IN ('', '[]')`,
+      )
+      .all() as Array<{
+      id: string;
+      positive: string | null;
+      negative: string | null;
+    }>;
+    const update = db.prepare(
+      'UPDATE article_ai_metadata SET signals = ? WHERE id = ?',
+    );
+    for (const { id, positive, negative } of rows) {
+      const signals = normalizeTextArray(
+        [
+          ...normalizeTextArray(parseStoredValue(positive), 8).map(
+            (value) => `Positive: ${value}`,
+          ),
+          ...normalizeTextArray(parseStoredValue(negative), 8).map(
+            (value) => `Negative: ${value}`,
+          ),
+        ],
+        8,
+      );
+      if (signals.length) update.run(JSON.stringify(signals), id);
+    }
+  })();
   db.prepare(
     "CREATE TABLE IF NOT EXISTS feed_fetch_logs (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'pending', articles_found INTEGER DEFAULT 0, articles_new INTEGER DEFAULT 0, error_message TEXT DEFAULT '', started_at INTEGER, completed_at INTEGER, created_at INTEGER NOT NULL)",
   ).run();
