@@ -599,4 +599,148 @@ describe('ranking freshness after explicit feedback', () => {
     });
     expect(feedbackResult.refreshedArticleIds).not.toContain('hidden-unscored');
   });
+
+  it('routes save and hide through cohort invalidation and forwards visibleArticleIds from state POST', async () => {
+    await article('cohort-source');
+    await article('cohort-sibling');
+    await article('cohort-visible', {
+      title: 'Unrelated obituary',
+      ageDays: 100,
+    });
+    const { getDb } = await import('$lib/server/db');
+    const { POST } = await import('../../routes/api/articles/state/+server');
+    const { getRankingFeedbackRevision } = await import('./ranking-freshness');
+
+    const beforeRev = getRankingFeedbackRevision();
+    const res = await POST({
+      request: new Request('http://localhost/api/articles/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save',
+          articleId: 'cohort-source',
+          visibleArticleIds: ['cohort-visible'],
+          idempotencyKey: 'save-cohort-1',
+        }),
+      }),
+      locals: { sessionId: 'test-sess' },
+    } as never);
+    expect(res.status).toBe(200);
+    expect(getRankingFeedbackRevision()).toBe(beforeRev + 1);
+    const db = getDb();
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .get('cohort-sibling'),
+    ).toEqual({ jev_score: null });
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .get('cohort-visible'),
+    ).toEqual({ jev_score: null });
+
+    const { applyArticleState } = await import('./article-state');
+    db.prepare('UPDATE articles SET jev_score = 0.8 WHERE id = ?').run(
+      'cohort-sibling',
+    );
+    applyArticleState({
+      articleIds: ['cohort-source'],
+      action: 'hide',
+      idempotencyKey: 'hide-cohort-1',
+    });
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .get('cohort-sibling'),
+    ).toEqual({ jev_score: null });
+  });
+
+  it('excludes paused feeds from feedback refresh targets, queue flushing, and preserves older saved heuristics on global mutation', async () => {
+    await article('enabled-art');
+    const { getDb } = await import('$lib/server/db');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run('paused-feed', 'https://paused.example.com/rss', 'Paused', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, categories, jev_score, heuristic_score, saved, fetched_at, created_at, updated_at)
+       VALUES ('paused-art', 'paused-feed', 'https://paused.example.com/1', 'Science story', '["Science"]', 0.8, 50, 0, ?, ?, ?)`,
+    ).run(now, now, now);
+    const enabledFeedId = (
+      db
+        .prepare('SELECT feed_id FROM articles WHERE id = ?')
+        .get('enabled-art') as { feed_id: string }
+    ).feed_id;
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, categories, jev_score, heuristic_score, saved, fetched_at, created_at, updated_at)
+       VALUES ('old-saved-art', ?, 'https://example.com/old-saved', 'Science bookmark', '["Science"]', 0.8, 50, 1, ?, ?, ?)`,
+    ).run(enabledFeedId, now - 90 * 24 * 60 * 60 * 1000, now, now);
+    db.prepare(
+      'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'pref-sci',
+      'topic:science',
+      'topic',
+      'positive',
+      0.9,
+      5,
+      now,
+      '',
+      now,
+    );
+
+    const {
+      refreshRankingAfterFeedback,
+      flushRankingRefreshQueue,
+      refreshRankingAfterGlobalProfileMutation,
+    } = await import('./ranking-freshness');
+
+    const fb = refreshRankingAfterFeedback({
+      articleIds: ['enabled-art'],
+      type: 'thumbs_up',
+      visibleArticleIds: ['paused-art'],
+    });
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('paused-art'),
+    ).toBeUndefined();
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .get('paused-art'),
+    ).toEqual({ jev_score: 0.8 });
+
+    // Even if a paused row were in ranking_refresh_queue, flush deletes it without queueing Jev
+    db.prepare(
+      'INSERT INTO ranking_refresh_queue (article_id, requested_revision, heuristic_revision, not_before, created_at) VALUES (?, 1, 1, ?, ?)',
+    ).run('paused-art', now - 1000, now - 1000);
+    await flushRankingRefreshQueue(now);
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('paused-art'),
+    ).toBeUndefined();
+    expect(fb.revision).toBeGreaterThan(0);
+
+    // Global profile mutation excludes paused feeds from refresh queue and retains older bookmark heuristic adjustments
+    refreshRankingAfterGlobalProfileMutation();
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('paused-art'),
+    ).toBeUndefined();
+    const savedRow = db
+      .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+      .get('old-saved-art') as { heuristic_score: number };
+    expect(savedRow.heuristic_score).toBeGreaterThan(60);
+  });
 });

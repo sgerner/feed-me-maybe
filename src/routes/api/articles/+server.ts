@@ -28,7 +28,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
       ? Number(rawOffset)
       : (page - 1) * limit;
 
-  let whereClause = 'a.hidden = 0 AND a.thumbs_down = 0';
+  let whereClause = 'f.enabled = 1 AND a.hidden = 0 AND a.thumbs_down = 0';
   const params: unknown[] = [];
 
   if (feedId && !unreadOnly && !isArticleIdRequest) {
@@ -38,7 +38,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
   }
   const category = url.searchParams.get('category');
   if (category) {
-    whereClause += ' AND TRIM(f.category) = ? AND f.enabled = 1';
+    whereClause += ' AND TRIM(f.category) = ?';
     params.push(category);
   }
 

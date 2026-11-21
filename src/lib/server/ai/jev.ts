@@ -143,7 +143,8 @@ function getReaderProfile(): Record<string, unknown> {
       label: string;
       positive: number;
       negative: number;
-      evidenceCount: number;
+      positiveEvidenceCount: number;
+      negativeEvidenceCount: number;
     }
   >();
 
@@ -157,22 +158,31 @@ function getReaderProfile(): Record<string, unknown> {
       label,
       positive: 0,
       negative: 0,
-      evidenceCount: 0,
+      positiveEvidenceCount: 0,
+      negativeEvidenceCount: 0,
     };
-    const weighted =
-      decayedStrength(row.strength, row.last_reinforced) *
-      (1 + Math.log1p(Math.max(0, Number(row.evidence_count || 0))));
-    if (row.polarity === 'negative') current.negative += weighted;
-    else current.positive += weighted;
-    current.evidenceCount += Number(row.evidence_count || 0);
+    const decayed = decayedStrength(row.strength, row.last_reinforced);
+    const evidence = Math.max(0, Number(row.evidence_count || 0));
+    if (row.polarity === 'negative') {
+      current.negative += decayed;
+      current.negativeEvidenceCount += evidence;
+    } else {
+      current.positive += decayed;
+      current.positiveEvidenceCount += evidence;
+    }
     grouped.set(key, current);
   }
 
   const preferences = [...grouped.values()]
-    .map((item) => ({
-      ...item,
-      net: item.positive - item.negative,
-    }))
+    .map((item) => {
+      const net = item.positive - item.negative;
+      return {
+        ...item,
+        net,
+        evidenceCount:
+          net >= 0 ? item.positiveEvidenceCount : item.negativeEvidenceCount,
+      };
+    })
     .filter((item) => Math.abs(item.net) >= 0.08);
 
   const formatPreference = (item: (typeof preferences)[number]) => ({
@@ -196,12 +206,14 @@ function getReaderProfile(): Record<string, unknown> {
   const sourceRows = db
     .prepare(
       `
-        SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source,
+        SELECT COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS source,
                COUNT(DISTINCT a.id) AS interaction_count
         FROM user_interactions ui
         JOIN articles a ON a.id = ui.article_id
         JOIN feeds f ON f.id = a.feed_id
-        WHERE ui.interaction_type IN ('open', 'read')
+        WHERE ui.interaction_type IN ('open', 'read', 'thumbs_up', 'boost', 'save')
+          AND COALESCE(a.thumbs_down, 0) = 0
+          AND COALESCE(a.rejected, 0) = 0
           AND COALESCE(
             json_extract(
               CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
@@ -209,6 +221,28 @@ function getReaderProfile(): Record<string, unknown> {
             ),
             0
           ) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM user_interactions ui_neg
+            WHERE ui_neg.article_id = a.id
+              AND ui_neg.interaction_type IN ('thumbs_down', 'hide')
+              AND COALESCE(
+                json_extract(
+                  CASE WHEN json_valid(ui_neg.metadata) THEN ui_neg.metadata ELSE '{}' END,
+                  '$.undone_at'
+                ),
+                0
+              ) = 0
+              AND (
+                ui_neg.interaction_type = 'thumbs_down'
+                OR COALESCE(
+                  json_extract(
+                    CASE WHEN json_valid(ui_neg.metadata) THEN ui_neg.metadata ELSE '{}' END,
+                    '$.auto'
+                  ),
+                  0
+                ) = 0
+              )
+          )
         GROUP BY f.id
         ORDER BY interaction_count DESC
         LIMIT 5
@@ -218,12 +252,13 @@ function getReaderProfile(): Record<string, unknown> {
   const avoidedSourceRows = db
     .prepare(
       `
-        SELECT COALESCE(NULLIF(f.title, ''), f.url) AS source,
+        SELECT COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS source,
                COUNT(DISTINCT a.id) AS interaction_count
         FROM user_interactions ui
         JOIN articles a ON a.id = ui.article_id
         JOIN feeds f ON f.id = a.feed_id
         WHERE ui.interaction_type IN ('thumbs_down', 'hide')
+          AND COALESCE(a.thumbs_up, 0) = 0
           AND COALESCE(
             json_extract(
               CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END,
@@ -268,7 +303,7 @@ function getArticle(articleId: string): ArticleJevRow | undefined {
       `
         SELECT a.title, a.summary, a.content, a.author, a.categories,
                a.published_at, a.fetched_at,
-               f.title AS feed_title, f.category AS feed_category,
+               COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS feed_title, f.category AS feed_category,
                am.summary AS ai_summary, am.analysis_status AS ai_analysis_status,
                am.processed_at AS ai_processed_at, am.topics AS ai_topics,
                am.entities AS ai_entities, am.content_type AS ai_content_type,

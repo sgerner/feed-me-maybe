@@ -6,6 +6,7 @@ import {
 } from '$lib/server/ranking-provider';
 import { isRankingProviderConfigured } from '$lib/server/ai/jev';
 import { refreshCombinedScore } from '$lib/server/scoring';
+import { reconcileAutoHiddenArticles } from '$lib/server/preferences';
 import {
   getRankingFeedbackRevision,
   refreshRankingAfterGlobalProfileMutation,
@@ -99,8 +100,9 @@ export function applySettingsMutation(
 
   if (key === 'reset_training' && value === 'true') {
     db.transaction(() => {
-      db.prepare('DELETE FROM user_interactions').run();
       db.prepare('DELETE FROM user_preference_memory').run();
+      reconcileAutoHiddenArticles();
+      db.prepare('DELETE FROM user_interactions').run();
       refreshRankingAfterGlobalProfileMutation();
     }).immediate();
     return { success: true, message: 'Training data reset' };
@@ -113,7 +115,10 @@ export function applySettingsMutation(
       const deleted = db
         .prepare('DELETE FROM user_preference_memory WHERE id = ?')
         .run(prefId);
-      if (deleted.changes > 0) refreshRankingAfterGlobalProfileMutation();
+      if (deleted.changes > 0) {
+        reconcileAutoHiddenArticles();
+        refreshRankingAfterGlobalProfileMutation();
+      }
     }).immediate();
     return { success: true, message: 'Preference deleted' };
   }

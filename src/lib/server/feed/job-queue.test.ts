@@ -1325,4 +1325,42 @@ describe('feed job queue', () => {
         .get('old-backfill-tombstone'),
     ).toBeDefined();
   });
+
+  it('skips paused feeds when enqueueing or executing AI and Jev jobs', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const {
+      enqueueAiProcess,
+      enqueueAiBackfill,
+      enqueueJevProcess,
+      enqueueJevBackfill,
+      runDueJobs,
+      getJob,
+    } = await import('./job-queue');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run(
+      'feed-paused-jq',
+      'https://paused-jq.example.com/rss',
+      'Paused',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES ('paused-jq-art', 'feed-paused-jq', 'https://paused-jq.example.com/1', 'Paused Art', 'Summary text long enough', 'Detailed body content long enough for AI analysis.', ?, ?, ?)`,
+    ).run(now, now, now);
+
+    expect(enqueueJevProcess('paused-jq-art', { now })).toBeNull();
+    expect(enqueueJevBackfill({ now })).toBe(0);
+    expect(enqueueAiBackfill({ now })).toBe(0);
+
+    // Pre-existing queued jobs for paused feed are skipped cleanly at execution
+    const queuedAi = enqueueAiProcess('paused-jq-art', { now })!;
+    expect(queuedAi).toBeTruthy();
+    await runDueJobs({ now: now + 1, maxJobs: 5 });
+    expect(aiMocks.processArticle).not.toHaveBeenCalledWith('paused-jq-art');
+    expect(getJob(queuedAi.id)?.status).toBe('completed');
+  });
 });

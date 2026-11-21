@@ -650,7 +650,10 @@ export function applyArticleState(
     const feedbackType =
       input.action === 'reject'
         ? 'thumbs_down'
-        : input.action === 'thumbs_up' || input.action === 'boost'
+        : input.action === 'thumbs_up' ||
+            input.action === 'boost' ||
+            input.action === 'save' ||
+            input.action === 'hide'
           ? input.action
           : null;
     if (feedbackType) {
@@ -669,11 +672,7 @@ export function applyArticleState(
         });
       }
     }
-    if (
-      input.action === 'read' ||
-      input.action === 'save' ||
-      input.action === 'hide'
-    ) {
+    if (input.action === 'read') {
       const insertInteraction = db.prepare(
         'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
       );
@@ -953,6 +952,8 @@ export function getUnreadCounts(): UnreadCounts {
         COALESCE(SUM(CASE WHEN a.read = 0 AND a.saved = 1 THEN 1 ELSE 0 END), 0) AS saved_unread,
         COALESCE(SUM(CASE WHEN a.read = 0 AND (a.thumbs_down = 1 OR a.rejected = 1) THEN 1 ELSE 0 END), 0) AS rejected_unread
       FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
+      WHERE f.enabled = 1
     `,
     )
     .get() as Record<string, number>;
@@ -965,6 +966,7 @@ export function getUnreadCounts(): UnreadCounts {
              COALESCE(SUM(CASE WHEN a.read = 0 AND a.hidden = 0 THEN 1 ELSE 0 END), 0) AS visible_unread,
              COALESCE(SUM(CASE WHEN a.read = 0 AND a.hidden = 1 THEN 1 ELSE 0 END), 0) AS hidden_unread
       FROM feeds f LEFT JOIN articles a ON a.feed_id = f.id
+      WHERE f.enabled = 1
       GROUP BY f.id, f.title, f.category
       HAVING unread > 0
       ORDER BY unread DESC, lower(feed_title) ASC
@@ -1000,17 +1002,20 @@ export type ArticleStateCounts = {
 
 export function getArticleStateCounts(feedId?: string): ArticleStateCounts {
   const db = getDb();
-  const where = feedId ? 'WHERE feed_id = ?' : '';
+  const where = feedId
+    ? 'WHERE f.enabled = 1 AND a.feed_id = ?'
+    : 'WHERE f.enabled = 1';
   const row = db
     .prepare(
       `
       SELECT COUNT(*) AS total,
-             COALESCE(SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END), 0) AS unread,
-             COALESCE(SUM(CASE WHEN read = 1 THEN 1 ELSE 0 END), 0) AS read,
-             COALESCE(SUM(CASE WHEN saved = 1 THEN 1 ELSE 0 END), 0) AS saved,
-             COALESCE(SUM(CASE WHEN hidden = 1 THEN 1 ELSE 0 END), 0) AS hidden,
-             COALESCE(SUM(CASE WHEN rejected = 1 OR thumbs_down = 1 THEN 1 ELSE 0 END), 0) AS rejected
-      FROM articles
+             COALESCE(SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END), 0) AS unread,
+             COALESCE(SUM(CASE WHEN a.read = 1 THEN 1 ELSE 0 END), 0) AS read,
+             COALESCE(SUM(CASE WHEN a.saved = 1 THEN 1 ELSE 0 END), 0) AS saved,
+             COALESCE(SUM(CASE WHEN a.hidden = 1 THEN 1 ELSE 0 END), 0) AS hidden,
+             COALESCE(SUM(CASE WHEN a.rejected = 1 OR a.thumbs_down = 1 THEN 1 ELSE 0 END), 0) AS rejected
+      FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
       ${where}
     `,
     )

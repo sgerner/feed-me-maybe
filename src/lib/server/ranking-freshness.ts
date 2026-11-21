@@ -21,7 +21,7 @@ export const RANKING_REFRESH_RATE_LIMIT_MS = 10_000;
 
 type FeedbackType = Extract<
   InteractionType,
-  'thumbs_up' | 'thumbs_down' | 'boost'
+  'thumbs_up' | 'thumbs_down' | 'boost' | 'save' | 'hide'
 >;
 
 function parseRevision(value: string | null | undefined): number {
@@ -61,12 +61,16 @@ function normalizeIds(values: unknown, limit: number): string[] {
   return [...unique];
 }
 
-function getExistingIds(ids: string[]): string[] {
+function getExistingIds(ids: string[], enabledOnly = false): string[] {
   if (!ids.length) return [];
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT id FROM articles WHERE id IN (${ids.map(() => '?').join(', ')})`,
+      enabledOnly
+        ? `SELECT a.id FROM articles a
+           JOIN feeds f ON f.id = a.feed_id
+           WHERE f.enabled = 1 AND a.id IN (${ids.map(() => '?').join(', ')})`
+        : `SELECT id FROM articles WHERE id IN (${ids.map(() => '?').join(', ')})`,
     )
     .all(...ids) as Array<{ id: string }>;
   const found = new Set(rows.map((row) => row.id));
@@ -84,16 +88,20 @@ function getFeedbackTargets(
   const interactedIds = getExistingIds(articleIds);
   const visibleIds = getExistingIds(
     normalizeIds(visibleArticleIds, VISIBLE_ARTICLE_LIMIT),
+    true,
   );
   const processingRows = db
     .prepare(
-      `SELECT json_extract(payload, '$.articleId') AS article_id
-       FROM jobs
-       WHERE type = 'jev_process' AND status = 'processing'
-         AND started_at IS NOT NULL
-         AND json_valid(payload) = 1
-         AND json_type(payload, '$.articleId') = 'text'
-       ORDER BY started_at ASC LIMIT 4`,
+      `SELECT json_extract(j.payload, '$.articleId') AS article_id
+       FROM jobs j
+       JOIN articles a ON a.id = json_extract(j.payload, '$.articleId')
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE j.type = 'jev_process' AND j.status = 'processing'
+         AND j.started_at IS NOT NULL
+         AND json_valid(j.payload) = 1
+         AND json_type(j.payload, '$.articleId') = 'text'
+         AND f.enabled = 1
+       ORDER BY j.started_at ASC LIMIT 4`,
     )
     .all() as Array<{ article_id: string }>;
   const processingIds = processingRows.map((row) => row.article_id);
@@ -101,26 +109,30 @@ function getFeedbackTargets(
   const recentCutoff = now - RECENT_ARTICLE_WINDOW_MS;
   const unscoredRows = db
     .prepare(
-      `SELECT id FROM articles
-       WHERE jev_score IS NULL
-         AND COALESCE(hidden, 0) = 0
-         AND COALESCE(rejected, 0) = 0
-         AND COALESCE(thumbs_down, 0) = 0
-         AND fetched_at >= ?
-       ORDER BY fetched_at DESC, id DESC
+      `SELECT a.id FROM articles a
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE f.enabled = 1
+         AND a.jev_score IS NULL
+         AND COALESCE(a.hidden, 0) = 0
+         AND COALESCE(a.rejected, 0) = 0
+         AND COALESCE(a.thumbs_down, 0) = 0
+         AND a.fetched_at >= ?
+       ORDER BY a.fetched_at DESC, a.id DESC
        LIMIT ?`,
     )
     .all(recentCutoff, RECENT_UNSCORED_LIMIT) as Array<{ id: string }>;
 
   const affectedRows = db
     .prepare(
-      `SELECT id, feed_id FROM articles
-       WHERE jev_score IS NOT NULL
-         AND COALESCE(hidden, 0) = 0
-         AND COALESCE(rejected, 0) = 0
-         AND COALESCE(thumbs_down, 0) = 0
-         AND fetched_at >= ?
-       ORDER BY fetched_at DESC, id DESC
+      `SELECT a.id, a.feed_id FROM articles a
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE f.enabled = 1
+         AND a.jev_score IS NOT NULL
+         AND COALESCE(a.hidden, 0) = 0
+         AND COALESCE(a.rejected, 0) = 0
+         AND COALESCE(a.thumbs_down, 0) = 0
+         AND a.fetched_at >= ?
+       ORDER BY a.fetched_at DESC, a.id DESC
        LIMIT ?`,
     )
     .all(recentCutoff, RECENT_AFFECTED_SCAN_LIMIT) as Array<{
@@ -132,7 +144,7 @@ function getFeedbackTargets(
     ? getPreferenceFeatureKeysForArticles(affectedRows.map((row) => row.id))
     : new Map<string, Set<string>>();
   const feedIds =
-    type === 'thumbs_down' && interactedIds.length
+    (type === 'thumbs_down' || type === 'hide') && interactedIds.length
       ? new Set(
           (
             db
@@ -301,34 +313,39 @@ export function refreshRankingAfterFeedback(input: {
     input.type,
     now,
   );
+  const enabledTargetIds = getExistingIds(targetIds, true);
   const refreshTargets = db.transaction(() => {
-    db.prepare(
-      `INSERT INTO ranking_refresh_queue
-         (article_id, requested_revision, heuristic_revision, not_before, created_at)
-       SELECT id, ?, NULL, MAX(?, COALESCE(ranking_refreshed_at, 0) + ?), ?
-       FROM articles WHERE id IN (SELECT value FROM json_each(?))
-       ON CONFLICT(article_id) DO UPDATE SET
-         requested_revision = MAX(ranking_refresh_queue.requested_revision, excluded.requested_revision),
-         not_before = MAX(ranking_refresh_queue.not_before, excluded.not_before)`,
-    ).run(
-      revision,
-      now,
-      RANKING_REFRESH_RATE_LIMIT_MS,
-      now,
-      JSON.stringify(targetIds),
-    );
-    db.prepare(
-      `UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '', combined_score = NULL
-       WHERE id IN (SELECT value FROM json_each(?))`,
-    ).run(JSON.stringify(targetIds));
+    if (enabledTargetIds.length) {
+      db.prepare(
+        `INSERT INTO ranking_refresh_queue
+           (article_id, requested_revision, heuristic_revision, not_before, created_at)
+         SELECT id, ?, NULL, MAX(?, COALESCE(ranking_refreshed_at, 0) + ?), ?
+         FROM articles WHERE id IN (SELECT value FROM json_each(?))
+         ON CONFLICT(article_id) DO UPDATE SET
+           requested_revision = MAX(ranking_refresh_queue.requested_revision, excluded.requested_revision),
+           not_before = MAX(ranking_refresh_queue.not_before, excluded.not_before)`,
+      ).run(
+        revision,
+        now,
+        RANKING_REFRESH_RATE_LIMIT_MS,
+        now,
+        JSON.stringify(enabledTargetIds),
+      );
+      db.prepare(
+        `UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '', combined_score = NULL
+         WHERE id IN (SELECT value FROM json_each(?))`,
+      ).run(JSON.stringify(enabledTargetIds));
+    }
     for (const articleId of targetIds) updateHeuristicScore(articleId);
-    db.prepare(
-      `UPDATE ranking_refresh_queue SET heuristic_revision = ?
-       WHERE requested_revision = ? AND article_id IN (SELECT value FROM json_each(?))`,
-    ).run(revision, revision, JSON.stringify(targetIds));
+    if (enabledTargetIds.length) {
+      db.prepare(
+        `UPDATE ranking_refresh_queue SET heuristic_revision = ?
+         WHERE requested_revision = ? AND article_id IN (SELECT value FROM json_each(?))`,
+      ).run(revision, revision, JSON.stringify(enabledTargetIds));
+    }
   });
   refreshTargets.immediate();
-  wakePoller();
+  if (enabledTargetIds.length) wakePoller();
 
   return { revision, refreshedArticleIds: targetIds };
 }
@@ -356,7 +373,8 @@ export async function flushRankingRefreshQueue(
               q.not_before, a.feed_id
        FROM ranking_refresh_queue q
        JOIN articles a ON a.id = q.article_id
-       WHERE (? = 0 OR q.not_before <= ?)
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE (? = 0 OR f.enabled = 0 OR q.not_before <= ?)
        ORDER BY q.created_at ASC, q.article_id ASC
        LIMIT ?`,
     )
@@ -380,11 +398,13 @@ export async function flushRankingRefreshQueue(
     const revision = Number(row.requested_revision || 0);
     const activeArticle = db
       .prepare(
-        `SELECT 1 FROM articles
-         WHERE id = ?
-           AND COALESCE(hidden, 0) = 0
-           AND COALESCE(rejected, 0) = 0
-           AND COALESCE(thumbs_down, 0) = 0`,
+        `SELECT 1 FROM articles a
+         JOIN feeds f ON f.id = a.feed_id
+         WHERE a.id = ?
+           AND f.enabled = 1
+           AND COALESCE(a.hidden, 0) = 0
+           AND COALESCE(a.rejected, 0) = 0
+           AND COALESCE(a.thumbs_down, 0) = 0`,
       )
       .get(row.article_id);
     if (!activeArticle) {
@@ -525,12 +545,26 @@ export function refreshRankingAfterGlobalProfileMutation(): {
 
       const articles = db
         .prepare(
-          `SELECT id FROM articles
-           WHERE fetched_at >= ? AND hidden = 0 AND thumbs_down = 0 AND rejected = 0
-           ORDER BY fetched_at DESC, id DESC
+          `SELECT a.id FROM articles a
+           JOIN feeds f ON f.id = a.feed_id
+           WHERE a.fetched_at >= ? AND f.enabled = 1 AND a.hidden = 0 AND a.thumbs_down = 0 AND a.rejected = 0
+           ORDER BY a.fetched_at DESC, a.id DESC
            LIMIT ?`,
         )
         .all(activeCutoff, RECENT_AFFECTED_SCAN_LIMIT) as Array<{ id: string }>;
+
+      const recentSet = new Set(articles.map((row) => row.id));
+      const savedArticles = db
+        .prepare(
+          `SELECT id FROM articles
+           WHERE saved = 1 AND hidden = 0 AND thumbs_down = 0 AND rejected = 0`,
+        )
+        .all() as Array<{ id: string }>;
+      for (const { id } of savedArticles) {
+        if (!recentSet.has(id)) {
+          updateHeuristicScore(id);
+        }
+      }
 
       for (const { id } of articles) {
         updateHeuristicScore(id);

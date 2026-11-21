@@ -13,7 +13,7 @@ export const load: PageServerLoad = async ({ locals }) => {
       SELECT f.id, f.url, f.title, f.custom_title, f.category, f.icon_url,
              f.enabled, f.error_count, f.last_fetch_status, f.last_fetch_at,
              f.last_error, f.poll_interval_mins, f.updated_at,
-             COUNT(CASE WHEN a.read = 0 AND a.hidden = 0 THEN 1 END) AS unread_count,
+             COUNT(CASE WHEN a.read = 0 AND a.hidden = 0 AND a.thumbs_down = 0 THEN 1 END) AS unread_count,
              COUNT(CASE WHEN a.hidden = 0 THEN 1 END) AS visible_count,
              COUNT(a.id) AS article_count
       FROM feeds f

@@ -35,6 +35,7 @@ export const ARTICLE_ANALYSIS_CONTENT_TYPES = [
   'podcast',
   'video',
   'essay',
+  'obituary',
   'other',
 ] as const;
 

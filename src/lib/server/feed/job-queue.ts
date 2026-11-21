@@ -469,11 +469,13 @@ export function enqueueJevProcess(
   const db = getDb();
   const isActiveArticle = db
     .prepare(
-      `SELECT 1 FROM articles
-       WHERE id = ?
-         AND COALESCE(hidden, 0) = 0
-         AND COALESCE(rejected, 0) = 0
-         AND COALESCE(thumbs_down, 0) = 0`,
+      `SELECT 1 FROM articles a
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE a.id = ?
+         AND f.enabled = 1
+         AND COALESCE(a.hidden, 0) = 0
+         AND COALESCE(a.rejected, 0) = 0
+         AND COALESCE(a.thumbs_down, 0) = 0`,
     )
     .get(articleId);
   if (!isActiveArticle) return null;
@@ -617,7 +619,9 @@ export function enqueueJevBackfill(
                     AND COALESCE(j.completed_at, j.created_at) <= ?
                 ) THEN 1 ELSE 0 END AS backfill_recovery
          FROM articles a
-         WHERE a.jev_score IS NULL
+         JOIN feeds f ON f.id = a.feed_id
+         WHERE f.enabled = 1
+           AND a.jev_score IS NULL
            AND COALESCE(a.hidden, 0) = 0
            AND COALESCE(a.rejected, 0) = 0
            AND COALESCE(a.thumbs_down, 0) = 0
@@ -712,8 +716,10 @@ export function enqueueAiBackfill(
         .prepare(
           `SELECT a.id, a.feed_id, a.summary, a.content, am.analysis_status
            FROM articles a
+           JOIN feeds f ON f.id = a.feed_id
            LEFT JOIN article_ai_metadata am ON am.article_id = a.id
-           WHERE COALESCE(a.hidden, 0) = 0
+           WHERE f.enabled = 1
+             AND COALESCE(a.hidden, 0) = 0
              AND COALESCE(a.rejected, 0) = 0
              AND COALESCE(a.thumbs_down, 0) = 0
              AND (
@@ -1089,13 +1095,25 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!articleId) throw new Error('AI process job is missing articleId');
     const article = getDb()
       .prepare(
-        'SELECT hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+        `SELECT a.hidden, a.rejected, a.thumbs_down, f.enabled AS feed_enabled
+         FROM articles a
+         JOIN feeds f ON f.id = a.feed_id
+         WHERE a.id = ?`,
       )
       .get(articleId) as
-      { hidden: number; rejected: number; thumbs_down: number } | undefined;
+      | {
+          hidden: number;
+          rejected: number;
+          thumbs_down: number;
+          feed_enabled: number;
+        }
+      | undefined;
     if (
       article &&
-      (article.hidden || article.rejected || article.thumbs_down)
+      (!article.feed_enabled ||
+        article.hidden ||
+        article.rejected ||
+        article.thumbs_down)
     ) {
       return { articleId, processed: false, skipped: true };
     }
@@ -1114,7 +1132,10 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!articleId) throw new Error('Jev process job is missing articleId');
     const article = getDb()
       .prepare(
-        'SELECT jev_score, hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+        `SELECT a.jev_score, a.hidden, a.rejected, a.thumbs_down, f.enabled AS feed_enabled
+         FROM articles a
+         JOIN feeds f ON f.id = a.feed_id
+         WHERE a.id = ?`,
       )
       .get(articleId) as
       | {
@@ -1122,10 +1143,12 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
           hidden: number;
           rejected: number;
           thumbs_down: number;
+          feed_enabled: number;
         }
       | undefined;
     if (
       !article ||
+      !article.feed_enabled ||
       article.hidden ||
       article.rejected ||
       article.thumbs_down ||

@@ -5,6 +5,7 @@ export type PreferenceInputTransformOptions = {
   roundStrength?: boolean;
   omitEvidenceCount?: boolean;
   positivePreferenceLimit?: number;
+  replaceUnderscoresWithSpaces?: boolean;
 };
 
 export const PREFERENCE_INPUT_VARIANT_NAMES = [
@@ -49,13 +50,21 @@ function transformRows(
       typeof transformed.type === 'string' &&
       typeof transformed.value === 'string'
     ) {
+      let normalizedValue = transformed.value;
       const prefix = `${transformed.type}:`;
       if (
-        transformed.value.startsWith(prefix) &&
-        transformed.value.length > prefix.length
+        normalizedValue.startsWith(prefix) &&
+        normalizedValue.length > prefix.length
       ) {
-        transformed.value = transformed.value.slice(prefix.length);
+        normalizedValue = normalizedValue.slice(prefix.length);
       }
+      if (options.replaceUnderscoresWithSpaces) {
+        normalizedValue = normalizedValue
+          .replace(/_/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+      transformed.value = normalizedValue;
     }
 
     if (options.roundStrength && 'strength' in transformed) {
@@ -135,5 +144,6 @@ export function buildRankingPreferenceInput(
   return transformPreferenceInput(state, {
     stripTypePrefix: true,
     roundStrength: true,
+    replaceUnderscoresWithSpaces: true,
   });
 }

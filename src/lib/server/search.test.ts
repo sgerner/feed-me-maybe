@@ -272,4 +272,47 @@ describe('personal search engine', () => {
       ).count,
     ).toBe(4);
   });
+
+  it('excludes paused feeds from default searches while allowing explicit feed or state filters', async () => {
+    const { getDb } = await import('$lib/server/db');
+    const { searchArticles } = await import('./search');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+    ).run(
+      'feed-paused-search',
+      'https://paused.example.com/rss',
+      'Paused Search Feed',
+      'world',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, read, saved, hidden, rejected, thumbs_down, fetched_at, created_at, updated_at)
+       VALUES ('paused-quantum', 'feed-paused-search', 'https://paused.example.com/q', 'Paused quantum article', 'Quantum paused summary', 'Quantum paused content', 0, 1, 0, 0, 0, ?, ?, ?)`,
+    ).run(now, now, now);
+
+    const defaultResult = searchArticles({
+      query: 'quantum is:unread category:world',
+      sort: 'recent',
+    });
+    expect(defaultResult.articles.map((a) => a.id)).not.toContain(
+      'paused-quantum',
+    );
+
+    const savedResult = searchArticles({
+      query: 'quantum is:saved',
+      sort: 'recent',
+    });
+    expect(savedResult.articles.map((a) => a.id)).toContain('paused-quantum');
+
+    const explicitFeedResult = searchArticles({
+      query: 'quantum feed:"Paused Search Feed"',
+      sort: 'recent',
+    });
+    expect(explicitFeedResult.articles.map((a) => a.id)).toContain(
+      'paused-quantum',
+    );
+  });
 });

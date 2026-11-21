@@ -57,6 +57,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     const result = applyArticleState({
       action: action as ArticleStateAction,
       articleIds: suppliedIds as string[],
+      visibleArticleIds: body.visibleArticleIds,
       idempotencyKey,
     });
     return json(result, { status: result.idempotent ? 200 : 200 });
