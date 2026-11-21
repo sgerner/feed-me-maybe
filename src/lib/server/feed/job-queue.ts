@@ -729,9 +729,8 @@ export function getNextQueuedJobAt(): number | null {
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
           UNION ALL
-          SELECT MIN(MAX(not_before, ?)) AS scheduled_at
+          SELECT MIN(CASE WHEN ? = 1 THEN MAX(not_before, ?) ELSE ? END) AS scheduled_at
           FROM ranking_refresh_queue
-          WHERE ? = 1
         )
       `,
     )
@@ -742,8 +741,9 @@ export function getNextQueuedJobAt(): number | null {
       JEV_PROCESS_JOB_TYPE,
       aiProcessingEnabled ? 1 : 0,
       AI_PROCESS_JOB_TYPE,
-      getProviderCooldown(JEV_PROCESS_JOB_TYPE),
       rankingProviderConfigured ? 1 : 0,
+      getProviderCooldown(JEV_PROCESS_JOB_TYPE),
+      Date.now(),
     ) as { scheduled_at: number | null } | undefined;
   return row?.scheduled_at == null ? null : Number(row.scheduled_at);
 }
