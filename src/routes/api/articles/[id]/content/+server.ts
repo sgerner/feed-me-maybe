@@ -74,7 +74,14 @@ export const POST: RequestHandler = async ({ locals, params }) => {
       );
     if (!update.changes) return false;
     refreshRankingAfterProfileMutation(params.id);
-    if (isAiProcessingConfigured()) enqueueAiProcess(params.id);
+    if (isAiProcessingConfigured()) {
+      db.prepare(
+        `UPDATE article_ai_metadata
+         SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
+         WHERE article_id = ? AND analysis_status IN ('failed', 'skipped')`,
+      ).run(params.id);
+      enqueueAiProcess(params.id);
+    }
     return true;
   })();
   if (!updated) {

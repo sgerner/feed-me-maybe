@@ -220,7 +220,7 @@ describe('preference learning model', () => {
 
     const insertMetadata = (articleId: string) => {
       db.prepare(
-        'INSERT OR REPLACE INTO article_ai_metadata (id, article_id, summary, topics, entities, content_type, ai_relevance_score, novelty_score, quality_score, likely_user_interest, signals, explanation, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        "INSERT OR REPLACE INTO article_ai_metadata (id, article_id, summary, topics, entities, content_type, ai_relevance_score, novelty_score, quality_score, likely_user_interest, signals, explanation, analysis_status, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)",
       ).run(
         `meta-${articleId}`,
         articleId,

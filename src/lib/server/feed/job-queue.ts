@@ -4,6 +4,8 @@ import { SafeFetchError } from '$lib/server/network';
 import { getDb } from '$lib/server/db';
 import { recordAppError } from '$lib/server/logging';
 import { isRankingProviderConfigured } from '$lib/server/ai/jev';
+import { hasArticleAnalysisText } from '$lib/server/ai/prompts';
+import { isAiProcessingConfigured } from '$lib/server/ai/runtime';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
@@ -17,7 +19,7 @@ export const DEFAULT_JEV_QUEUE_CAPACITY = 4;
 export const DEFAULT_JEV_BACKFILL_BATCH_SIZE = 4;
 export const DEFAULT_JEV_JOBS_PER_RUN = 4;
 export const FEED_FETCH_LEASE_MS = 10 * 60 * 1000;
-export const AI_PROCESS_LEASE_MS = 30 * 60 * 1000;
+export const AI_PROCESS_LEASE_MS = 5 * 60 * 1000;
 export const JEV_PROCESS_LEASE_MS = 5 * 60 * 1000;
 export const DEFAULT_RETRY_BASE_MS = 30 * 1000;
 export const MAX_RETRY_DELAY_MS = 60 * 60 * 1000;
@@ -527,7 +529,10 @@ export function enqueueJevProcess(
       db.prepare(
         `UPDATE jobs
          SET payload = json_set(payload, '$.feedback', 1, '$.backfill', 0),
-             scheduled_at = MIN(COALESCE(scheduled_at, ?), ?)
+             scheduled_at = CASE
+               WHEN attempts = 0 THEN MIN(COALESCE(scheduled_at, ?), ?)
+               ELSE scheduled_at
+             END
          WHERE id = ? AND status = 'queued'`,
       ).run(now, now, queued.id);
       return readJob(queued.id) || toJobRecord(queued);
@@ -585,7 +590,7 @@ export function enqueueJevBackfill(
 
   const db = getDb();
   const now = options.now ?? Date.now();
-  const aiProcessingEnabled = isAiProcessingEnabled();
+  const aiProcessingEnabled = isAiProcessingConfigured();
   const enqueueTx = db.transaction(() => {
     const active = db
       .prepare(
@@ -688,6 +693,91 @@ export function enqueueJevBackfill(
   return enqueueTx.immediate();
 }
 
+export function enqueueAiBackfill(
+  options: { now?: number; limit?: number } = {},
+): number {
+  if (!isAiProcessingConfigured()) return 0;
+
+  const requestedLimit = Math.floor(options.limit ?? 25);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.min(100, requestedLimit))
+    : 0;
+  if (limit === 0) return 0;
+
+  const db = getDb();
+  const now = options.now ?? Date.now();
+  return db
+    .transaction(() => {
+      const candidates = db
+        .prepare(
+          `SELECT a.id, a.feed_id, a.summary, a.content, am.analysis_status
+           FROM articles a
+           LEFT JOIN article_ai_metadata am ON am.article_id = a.id
+           WHERE COALESCE(a.hidden, 0) = 0
+             AND COALESCE(a.rejected, 0) = 0
+             AND COALESCE(a.thumbs_down, 0) = 0
+             AND (
+               am.article_id IS NULL
+               OR am.analysis_status IN ('pending', 'failed', 'skipped')
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM jobs ai
+               WHERE ai.type = ?
+                 AND ai.status IN ('queued', 'processing')
+                 AND CASE WHEN json_valid(ai.payload) = 1
+                          THEN json_extract(ai.payload, '$.articleId') END = +a.id
+             )
+           ORDER BY a.fetched_at DESC, a.id DESC
+           LIMIT ?`,
+        )
+        .all(AI_PROCESS_JOB_TYPE, limit * 3) as Array<{
+        id: string;
+        feed_id: string;
+        summary: string | null;
+        content: string | null;
+        analysis_status: string | null;
+      }>;
+
+      let queued = 0;
+      const insert = db.prepare(
+        `INSERT INTO jobs (
+          id, type, status, payload, result, error_message, attempts,
+          max_attempts, scheduled_at, created_at
+        ) VALUES (?, ?, 'queued', ?, '{}', '', 0, ?, ?, ?)`,
+      );
+      const resetMetadata = db.prepare(
+        `UPDATE article_ai_metadata
+         SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
+         WHERE article_id = ? AND analysis_status IN ('failed', 'skipped')`,
+      );
+
+      for (const article of candidates) {
+        if (!hasArticleAnalysisText(article.summary, article.content)) continue;
+        insert.run(
+          crypto.randomUUID(),
+          AI_PROCESS_JOB_TYPE,
+          JSON.stringify({
+            articleId: article.id,
+            feedId: article.feed_id,
+          } satisfies AiProcessJobPayload),
+          DEFAULT_AI_PROCESS_MAX_ATTEMPTS,
+          now,
+          now,
+        );
+        if (
+          article.analysis_status === 'failed' ||
+          article.analysis_status === 'skipped'
+        ) {
+          resetMetadata.run(article.id);
+        }
+        queued += 1;
+        if (queued >= limit) break;
+      }
+      return queued;
+    })
+    .immediate();
+}
+
 export function getJob(jobId: string): JobRecord | null {
   return readJob(jobId);
 }
@@ -708,8 +798,8 @@ export function getLatestFeedFetchJob(feedId: string): JobRecord | null {
   return row ? toJobRecord(row) : null;
 }
 
-function getProviderCooldown(type: string): number {
-  const row = getDb()
+export function getProviderCooldown(type: string, db = getDb()): number {
+  const row = db
     .prepare(
       'SELECT CAST(value AS INTEGER) AS due FROM app_settings WHERE key = ?',
     )
@@ -717,14 +807,11 @@ function getProviderCooldown(type: string): number {
   return row?.due ?? 0;
 }
 
-function isAiProcessingEnabled(): boolean {
-  const row = getDb()
-    .prepare("SELECT value FROM app_settings WHERE key = 'ai_enabled'")
-    .get() as { value: string } | undefined;
-  return row?.value !== 'false';
-}
-
-function setProviderCooldown(type: string, retryAt: number, now: number): void {
+export function setProviderCooldown(
+  type: string,
+  retryAt: number,
+  now = Date.now(),
+): void {
   getDb()
     .prepare(
       `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
@@ -737,13 +824,28 @@ function setProviderCooldown(type: string, retryAt: number, now: number): void {
 
 export function getNextQueuedJobAt(): number | null {
   const rankingProviderConfigured = isRankingProviderConfigured();
-  const aiProcessingEnabled = isAiProcessingEnabled();
+  const aiConfigured = isAiProcessingConfigured();
+  const jevCooldown = getProviderCooldown(JEV_PROCESS_JOB_TYPE);
   const row = getDb()
     .prepare(
       `
         SELECT MIN(scheduled_at) AS scheduled_at FROM (
-          SELECT MIN(MAX(COALESCE(scheduled_at, created_at),
-            CASE type WHEN 'ai_process' THEN ? WHEN 'jev_process' THEN ? ELSE 0 END
+          SELECT MIN(MAX(
+            COALESCE(scheduled_at, created_at),
+            CASE type
+              WHEN 'ai_process' THEN ?
+              WHEN 'jev_process' THEN MAX(
+                ?,
+                COALESCE((
+                  SELECT q.not_before FROM ranking_refresh_queue q
+                  WHERE q.article_id = CASE
+                    WHEN json_valid(jobs.payload) = 1
+                    THEN json_extract(jobs.payload, '$.articleId')
+                  END
+                ), 0)
+              )
+              ELSE 0
+            END
           )) AS scheduled_at
           FROM jobs
           WHERE status = 'queued' AND attempts < max_attempts
@@ -752,19 +854,26 @@ export function getNextQueuedJobAt(): number | null {
           UNION ALL
           SELECT MIN(CASE WHEN ? = 1 THEN MAX(not_before, ?) ELSE ? END) AS scheduled_at
           FROM ranking_refresh_queue
+          WHERE ? = 0 OR (
+            SELECT COUNT(*) FROM jobs
+            WHERE type = ? AND status IN ('queued', 'processing')
+          ) < ?
         )
       `,
     )
     .get(
       getProviderCooldown(AI_PROCESS_JOB_TYPE),
-      getProviderCooldown(JEV_PROCESS_JOB_TYPE),
+      jevCooldown,
       rankingProviderConfigured ? 1 : 0,
       JEV_PROCESS_JOB_TYPE,
-      aiProcessingEnabled ? 1 : 0,
+      aiConfigured ? 1 : 0,
       AI_PROCESS_JOB_TYPE,
       rankingProviderConfigured ? 1 : 0,
-      getProviderCooldown(JEV_PROCESS_JOB_TYPE),
+      jevCooldown,
       Date.now(),
+      rankingProviderConfigured ? 1 : 0,
+      JEV_PROCESS_JOB_TYPE,
+      DEFAULT_JEV_QUEUE_CAPACITY,
     ) as { scheduled_at: number | null } | undefined;
   return row?.scheduled_at == null ? null : Number(row.scheduled_at);
 }
@@ -774,11 +883,16 @@ function claimNextJob(
   options: {
     allowJev?: boolean;
     allowFeed?: boolean;
+    allowAi?: boolean;
     allowScoring?: boolean;
     jobId?: string;
   } = {},
 ): JobRecord | null {
   const db = getDb();
+  const allowJev =
+    options.allowScoring === false ? false : options.allowJev !== false;
+  const allowAi =
+    options.allowScoring === false ? false : options.allowAi !== false;
   const claimTx = db.transaction(() => {
     const row = db
       .prepare(
@@ -790,7 +904,6 @@ function claimNextJob(
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
-            AND (? = 1 OR type = ?)
             AND (? IS NULL OR (id = ? AND type = 'feed_fetch'))
             AND (type != ? OR NOT EXISTS (
               SELECT 1 FROM ranking_refresh_queue q
@@ -811,20 +924,16 @@ function claimNextJob(
       )
       .get(
         now,
-        options.allowJev === false ||
-          getProviderCooldown(JEV_PROCESS_JOB_TYPE) > now
-          ? 0
-          : 1,
+        allowJev && getProviderCooldown(JEV_PROCESS_JOB_TYPE) <= now ? 1 : 0,
         JEV_PROCESS_JOB_TYPE,
         options.allowFeed === false ? 0 : 1,
         FEED_FETCH_JOB_TYPE,
-        getProviderCooldown(AI_PROCESS_JOB_TYPE) > now ||
-          !isAiProcessingEnabled()
-          ? 0
-          : 1,
+        allowAi &&
+          getProviderCooldown(AI_PROCESS_JOB_TYPE) <= now &&
+          isAiProcessingConfigured()
+          ? 1
+          : 0,
         AI_PROCESS_JOB_TYPE,
-        options.allowScoring === false ? 0 : 1,
-        FEED_FETCH_JOB_TYPE,
         options.jobId ?? null,
         options.jobId ?? null,
         JEV_PROCESS_JOB_TYPE,
@@ -903,9 +1012,14 @@ function failOrRetryJob(
     );
   }
   const networkError = error instanceof SafeFetchError ? error : cause;
+  const permanentFlag =
+    (error instanceof Error &&
+      (error as { permanent?: unknown }).permanent === true) ||
+    (cause instanceof Error &&
+      (cause as { permanent?: unknown }).permanent === true);
   const exhausted =
     job.attempts >= job.maxAttempts ||
-    (error instanceof FeedJobError && error.permanent) ||
+    permanentFlag ||
     (providerRejection instanceof ProviderHttpError &&
       providerRejection.permanent) ||
     (networkError instanceof SafeFetchError &&
@@ -926,10 +1040,10 @@ function failOrRetryJob(
       ? providerRejection.retryAt
       : undefined;
   const feedRetryAt = error instanceof FeedJobError ? error.retryAt : undefined;
+  const effectiveRetryAt = retryAt ?? feedRetryAt;
   const scheduledAt = Math.max(
     now + getRetryDelayMs(job.attempts),
-    retryAt ?? 0,
-    feedRetryAt ?? 0,
+    effectiveRetryAt ?? 0,
   );
   db.prepare(
     `
@@ -937,7 +1051,12 @@ function failOrRetryJob(
       SET status = 'queued', error_message = ?, scheduled_at = ?, started_at = NULL, result = ?
       WHERE id = ? AND status = 'processing'
     `,
-  ).run(message, scheduledAt, JSON.stringify({ retryAt: feedRetryAt }), job.id);
+  ).run(
+    message,
+    scheduledAt,
+    JSON.stringify({ retryAt: effectiveRetryAt }),
+    job.id,
+  );
   return 'retried';
 }
 
@@ -968,9 +1087,25 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     const articleId =
       typeof payload.articleId === 'string' ? payload.articleId : '';
     if (!articleId) throw new Error('AI process job is missing articleId');
+    const article = getDb()
+      .prepare(
+        'SELECT hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+      )
+      .get(articleId) as
+      { hidden: number; rejected: number; thumbs_down: number } | undefined;
+    if (
+      article &&
+      (article.hidden || article.rejected || article.thumbs_down)
+    ) {
+      return { articleId, processed: false, skipped: true };
+    }
     const { processArticle } = await import('$lib/server/ai/processor');
-    await processArticle(articleId);
-    return { articleId, processed: true };
+    const telemetry = await processArticle(articleId);
+    return {
+      articleId,
+      processed: true,
+      ...(telemetry && typeof telemetry === 'object' ? telemetry : {}),
+    };
   }
 
   if (job.type === JEV_PROCESS_JOB_TYPE) {
@@ -978,10 +1113,22 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
       typeof payload.articleId === 'string' ? payload.articleId : '';
     if (!articleId) throw new Error('Jev process job is missing articleId');
     const article = getDb()
-      .prepare('SELECT jev_score FROM articles WHERE id = ?')
-      .get(articleId) as { jev_score: number | null } | undefined;
+      .prepare(
+        'SELECT jev_score, hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+      )
+      .get(articleId) as
+      | {
+          jev_score: number | null;
+          hidden: number;
+          rejected: number;
+          thumbs_down: number;
+        }
+      | undefined;
     if (
       !article ||
+      article.hidden ||
+      article.rejected ||
+      article.thumbs_down ||
       ((payload.backfill === true || payload.feedback === true) &&
         article.jev_score != null)
     ) {
@@ -993,8 +1140,12 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
       throw new Error('Selected ranking provider is not configured');
     }
     const { processJevArticle } = await import('$lib/server/ai/jev');
-    await processJevArticle(articleId);
-    return { articleId, processed: true };
+    const telemetry = await processJevArticle(articleId);
+    return {
+      articleId,
+      processed: true,
+      ...(telemetry && typeof telemetry === 'object' ? telemetry : {}),
+    };
   }
 
   throw new Error(`Unsupported job type: ${job.type}`);
@@ -1053,18 +1204,23 @@ async function runDueJobsInternal(
 
   const pending = new Set<Promise<void>>();
   let activeFeeds = 0;
-  let scoring = false;
+  let activeAi = false;
+  let activeJev = false;
   let workerFailure: { error: unknown } | undefined;
   try {
     while (!workerFailure) {
       let job: JobRecord | null = null;
       if (result.processed < control.budget) {
         await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
+        if (jevExecutions < DEFAULT_JEV_JOBS_PER_RUN) {
+          enqueueJevBackfill({ now: Date.now() });
+        }
         const jobId = control.targetedFeedJobIds.values().next().value;
         job = claimNextJob(Date.now(), {
           allowFeed: activeFeeds < MAX_CONCURRENT_FEED_FETCHES,
-          allowScoring: !scoring,
+          allowAi: !activeAi,
           allowJev:
+            !activeJev &&
             isRankingProviderConfigured() &&
             jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
           ...(jobId ? { jobId } : {}),
@@ -1086,15 +1242,18 @@ async function runDueJobsInternal(
       control.processed = result.processed;
       if (job.type === JEV_PROCESS_JOB_TYPE) jevExecutions += 1;
       const isFeed = job.type === FEED_FETCH_JOB_TYPE;
+      const isJev = job.type === JEV_PROCESS_JOB_TYPE;
       if (isFeed) activeFeeds += 1;
-      else scoring = true;
+      else if (isJev) activeJev = true;
+      else activeAi = true;
       const work = processJob(job)
         .catch((error: unknown) => {
           workerFailure ??= { error };
         })
         .finally(() => {
           if (isFeed) activeFeeds -= 1;
-          else scoring = false;
+          else if (isJev) activeJev = false;
+          else activeAi = false;
           pending.delete(work);
         });
       pending.add(work);

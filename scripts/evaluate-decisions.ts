@@ -19,6 +19,7 @@ import {
   type DecisionState,
 } from '../src/lib/server/ai/decision-input.ts';
 import { buildRankingPreferenceInput } from '../src/lib/server/ai/preference-input.ts';
+import { redactSecrets } from '../src/lib/server/ai/redact.ts';
 
 const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const JEV_MODEL = 'jev-latest';
@@ -221,8 +222,12 @@ function readCohort(path: string): { cohort: Cohort; hash: string } {
   };
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function errorMessage(
+  error: unknown,
+  secrets: Array<string | undefined> = [],
+): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return redactSecrets(raw, secrets);
 }
 
 function readKeyFromFile(
@@ -417,7 +422,10 @@ async function callApi(
     });
     const responseText = await response.text();
     if (!response.ok) {
-      const detail = responseText.replace(/\s+/g, ' ').trim().slice(0, 400);
+      const detail = redactSecrets(
+        responseText.replace(/\s+/g, ' ').trim().slice(0, 400),
+        [apiKey],
+      );
       throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
     }
     let data: unknown;
@@ -449,7 +457,9 @@ async function callApi(
       scores: Object.fromEntries(names.map((name) => [name, null])),
       error: {
         name: error instanceof Error ? error.name : 'Error',
-        message: errorMessage(error).replace(/\s+/g, ' ').slice(0, 500),
+        message: errorMessage(error, [apiKey])
+          .replace(/\s+/g, ' ')
+          .slice(0, 500),
       },
     };
   }
@@ -745,10 +755,19 @@ function summarize(
   }
   const callStats: Record<string, unknown> = {};
   for (const [key, group] of groupedStats) {
-    const usageTotals: Record<string, number> = {};
-    for (const record of group) {
+    const deduplicatedUsage = new Map<string, Record<string, unknown>>();
+    for (let index = 0; index < group.length; index += 1) {
+      const record = group[index];
       if (!isObject(record.usageTokens)) continue;
-      for (const [tokenName, count] of Object.entries(record.usageTokens)) {
+      const dedupeKey =
+        typeof record.callKey === 'string' && record.callKey
+          ? record.callKey
+          : `__idx_${index}`;
+      deduplicatedUsage.set(dedupeKey, record.usageTokens);
+    }
+    const usageTotals: Record<string, number> = {};
+    for (const usageTokens of deduplicatedUsage.values()) {
+      for (const [tokenName, count] of Object.entries(usageTokens)) {
         if (typeof count === 'number' && Number.isFinite(count)) {
           usageTotals[tokenName] = (usageTotals[tokenName] ?? 0) + count;
         }

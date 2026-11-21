@@ -20,4 +20,14 @@ describe('provider value normalization', () => {
       ),
     ).toEqual(['AI', 'Research']);
   });
+
+  it('decodes entity-encoded scripts and tags before stripping markup', async () => {
+    const { stripHtml } = await import('./normalization');
+    expect(
+      stripHtml(
+        '&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x&gt;Hello &amp;amp; Co.',
+      ),
+    ).toBe('Hello & Co.');
+    expect(stripHtml('&lt;img src="https://example.com/a.png"&gt;')).toBe('');
+  });
 });

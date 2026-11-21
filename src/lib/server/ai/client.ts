@@ -6,8 +6,70 @@ import {
   buildArticleAnalysisPrompt,
 } from './prompts';
 import { coerceText, stripHtml } from '$lib/server/normalization';
-import { fetchSafe } from '$lib/server/network';
+import {
+  fetchSafe,
+  MAX_JSON_RESPONSE_BYTES,
+  readResponseText,
+} from '$lib/server/network';
 import { ProviderHttpError, retryAtFromHeader } from './provider-error';
+import { redactSecrets } from './redact';
+
+export { redactSecrets };
+
+const ERROR_BODY_MAX_BYTES = 16 * 1024;
+
+export class AiTruncationError extends Error {
+  readonly permanent = true;
+}
+
+export type AiCompletionMetadata = {
+  text: string;
+  model?: string;
+  finishReason?: string | null;
+  usage?: Record<string, number>;
+};
+
+export type ArticleAnalysisWithMeta = {
+  analysis: Partial<ArticleScore>;
+  model?: string;
+  usage?: Record<string, number>;
+};
+
+function escapeControlCharsInJsonStrings(text: string): string {
+  return text.replace(/"(?:[^"\\]|\\.)*"/g, (quoted) =>
+    quoted.replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t'),
+  );
+}
+
+function stripTrailingCommas(text: string): string {
+  return text.replace(/"(?:[^"\\]|\\.)*"|,\s*(?=[}\]])/g, (match) =>
+    match.startsWith(',') ? '' : match,
+  );
+}
+
+export function parseLlmJsonObject(result: string): unknown {
+  const trimmed = result.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const unfenced = (fenceMatch ? fenceMatch[1] : trimmed).trim();
+  const start = unfenced.indexOf('{');
+  const end = unfenced.lastIndexOf('}');
+  const candidate =
+    start >= 0 && end > start ? unfenced.slice(start, end + 1) : unfenced;
+
+  const attempts = [
+    candidate,
+    stripTrailingCommas(candidate),
+    stripTrailingCommas(escapeControlCharsInJsonStrings(candidate)),
+  ];
+  for (const attempt of attempts) {
+    try {
+      return JSON.parse(attempt);
+    } catch {
+      // Try next safe repair pass.
+    }
+  }
+  throw new Error('AI provider returned invalid JSON');
+}
 
 interface AiClientConfig {
   baseUrl: string;
@@ -95,15 +157,20 @@ function normalizeAnalysis(raw: unknown): ArticleScore {
   const data = raw as Record<string, unknown>;
   const validContentTypes = new Set<string>(ARTICLE_ANALYSIS_CONTENT_TYPES);
   const contentType = normalizeTag(data.contentType);
-  const interest = normalizeTag(data.likelyUserInterest);
+  const rawInterest = data.likelyUserInterest ?? data.LikelyUserInterest;
+  const hasInterest = rawInterest !== undefined && rawInterest !== null;
+  const interest = hasInterest ? normalizeTag(rawInterest) : '';
+  const hasExplanation =
+    data.explanation !== undefined && data.explanation !== null;
   const scores = [data.relevanceScore, data.noveltyScore, data.qualityScore];
   if (
     typeof data.summary !== 'string' ||
     typeof data.contentType !== 'string' ||
-    typeof data.likelyUserInterest !== 'string' ||
-    !['high', 'medium', 'low'].includes(interest) ||
+    (hasInterest &&
+      (typeof rawInterest !== 'string' ||
+        !['high', 'medium', 'low'].includes(interest))) ||
     !validContentTypes.has(contentType) ||
-    typeof data.explanation !== 'string' ||
+    (hasExplanation && typeof data.explanation !== 'string') ||
     scores.some(
       (score) =>
         typeof score !== 'number' ||
@@ -122,10 +189,23 @@ function normalizeAnalysis(raw: unknown): ArticleScore {
     relevanceScore: data.relevanceScore as number,
     noveltyScore: data.noveltyScore as number,
     qualityScore: data.qualityScore as number,
-    likelyUserInterest: normalizeLikelihood(interest),
+    likelyUserInterest: hasInterest ? normalizeLikelihood(interest) : '',
     signals: normalizeSignals(data.signals),
-    explanation: normalizeText(data.explanation, 500),
+    explanation: hasExplanation
+      ? normalizeText(data.explanation as string, 500)
+      : '',
   };
+}
+
+function normalizeUsage(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const usage: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      usage[key] = value;
+    }
+  }
+  return Object.keys(usage).length ? usage : undefined;
 }
 
 export function createAiClient(config: AiClientConfig) {
@@ -141,12 +221,12 @@ export function createAiClient(config: AiClientConfig) {
     providerId.toLowerCase() === 'deepseek' ||
     model.toLowerCase().startsWith('deepseek-');
 
-  async function completeChat(
+  async function completeChatWithMeta(
     systemPrompt: string,
     userPrompt: string,
     maxTokens = 512,
-    options: { jsonMode?: boolean } = {},
-  ): Promise<string> {
+    options: { jsonMode?: boolean; signal?: AbortSignal } = {},
+  ): Promise<AiCompletionMetadata> {
     const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const requestBody: Record<string, unknown> = {
       model,
@@ -170,6 +250,11 @@ export function createAiClient(config: AiClientConfig) {
       if (supportsTemperature) requestBody.temperature = 0.1;
     }
 
+    const timeoutSignal = AbortSignal.timeout(30_000);
+    const signal = options.signal
+      ? AbortSignal.any([timeoutSignal, options.signal])
+      : timeoutSignal;
+
     const { response: res } = await fetchSafe(
       endpoint,
       {
@@ -180,13 +265,19 @@ export function createAiClient(config: AiClientConfig) {
           ...defaultHeaders,
         },
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(30_000),
+        signal,
       },
-      { maxRedirects: 0 },
+      { maxRedirects: 0, maxBytes: MAX_JSON_RESPONSE_BYTES },
     );
 
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300).replace(/\s+/g, ' ');
+      const rawError = await readResponseText(res, ERROR_BODY_MAX_BYTES).catch(
+        () => '',
+      );
+      const detail = redactSecrets(
+        rawError.slice(0, 300).replace(/\s+/g, ' '),
+        [apiKey],
+      );
       const message = `AI provider returned HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
       throw new ProviderHttpError(
         message,
@@ -195,13 +286,18 @@ export function createAiClient(config: AiClientConfig) {
       );
     }
 
-    const data = (await res.json()) as {
+    const data = JSON.parse(
+      await readResponseText(res, MAX_JSON_RESPONSE_BYTES),
+    ) as {
+      model?: unknown;
+      usage?: unknown;
       choices?: Array<{
         finish_reason?: string | null;
         message?: { content?: unknown; reasoning_content?: unknown };
       }>;
     };
     const choice = data.choices?.[0];
+    const finishReason = choice?.finish_reason ?? null;
     const content = choice?.message?.content;
     const text = Array.isArray(content)
       ? content
@@ -217,55 +313,70 @@ export function createAiClient(config: AiClientConfig) {
       const hasReasoning = Boolean(
         coerceText(choice?.message?.reasoning_content),
       );
-      if (choice?.finish_reason === 'length' && hasReasoning) {
-        throw new Error(
-          'AI provider returned no final message content; reasoning consumed the output limit',
+      if (finishReason === 'length') {
+        throw new AiTruncationError(
+          hasReasoning
+            ? 'AI provider returned no final message content; reasoning consumed the output limit'
+            : 'AI provider response truncated at token limit',
         );
       }
       throw new Error('AI provider returned no message content');
     }
-    return text;
+    return {
+      text,
+      model: typeof data.model === 'string' && data.model ? data.model : model,
+      finishReason,
+      usage: normalizeUsage(data.usage),
+    };
   }
 
-  function parseJsonObject(result: string): unknown {
-    const trimmed = result.trim();
-    const unfenced = trimmed
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-    const start = unfenced.indexOf('{');
-    const end = unfenced.lastIndexOf('}');
-    const candidate =
-      start >= 0 && end > start ? unfenced.slice(start, end + 1) : unfenced;
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      // Repair only trailing commas, leaving quoted strings untouched.
-      const repaired = candidate.replace(
-        /"(?:[^"\\]|\\.)*"|,\s*(?=[}\]])/g,
-        (match) => (match.startsWith(',') ? '' : match),
-      );
-      if (repaired !== candidate) {
-        try {
-          return JSON.parse(repaired);
-        } catch {
-          // Reject completions with any other syntax errors.
-        }
-      }
-      throw new Error('AI provider returned invalid JSON');
-    }
+  async function completeChat(
+    systemPrompt: string,
+    userPrompt: string,
+    maxTokens = 512,
+    options: { jsonMode?: boolean; signal?: AbortSignal } = {},
+  ): Promise<string> {
+    const completion = await completeChatWithMeta(
+      systemPrompt,
+      userPrompt,
+      maxTokens,
+      options,
+    );
+    return completion.text;
   }
 
-  async function analyzeArticle(
+  async function analyzeArticleWithMeta(
     input: ArticleAnalysisInput,
-  ): Promise<Partial<ArticleScore>> {
-    const result = await completeChat(
+  ): Promise<ArticleAnalysisWithMeta> {
+    const completion = await completeChatWithMeta(
       ARTICLE_ANALYSIS_SYSTEM_PROMPT,
       buildArticleAnalysisPrompt(input),
       isDeepSeek ? 1024 : 768,
       { jsonMode: true },
     );
-    return normalizeAnalysis(parseJsonObject(result));
+    let parsed: unknown;
+    try {
+      parsed = parseLlmJsonObject(completion.text);
+    } catch (error) {
+      if (completion.finishReason === 'length') {
+        throw new AiTruncationError(
+          'AI provider returned truncated JSON at output token limit',
+        );
+      }
+      throw error;
+    }
+    return {
+      analysis: normalizeAnalysis(parsed),
+      model: completion.model,
+      usage: completion.usage,
+    };
+  }
+
+  async function analyzeArticle(
+    input: ArticleAnalysisInput,
+  ): Promise<Partial<ArticleScore>> {
+    const result = await analyzeArticleWithMeta(input);
+    return result.analysis;
   }
 
   async function summarizeArticle(content: string): Promise<string | null> {
@@ -276,7 +387,13 @@ export function createAiClient(config: AiClientConfig) {
     );
   }
 
-  return { completeChat, analyzeArticle, summarizeArticle };
+  return {
+    completeChat,
+    completeChatWithMeta,
+    analyzeArticle,
+    analyzeArticleWithMeta,
+    summarizeArticle,
+  };
 }
 
 export function createNullAiClient() {

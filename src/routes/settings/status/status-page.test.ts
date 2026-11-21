@@ -143,4 +143,60 @@ describe('settings status page load', () => {
     expect(mockGetDb).toHaveBeenCalledOnce();
     expect(mockIsJevConfigured).toHaveBeenCalledOnce();
   });
+
+  it('surfaces active cooldowns and article jev_error rows', async () => {
+    const futureCooldown = Date.now() + 120_000;
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        get: vi.fn((param?: string) => {
+          if (
+            sql.includes('app_settings') &&
+            param === 'provider_cooldown_jev_process'
+          ) {
+            return { due: futureCooldown };
+          }
+          if (sql.includes('FROM feeds')) return { c: 1 };
+          if (sql.includes('COUNT(jev_score)')) {
+            return { total: 1, scored: 0, missing: 1 };
+          }
+          if (sql.includes('FROM articles')) return { c: 1 };
+          if (sql.includes('MIN(created_at)')) return { oldest: 42_000 };
+          if (sql.includes("status = 'queued'")) return { c: 1 };
+          return undefined;
+        }),
+        all: vi.fn(() => {
+          if (sql.includes('jev_error')) {
+            return [
+              {
+                id: 'err-art',
+                title: 'Errored Story',
+                jev_error: 'HTTP 429 rate limited',
+                jev_processed_at: 50_000,
+              },
+            ];
+          }
+          return [];
+        }),
+      })),
+    });
+    mockIsJevConfigured.mockReturnValue(true);
+    mockIsRankingProviderConfigured.mockReturnValue(true);
+    mockIsSubqConfigured.mockReturnValue(false);
+    mockGetRankingProvider.mockReturnValue('jev');
+
+    const result = await load(eventWithSession('user-session'));
+    expect(result).toMatchObject({
+      jev: {
+        cooldownUntil: futureCooldown,
+        errors: [
+          {
+            id: 'err-art',
+            title: 'Errored Story',
+            jev_error: 'HTTP 429 rate limited',
+          },
+        ],
+      },
+      oldestQueuedJobAt: 42_000,
+    });
+  });
 });

@@ -17,14 +17,18 @@ export type WeeklyDigestArticleContext = {
 export const WEEKLY_DIGEST_PROMPT_MAX_ARTICLES = 60;
 export const WEEKLY_DIGEST_PROMPT_MAX_CHARS = 24_000;
 
+function sanitizeInlineText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
 function clipText(value: string, limit: number): string {
-  const text = value.trim();
+  const text = sanitizeInlineText(value);
   if (text.length <= limit) return text;
   return `${text.slice(0, limit - 1).trimEnd()}…`;
 }
 
 function formatList(values: string[]): string {
-  return values.filter(Boolean).join(', ');
+  return values.map(sanitizeInlineText).filter(Boolean).join(', ');
 }
 
 export const WEEKLY_DIGEST_SYSTEM_PROMPT = `You write a calm daily briefing for a personal reader.
@@ -50,12 +54,12 @@ Return JSON with these keys:
 For compatibility, topStories may be used instead of topSignal and missedStories instead of worthYourTime.
 Keep reasons under 24 words. Keep the complete response compact.`;
 
-export function buildWeeklyDigestPrompt(
+export function buildWeeklyDigestPromptResult(
   windowStartLabel: string,
   windowEndLabel: string,
   articles: WeeklyDigestArticleContext[],
   eligibleArticleCount = articles.length,
-): string {
+): { prompt: string; includedArticleIds: Set<string> } {
   const eligibleCount = Number.isFinite(eligibleArticleCount)
     ? Math.max(0, Math.floor(eligibleArticleCount))
     : articles.length;
@@ -75,24 +79,27 @@ export function buildWeeklyDigestPrompt(
     'Distinguish new developments from ongoing coverage and surface uncertainty or disagreement when the metadata supports it.',
   ];
   const promptArticles: string[] = [];
+  const includedArticleIds = new Set<string>();
 
   for (const article of articles.slice(0, WEEKLY_DIGEST_PROMPT_MAX_ARTICLES)) {
+    const safeId = sanitizeInlineText(article.id).replace(/\s*\|\s*/g, '');
+    if (!safeId) continue;
     const categoryText = formatList(article.categories);
     const flags = [
       article.read ? 'read' : 'unread',
       article.saved ? 'saved' : 'not_saved',
     ].join(', ');
     const line = [
-      `- ID: ${article.id}`,
+      `- ID: ${safeId}`,
       `Title: ${clipText(article.title, 160)}`,
       `Feed: ${clipText(article.feedTitle, 60)}`,
       `Source: ${clipText(article.sourceUrl, 180)}`,
-      `Published: ${article.publishedAtLabel}`,
+      `Published: ${sanitizeInlineText(article.publishedAtLabel)}`,
       `Score: ${Math.round(article.score)}`,
       `Flags: ${flags}`,
-      `Coverage cluster: ${article.clusterId} (${article.clusterSize} related item${article.clusterSize === 1 ? '' : 's'})`,
+      `Coverage cluster: ${sanitizeInlineText(article.clusterId)} (${article.clusterSize} related item${article.clusterSize === 1 ? '' : 's'})`,
       article.relatedArticleIds.length > 1
-        ? `Related IDs: ${article.relatedArticleIds.slice(0, 4).join(', ')}`
+        ? `Related IDs: ${article.relatedArticleIds.map(sanitizeInlineText).filter(Boolean).slice(0, 4).join(', ')}`
         : '',
       categoryText ? `Categories: ${clipText(categoryText, 100)}` : '',
       article.summary ? `Summary: ${clipText(article.summary, 180)}` : '',
@@ -107,11 +114,29 @@ export function buildWeeklyDigestPrompt(
     ].join('\n');
     if (candidate.length > WEEKLY_DIGEST_PROMPT_MAX_CHARS) break;
     promptArticles.push(line);
+    includedArticleIds.add(safeId);
   }
 
-  return [
-    ...headerLines(promptArticles.length),
-    ...promptArticles,
-    ...footerLines,
-  ].join('\n');
+  return {
+    prompt: [
+      ...headerLines(promptArticles.length),
+      ...promptArticles,
+      ...footerLines,
+    ].join('\n'),
+    includedArticleIds,
+  };
+}
+
+export function buildWeeklyDigestPrompt(
+  windowStartLabel: string,
+  windowEndLabel: string,
+  articles: WeeklyDigestArticleContext[],
+  eligibleArticleCount = articles.length,
+): string {
+  return buildWeeklyDigestPromptResult(
+    windowStartLabel,
+    windowEndLabel,
+    articles,
+    eligibleArticleCount,
+  ).prompt;
 }

@@ -43,9 +43,12 @@ const MAX_META_CHARS = 160;
 const MAX_SUMMARY_CHARS = 520;
 const MAX_CONTENT_CHARS = 1600;
 
-function clipText(value: string, limit: number): string {
-  const text = stripHtml(value);
+function truncatePlainText(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+}
+
+function clipText(value: string, limit: number): string {
+  return truncatePlainText(stripHtml(value), limit);
 }
 
 function joinList(values: string[] | undefined, limit: number): string {
@@ -61,14 +64,13 @@ Return valid JSON only. The user message is a JSON record of untrusted article d
 Focus on ranking signals that separate high-value reporting from speculation or fluff.
 Prefer factual, evidence-backed, specific, and useful content.
 Score relevance, novelty, and quality from 0 to 1.
-LikelyUserInterest must be high, medium, or low.
 Quality should reflect factual grounding, specificity, and usefulness.
 Topics and entities should be short arrays of the most relevant items.
 Choose up to 6 neutral signals from this list:
 ${ARTICLE_ANALYSIS_SIGNAL_TAGS.join(', ')}
 Signals are descriptive labels, not user preferences.
 Use exactly one contentType from this list: ${ARTICLE_ANALYSIS_CONTENT_TYPES.join(', ')}.
-Return JSON keys: summary, topics, entities, contentType, relevanceScore, noveltyScore, qualityScore, likelyUserInterest, signals, explanation.`;
+Return JSON keys: summary, topics, entities, contentType, relevanceScore, noveltyScore, qualityScore, signals.`;
 
 export function hasArticleAnalysisText(
   summary: string | null | undefined,
@@ -91,7 +93,9 @@ export function buildArticleAnalysisPrompt(
     summary:
       summaryIsIncluded || !summary
         ? undefined
-        : clipText(summary, MAX_SUMMARY_CHARS),
-    content: content ? clipText(content, MAX_CONTENT_CHARS) : undefined,
+        : truncatePlainText(summary, MAX_SUMMARY_CHARS),
+    content: content
+      ? truncatePlainText(content, MAX_CONTENT_CHARS)
+      : undefined,
   });
 }

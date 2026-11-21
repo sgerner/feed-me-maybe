@@ -51,7 +51,7 @@ function updateRankingProvider(value: string): {
       ).run();
       db.prepare('DELETE FROM ranking_refresh_queue').run();
       db.prepare(
-        "DELETE FROM jobs WHERE type = 'jev_process' AND status = 'queued'",
+        "DELETE FROM jobs WHERE type = 'jev_process' AND status != 'processing'",
       ).run();
 
       const revision = getRankingFeedbackRevision();
