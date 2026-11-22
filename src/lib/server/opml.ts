@@ -11,7 +11,7 @@ export function exportOpml(): string {
   const db = getDb();
   const feeds = db
     .prepare(
-      'SELECT url, title, site_url, description, category, source_type, source_metadata FROM feeds WHERE enabled = 1',
+      'SELECT url, title, site_url, description, category, source_type, source_metadata FROM feeds ORDER BY category COLLATE NOCASE, title COLLATE NOCASE',
     )
     .all() as Array<Record<string, string>>;
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import PullToRefresh from '#lib/components/PullToRefresh.svelte';
   import ArticleList from '#lib/components/ArticleList.svelte';
@@ -37,6 +38,7 @@
     error_count: number;
     last_error?: string | null;
     open_mode?: string | null;
+    poll_interval_mins?: number | null;
     use_proxy?: boolean | number | null;
     source_type?: string | null;
     source_metadata?: string | null;
@@ -47,6 +49,7 @@
       articles: FeedArticle[];
       feed: FeedData;
       feedId: string;
+      page: number;
       totalPages: number;
       hiddenContentLimit?: number | null;
       showHiddenContent?: boolean;
@@ -69,9 +72,12 @@
   let category = $state('');
   let enabled = $state(true);
   let openMode = $state('');
+  let pollInterval = $state('');
   let useProxy = $state(false);
 
   let syncing = $state(false);
+  let newArticlesAvailable = $state(false);
+  let newArticlesCount = $state(0);
 
   function toggleHiddenContent() {
     const next = new URL(window.location.href);
@@ -116,15 +122,55 @@
     category = String(pageData.feed.category ?? '');
     enabled = !!pageData.feed.enabled;
     openMode = pageData.feed.open_mode ?? '';
+    pollInterval =
+      pageData.feed.poll_interval_mins == null
+        ? ''
+        : String(pageData.feed.poll_interval_mins);
     useProxy = Boolean(pageData.feed.use_proxy);
   });
+
+  onMount(() => {
+    const handleNewArticles = () => {
+      newArticlesAvailable = true;
+    };
+    window.addEventListener('feed-me-maybe:new-articles', handleNewArticles);
+    return () => {
+      window.removeEventListener(
+        'feed-me-maybe:new-articles',
+        handleNewArticles,
+      );
+    };
+  });
+
+  async function loadNewArticles() {
+    newArticlesAvailable = false;
+    newArticlesCount = 0;
+    if (pageData.page > 1) {
+      await goto(`/feeds/${pageData.feedId}`, { replaceState: false });
+    }
+    await refreshAll();
+  }
 
   async function handleSync() {
     if (syncing) return;
     syncing = true;
+    newArticlesAvailable = false;
+    newArticlesCount = 0;
+    const previousIds = new Set(articles.map((article) => article.id));
     try {
       const result = await syncFeed(pageData.feedId);
-      if (result) await refreshAll();
+      if (result === 'completed') {
+        await refreshAll();
+        const added = pageData.articles.filter(
+          (article: FeedArticle) => !previousIds.has(article.id),
+        ).length;
+        if (added > 0 || pageData.page > 1) {
+          newArticlesCount = added;
+          newArticlesAvailable = added > 0;
+        }
+      } else if (result === 'pending') {
+        newArticlesAvailable = true;
+      }
     } finally {
       syncing = false;
     }
@@ -135,17 +181,37 @@
     saveSuccess = false;
     saveError = '';
     try {
+      const payload: Record<string, unknown> = {
+        url: feedUrl,
+        category,
+        enabled,
+        open_mode: openMode || null,
+        use_proxy: useProxy,
+      };
+      if (title.trim() !== String(feed.title ?? '').trim()) {
+        payload.title = title;
+      }
+      const trimmedInterval = pollInterval.trim();
+      if (trimmedInterval === '') {
+        payload.poll_interval_mins = null;
+      } else {
+        const parsedInterval = Number(trimmedInterval);
+        if (
+          !Number.isInteger(parsedInterval) ||
+          parsedInterval < 1 ||
+          parsedInterval > 1440
+        ) {
+          throw new Error(
+            'Poll interval must be a whole number from 1 to 1440 minutes.',
+          );
+        }
+        payload.poll_interval_mins = parsedInterval;
+      }
+
       const res = await fetchWithCsrf(`/api/feeds/${pageData.feedId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          url: feedUrl,
-          category,
-          enabled,
-          open_mode: openMode || null,
-          use_proxy: useProxy,
-        }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         saveSuccess = true;
@@ -157,8 +223,13 @@
           category = data.feed.category || '';
           enabled = !!data.feed.enabled;
           openMode = data.feed.open_mode ?? '';
+          pollInterval =
+            data.feed.poll_interval_mins == null
+              ? ''
+              : String(data.feed.poll_interval_mins);
           useProxy = Boolean(data.feed.use_proxy);
         }
+        await refreshAll();
         setTimeout(() => {
           saveSuccess = false;
         }, 2000);
@@ -190,7 +261,8 @@
       });
       if (res.ok) {
         addToast('Feed deleted', 'success');
-        goto('/');
+        await goto('/');
+        await refreshAll();
       } else {
         throw new Error();
       }
@@ -217,7 +289,7 @@
       });
       if (res.ok) {
         addToast('Feed items cleared', 'success');
-        window.location.reload();
+        await refreshAll();
       } else {
         throw new Error();
       }
@@ -472,6 +544,19 @@
             {/each}
           </select>
         </label>
+        <label class="label">
+          <span class="mb-1 block text-sm font-medium"
+            >Poll Interval (minutes)</span
+          >
+          <input
+            class="input glass-input"
+            type="number"
+            min="1"
+            max="1440"
+            bind:value={pollInterval}
+            placeholder="Use global default"
+          />
+        </label>
         <label class="flex items-center gap-3 pt-5">
           <input type="checkbox" bind:checked={enabled} class="checkbox" />
           <span class="text-sm">Feed enabled</span>
@@ -528,6 +613,27 @@
           </button>
         </div>
       </div>
+    </div>
+  {/if}
+
+  {#if newArticlesAvailable}
+    <div
+      class="glass-card mb-6 flex flex-wrap items-center justify-between gap-3 p-4"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="text-sm text-surface-100">
+        {newArticlesCount > 0
+          ? `${newArticlesCount} new ${newArticlesCount === 1 ? 'article' : 'articles'} synced.`
+          : 'New articles may be ready for this feed.'}
+      </span>
+      <button
+        type="button"
+        class="btn preset-filled-primary-500 px-3 py-1.5 text-xs"
+        onclick={() => void loadNewArticles()}
+      >
+        Load new articles
+      </button>
     </div>
   {/if}
 

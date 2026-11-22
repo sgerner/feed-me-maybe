@@ -3,6 +3,7 @@ import { building } from '$app/env';
 import {
   enqueueFeedFetch,
   getNextQueuedJobAt,
+  reclaimInterruptedProcessingJobs,
   recoverAbandonedJobs,
   runDueJobs,
   type JobRecord,
@@ -21,7 +22,10 @@ const INITIAL_POLL_DELAY_MS = 1_000;
 const DEFAULT_JOB_BATCH_SIZE = 24;
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let pollTimerDueAt: number | null = null;
 let pollStarted = false;
+let wakeRequested = false;
+let startupReclaimed = false;
 let nextHistoryPruneAt = 0;
 let pollCycle: Promise<PollCycleResult> | null = null;
 
@@ -36,38 +40,64 @@ export function startPolling(): void {
   if (building || pollStarted) return;
   pollStarted = true;
   console.log('[poller] Starting background feed polling loop');
+  if (!startupReclaimed) {
+    startupReclaimed = true;
+    try {
+      reclaimInterruptedProcessingJobs();
+    } catch (error) {
+      recordAppError({ source: 'poller.startup-reclaim', error });
+    }
+  }
   scheduleNextPoll(INITIAL_POLL_DELAY_MS);
 }
 
 export function stopPolling(): void {
   pollStarted = false;
+  wakeRequested = false;
+  startupReclaimed = false;
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
+  pollTimerDueAt = null;
 }
 
 export function wakePoller(): void {
+  if (pollCycle) {
+    wakeRequested = true;
+  }
   scheduleNextPoll(INITIAL_POLL_DELAY_MS);
 }
 
 export function scheduleNextPoll(delayMs?: number): void {
   if (!pollStarted) return;
-  if (pollTimer) clearTimeout(pollTimer);
 
+  const now = Date.now();
+  const effectiveDelay =
+    delayMs ?? (wakeRequested ? INITIAL_POLL_DELAY_MS : undefined);
   const intervalMins = getGlobalPollIntervalMins();
-  const queuedJobAt = getNextQueuedJobAt();
+  const queuedJobAt = getNextQueuedJobAt(now);
   const nextJobDelay =
-    queuedJobAt == null ? null : Math.max(1_000, queuedJobAt - Date.now());
+    queuedJobAt == null
+      ? null
+      : Math.max(INITIAL_POLL_DELAY_MS, queuedJobAt - now);
   const nextDelay =
-    delayMs ??
+    effectiveDelay ??
     Math.min(
       intervalMins * 60 * 1000,
       nextJobDelay ?? Number.POSITIVE_INFINITY,
     );
+  const desiredDueAt = now + nextDelay;
 
+  if (pollTimer && pollTimerDueAt !== null && pollTimerDueAt <= desiredDueAt) {
+    return;
+  }
+
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimerDueAt = desiredDueAt;
   pollTimer = setTimeout(async () => {
     pollTimer = null;
+    pollTimerDueAt = null;
     try {
       await pollFeeds();
     } catch (error) {
@@ -97,6 +127,7 @@ function getPollableFeeds() {
 }
 
 async function runPollCycle(now: number): Promise<PollCycleResult> {
+  wakeRequested = false;
   if (now >= nextHistoryPruneAt) {
     nextHistoryPruneAt = now + 24 * 60 * 60 * 1000;
     try {

@@ -42,14 +42,18 @@ export const load: PageServerLoad = async ({ locals }) => {
     article_count: number;
   }>;
 
-  const healthStatusByFeed = Object.fromEntries(
-    getAllFeedHealth().map((health) => [health.feedId, health.status]),
+  const healthByFeed = new Map(
+    getAllFeedHealth().map((health) => [health.feedId, health]),
   );
 
   return {
-    feeds: feeds.map((feed) => ({
-      ...feed,
-      health_status: healthStatusByFeed[feed.id] ?? 'never',
-    })),
+    feeds: feeds.map((feed) => {
+      const health = healthByFeed.get(feed.id);
+      return {
+        ...feed,
+        health_status: health?.status ?? 'never',
+        health_stale: health?.stale ?? false,
+      };
+    }),
   };
 };

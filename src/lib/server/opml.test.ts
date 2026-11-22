@@ -233,4 +233,22 @@ describe('parseOpml', () => {
         .get('Normalized'),
     ).toEqual({ url: 'https://normalize.example/feed?a=1&b=2' });
   });
+
+  it('includes disabled feeds in OPML exports', () => {
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run(
+      'disabled-opml-feed',
+      'https://disabled-opml.example/rss',
+      'Paused Source',
+      now,
+      now,
+    );
+
+    const exported = exportOpml();
+    expect(exported).toContain('https://disabled-opml.example/rss');
+    expect(exported).toContain('Paused Source');
+  });
 });
