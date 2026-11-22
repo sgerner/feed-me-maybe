@@ -10,6 +10,7 @@ import {
   readResponseText,
 } from '#lib/server/network.ts';
 import { stripHtml } from '#lib/server/normalization.ts';
+import { sanitizeHtml } from '#lib/utils/format.ts';
 
 export type RedditKind =
   | 'subreddit'
@@ -36,12 +37,23 @@ const REDDIT_HOSTS = new Set([
   'old.reddit.com',
   'new.reddit.com',
   'm.reddit.com',
+  'sh.reddit.com',
+  'np.reddit.com',
+]);
+
+const SUBREDDIT_LISTINGS = new Set([
+  'new',
+  'hot',
+  'top',
+  'rising',
+  'controversial',
+  'best',
 ]);
 
 export function isRedditUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return REDDIT_HOSTS.has(parsed.hostname);
+    return REDDIT_HOSTS.has(parsed.hostname.toLowerCase());
   } catch {
     return false;
   }
@@ -75,14 +87,14 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   let username: string | undefined;
   let query: string | undefined;
 
+  const first = parts[0]?.toLowerCase();
+  const second = parts[1];
+  const third = parts[2]?.toLowerCase();
+
   // /r/subreddit/comments/xxx/... => comments/single post
-  if (
-    parts.length >= 4 &&
-    (parts[0] === 'r' || parts[0] === 'R') &&
-    parts[2] === 'comments'
-  ) {
+  if (parts.length >= 4 && first === 'r' && third === 'comments') {
     redditKind = 'comments';
-    subreddit = parts[1];
+    subreddit = second;
     fetchUrl = `${url.origin}${path}.rss`;
     return {
       originalUrl: input,
@@ -94,13 +106,9 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   }
 
   // /r/subreddit/search?q=...
-  if (
-    parts.length >= 3 &&
-    (parts[0] === 'r' || parts[0] === 'R') &&
-    parts[2] === 'search'
-  ) {
+  if (parts.length >= 3 && first === 'r' && third === 'search') {
     redditKind = 'search';
-    subreddit = parts[1];
+    subreddit = second;
     query = url.searchParams.get('q') || undefined;
     const searchUrl = new URL(url.href);
     searchUrl.pathname = `${path}.rss`;
@@ -117,7 +125,7 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
   }
 
   // /search?q=...
-  if (parts[0] === 'search') {
+  if (first === 'search') {
     redditKind = 'search';
     query = url.searchParams.get('q') || undefined;
     const searchUrl = new URL(url.href);
@@ -133,11 +141,20 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     };
   }
 
-  // /user/username/... or /u/username/...
-  if (parts[0] === 'user' || parts[0] === 'u') {
+  // /user/username/... or /u/username/... (including /m/multireddit)
+  if ((first === 'user' || first === 'u') && parts.length >= 2) {
     redditKind = 'user';
-    username = parts[1];
-    const userPath = parts.slice(0, 3).join('/');
+    username = second;
+    let userPath: string;
+    if (parts.length >= 4 && third === 'm') {
+      const multiListing = parts[4]?.toLowerCase();
+      userPath =
+        multiListing && SUBREDDIT_LISTINGS.has(multiListing)
+          ? [...parts.slice(0, 4), multiListing].join('/')
+          : parts.slice(0, 4).join('/');
+    } else {
+      userPath = parts.slice(0, 3).join('/');
+    }
     const userUrl = new URL(url.href);
     userUrl.pathname = `/${userPath}.rss`;
     addLimitIfMissing(userUrl);
@@ -151,16 +168,13 @@ export function normalizeRedditUrl(input: string): RedditNormalizedSource {
     };
   }
 
-  // /r/subreddit/new, /hot, /top, /rising
-  if (parts.length >= 2 && (parts[0] === 'r' || parts[0] === 'R')) {
-    subreddit = parts[1];
-    if (
-      parts.length >= 3 &&
-      ['new', 'hot', 'top', 'rising'].includes(parts[2])
-    ) {
+  // /r/subreddit/new, /hot, /top, /rising, /controversial, /best
+  if (parts.length >= 2 && first === 'r') {
+    subreddit = second;
+    if (parts.length >= 3 && third && SUBREDDIT_LISTINGS.has(third)) {
       redditKind = 'subreddit_listing';
       const listingUrl = new URL(url.href);
-      listingUrl.pathname = `${path}.rss`;
+      listingUrl.pathname = `/r/${subreddit}/${third}.rss`;
       addLimitIfMissing(listingUrl);
       fetchUrl = listingUrl.href;
     } else {
@@ -245,15 +259,66 @@ function stripHtmlOrDecode(html: string | null | undefined): string | null {
   return stripHtml(html) || null;
 }
 
-export function parseRedditPost(post: any): FetchedItem {
-  const permalink = post.permalink
-    ? `https://www.reddit.com${post.permalink}`
-    : post.url;
+function absolutizeRedditUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    const resolved = new URL(value.trim(), 'https://www.reddit.com');
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
+      return undefined;
+    }
+    return resolved.href;
+  } catch {
+    return undefined;
+  }
+}
 
-  const selftext =
-    post.selftext || stripHtmlOrDecode(post.selftext_html) || null;
+function capSummary(text: string): string {
+  if (text.length <= 500) return text;
+  return stripHtml(text).slice(0, 500).trim();
+}
 
-  const isFullContent = Boolean(post.is_self && selftext);
+export function parseRedditPost(post: any, kind?: string): FetchedItem {
+  const isComment =
+    kind === 't1' ||
+    (!post.title &&
+      (typeof post.body === 'string' ||
+        typeof post.body_html === 'string' ||
+        Boolean(post.link_title)));
+
+  const externalUrl = post.is_self ? undefined : absolutizeRedditUrl(post.url);
+
+  const permalink =
+    absolutizeRedditUrl(post.permalink) ||
+    absolutizeRedditUrl(post.link_permalink) ||
+    externalUrl ||
+    '';
+
+  const rawBody =
+    (typeof post.selftext === 'string' && post.selftext) ||
+    (typeof post.body === 'string' && post.body) ||
+    stripHtmlOrDecode(post.selftext_html) ||
+    stripHtmlOrDecode(post.body_html) ||
+    null;
+
+  const cleanContent = rawBody
+    ? sanitizeHtml(rawBody, permalink || 'https://www.reddit.com') || undefined
+    : undefined;
+
+  const title =
+    post.title ||
+    (isComment
+      ? post.link_title
+        ? `Comment on: ${post.link_title}`
+        : post.subreddit
+          ? `Comment in r/${post.subreddit}`
+          : 'Reddit comment'
+      : '(untitled Reddit post)');
+
+  const rawSummary = cleanContent || title || '';
+  const cleanSummary = rawSummary
+    ? sanitizeHtml(rawSummary, permalink || 'https://www.reddit.com')
+    : '';
+  const summary = cleanSummary ? capSummary(cleanSummary) : undefined;
 
   const categories: string[] = [];
   if (post.subreddit) categories.push(`r/${post.subreddit}`);
@@ -262,12 +327,13 @@ export function parseRedditPost(post: any): FetchedItem {
   return {
     guid: `reddit_${post.id}`,
     url: permalink,
-    title: post.title || '(untitled Reddit post)',
+    title,
     author: post.author ? `u/${post.author}` : undefined,
-    summary: selftext || post.title || undefined,
-    content: selftext || undefined,
+    summary,
+    content: cleanContent,
     imageUrl: extractBestRedditImage(post),
-    externalUrl: post.is_self ? undefined : post.url,
+    externalUrl:
+      externalUrl && externalUrl !== permalink ? externalUrl : undefined,
     categories,
     publishedAt: post.created_utc
       ? new Date(post.created_utc * 1000)
@@ -314,9 +380,14 @@ function parseRedditJson(json: any): { items: FetchedItem[]; title?: string } {
           .map((c: any) => `u/${c.author}: ${c.body}`)
           .join('\n---\n');
         if (commentsText) {
-          item.summary = [item.summary, 'Top comments:', commentsText]
+          const combined = [
+            item.summary,
+            'Top comments:',
+            sanitizeHtml(commentsText, item.url || 'https://www.reddit.com'),
+          ]
             .filter(Boolean)
             .join('\n\n');
+          item.summary = capSummary(combined);
         }
       }
       items.push(item);
@@ -333,7 +404,7 @@ function parseRedditJson(json: any): { items: FetchedItem[]; title?: string } {
   for (const child of children) {
     const post = child?.data;
     if (!post) continue;
-    items.push(parseRedditPost(post));
+    items.push(parseRedditPost(post, child?.kind));
   }
 
   // Try to infer a title from the first post's subreddit or from URL params
@@ -348,10 +419,19 @@ function parseRedditJson(json: any): { items: FetchedItem[]; title?: string } {
 
 export async function fetchRedditSource(
   source: RedditNormalizedSource,
-  options: { proxyBaseUrl?: string; etag?: string; lastModified?: string } = {},
+  options: {
+    proxyBaseUrl?: string;
+    etag?: string;
+    lastModified?: string;
+    deadline?: AbortSignal;
+  } = {},
 ): Promise<FetchResult> {
+  const deadline = options.deadline ?? AbortSignal.timeout(15000);
   // Try RSS first as it is more reliable (less likely to be 403'd)
-  const rssResult = await fetchFeed(source.fetchUrl, options);
+  const rssResult = await fetchFeed(source.fetchUrl, {
+    ...options,
+    deadline,
+  });
   if (
     rssResult.notModified ||
     (rssResult.success && rssResult.items.length > 0) ||
@@ -359,6 +439,14 @@ export async function fetchRedditSource(
     rssResult.httpStatus === 410
   ) {
     return rssResult;
+  }
+
+  if (deadline.aborted) {
+    return {
+      success: false,
+      items: [],
+      error: rssResult.error || 'Reddit fetch timed out',
+    };
   }
 
   // If RSS failed or returned nothing, try the JSON API as a fallback
@@ -375,7 +463,7 @@ export async function fetchRedditSource(
       jsonUrl,
       {
         headers,
-        signal: AbortSignal.timeout(15000),
+        signal: deadline,
       },
       {
         proxyBaseUrl: options.proxyBaseUrl,

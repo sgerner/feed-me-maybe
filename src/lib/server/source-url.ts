@@ -38,3 +38,20 @@ export function normalizeSourceUrl(
     return value.trim();
   }
 }
+
+export function normalizeFeedSourceUrl(value: string): string {
+  if (!value) return '';
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return value.trim();
+    }
+    url.hash = '';
+    url.hostname = url.hostname.toLowerCase();
+    if (url.protocol === 'http:' && url.port === '80') url.port = '';
+    if (url.protocol === 'https:' && url.port === '443') url.port = '';
+    return url.href;
+  } catch {
+    return value.trim();
+  }
+}

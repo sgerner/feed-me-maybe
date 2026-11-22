@@ -231,6 +231,6 @@ describe('parseOpml', () => {
       getDb()
         .prepare('SELECT url FROM feeds WHERE title = ?')
         .get('Normalized'),
-    ).toEqual({ url: 'https://normalize.example/feed?a=1&b=2' });
+    ).toEqual({ url: 'https://normalize.example/feed/?b=2&a=1' });
   });
 });

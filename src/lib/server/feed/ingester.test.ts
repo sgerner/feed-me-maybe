@@ -15,6 +15,7 @@ vi.mock('./fetcher', () => ({
 }));
 vi.mock('#lib/server/preferences.ts', () => ({
   applyPreferenceModelToArticle: vi.fn(),
+  updateHeuristicScore: vi.fn(),
 }));
 vi.mock('#lib/server/webhooks.ts', () => ({
   dispatchWebhookEvent: vi.fn().mockResolvedValue(undefined),
@@ -474,5 +475,262 @@ describe('feed ingester identity and duplicate handling', () => {
       .get('paused-art') as { combined_score: number | null };
     expect(meta.analysis_status).toBe('ready');
     expect(art.combined_score).not.toBeNull();
+  });
+
+  it('skips disabled feeds without logging a fetch or calling fetchFeed', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 0, ?, ?)',
+    ).run('feed-disabled', 'https://example.com/disabled.xml', now, now);
+
+    const result = await ingestFeed({ feedId: 'feed-disabled' });
+    expect(result).toMatchObject({ success: true, skipped: true });
+    expect(fetchFeed).not.toHaveBeenCalled();
+    expect(
+      db
+        .prepare('SELECT COUNT(*) FROM feed_fetch_logs WHERE feed_id = ?')
+        .pluck()
+        .get('feed-disabled'),
+    ).toBe(0);
+  });
+
+  it('marks fetch log as error if a pre-transaction fetch call throws', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-pretx-throw', 'https://example.com/throw.xml', now, now);
+
+    vi.mocked(fetchFeed).mockRejectedValueOnce(new Error('Pre-tx boom'));
+    const failed = await ingestFeed({ feedId: 'feed-pretx-throw' });
+    expect(failed.success).toBe(false);
+    expect(failed.error).toContain('Pre-tx boom');
+
+    const latestLog = db
+      .prepare(
+        'SELECT status, error_message FROM feed_fetch_logs WHERE feed_id = ? ORDER BY created_at DESC LIMIT 1',
+      )
+      .get('feed-pretx-throw') as { status: string; error_message: string };
+    expect(latestLog.status).toBe('error');
+    expect(latestLog.error_message).toContain('Pre-tx boom');
+
+    // Subsequent run must not get stuck on already_running.
+    vi.mocked(fetchFeed).mockResolvedValueOnce({ success: true, items: [] });
+    const recovered = await ingestFeed({ feedId: 'feed-pretx-throw' });
+    expect(recovered.success).toBe(true);
+    expect(recovered.status).toBe('completed');
+  });
+
+  it('orders undated items newest-first via descending fetched_at and treats non-unique GUIDs as null', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-undated-guid', 'https://example.com/undated.xml', now, now);
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'reused-guid',
+          url: 'https://example.com/post-newest',
+          title: 'Newest',
+          categories: [],
+        },
+        {
+          guid: 'reused-guid',
+          url: 'https://example.com/post-older',
+          title: 'Older',
+          categories: [],
+        },
+      ],
+    });
+
+    const result = await ingestFeed({ feedId: 'feed-undated-guid' });
+    expect(result.articlesNew).toBe(2);
+
+    const rows = db
+      .prepare(
+        'SELECT title, guid, fetched_at FROM articles WHERE feed_id = ? ORDER BY fetched_at DESC',
+      )
+      .all('feed-undated-guid') as Array<{
+      title: string;
+      guid: string;
+      fetched_at: number;
+    }>;
+    expect(rows.map((r) => r.title)).toEqual(['Newest', 'Older']);
+    expect(rows[0].fetched_at).toBeGreaterThan(rows[1].fetched_at);
+    expect(rows.every((r) => r.guid === '')).toBe(true);
+  });
+
+  it('reconciles rotating /latest URLs in both orders without losing saved bookmarks, and syncs GUID title/summary edits to FTS5', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-rotating', 'https://example.com/latest.xml', now, now);
+
+    // Poll 1: Issue 1 at /latest, user saves it with Readability content.
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'issue-1',
+          url: 'https://example.com/latest',
+          title: 'Issue One',
+          summary: 'Summary One',
+          content: '<p>Full saved Readability body for Issue One.</p>',
+          categories: [],
+        },
+      ],
+    });
+    expect((await ingestFeed({ feedId: 'feed-rotating' })).articlesNew).toBe(1);
+    db.prepare("UPDATE articles SET saved = 1 WHERE guid = 'issue-1'").run();
+
+    // Poll 2 (Order 1: new Issue 2 at /latest BEFORE moved Issue 1 at /archive/1).
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'issue-2',
+          url: 'https://example.com/latest',
+          title: 'Issue Two',
+          summary: 'Summary Two',
+          categories: [],
+        },
+        {
+          guid: 'issue-1',
+          url: 'https://example.com/archive/1',
+          title: 'Issue One (Corrected)',
+          summary: 'Summary One Updated',
+          // Inflated HTML wrapper should not overwrite saved=1 body.
+          content: '<div><span>' + 'x'.repeat(200) + '</span></div>',
+          categories: ['release'],
+        },
+      ],
+    });
+    expect((await ingestFeed({ feedId: 'feed-rotating' })).articlesNew).toBe(1);
+
+    const issue1 = db
+      .prepare(
+        'SELECT id, url, title, summary, content, categories FROM articles WHERE guid = ?',
+      )
+      .get('issue-1') as {
+      id: string;
+      url: string;
+      title: string;
+      summary: string;
+      content: string;
+      categories: string;
+    };
+    expect(issue1.url).toBe('https://example.com/archive/1');
+    expect(issue1.title).toBe('Issue One (Corrected)');
+    expect(issue1.summary).toBe('Summary One Updated');
+    expect(issue1.content).toBe(
+      '<p>Full saved Readability body for Issue One.</p>',
+    );
+    expect(JSON.parse(issue1.categories)).toEqual(['release']);
+
+    // Verify FTS5 reflects updated headline.
+    const ftsHit = db
+      .prepare(
+        "SELECT article_id FROM article_search WHERE article_search MATCH 'Corrected'",
+      )
+      .get() as { article_id: string } | undefined;
+    expect(ftsHit?.article_id).toBe(issue1.id);
+
+    // Poll 3 (Order 2: moved Issue 2 at /archive/2 BEFORE Issue 3 at /latest).
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'issue-2',
+          url: 'https://example.com/archive/2',
+          title: 'Issue Two',
+          categories: [],
+        },
+        {
+          guid: 'issue-3',
+          url: 'https://example.com/latest',
+          title: 'Issue Three',
+          categories: [],
+        },
+      ],
+    });
+    expect((await ingestFeed({ feedId: 'feed-rotating' })).articlesNew).toBe(1);
+
+    // Poll 4: Issue 4 shares /latest without Issue 3 in the feed (distinct GUID + title).
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'issue-4',
+          url: 'https://example.com/latest',
+          title: 'Issue Four',
+          categories: [],
+        },
+      ],
+    });
+    expect((await ingestFeed({ feedId: 'feed-rotating' })).articlesNew).toBe(1);
+    expect(
+      db
+        .prepare('SELECT COUNT(*) FROM articles WHERE feed_id = ?')
+        .pluck()
+        .get('feed-rotating'),
+    ).toBe(4);
+  });
+
+  it("backfills categories over '[]' and applies preference model on stub upgrade", async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applyPreferenceModelToArticle } =
+      await import('#lib/server/preferences.ts');
+    vi.mocked(applyPreferenceModelToArticle).mockClear();
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-cat-backfill', 'https://example.com/cat.xml', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, guid, url, title, summary, content, categories, fetched_at, created_at, updated_at)
+       VALUES ('cat-art', 'feed-cat-backfill', 'c1', 'https://example.com/c1', 'Stub Title', 'Stub', '', '[]', ?, ?, ?)`,
+    ).run(now, now, now);
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'c1',
+          url: 'https://example.com/c1',
+          title: 'Stub Title',
+          summary: 'Stub',
+          content: '<p>Full text body arrived for stub upgrade.</p>',
+          categories: ['systems', 'rust'],
+        },
+      ],
+    });
+
+    await ingestFeed({ feedId: 'feed-cat-backfill' });
+    expect(
+      db
+        .prepare('SELECT categories FROM articles WHERE id = ?')
+        .pluck()
+        .get('cat-art'),
+    ).toBe('["systems","rust"]');
+    expect(applyPreferenceModelToArticle).toHaveBeenCalledWith('cat-art');
   });
 });

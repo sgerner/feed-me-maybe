@@ -35,6 +35,7 @@ type ArticleJevRow = {
   title: string | null;
   summary: string | null;
   content: string | null;
+  content_length: number;
   author: string | null;
   categories: string | null;
   published_at: number | null;
@@ -301,7 +302,8 @@ function getArticle(articleId: string): ArticleJevRow | undefined {
   return getDb()
     .prepare(
       `
-        SELECT a.title, a.summary, a.content, a.author, a.categories,
+        SELECT a.title, a.summary, a.content, length(a.content) AS content_length,
+               a.author, a.categories,
                a.published_at, a.fetched_at,
                COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS feed_title, f.category AS feed_category,
                am.summary AS ai_summary, am.analysis_status AS ai_analysis_status,
@@ -456,8 +458,27 @@ async function scoreArticleWithJevInternal(
       'SELECT processed_at FROM article_ai_metadata WHERE article_id = ?',
     )
     .pluck();
+  const readArticleSnapshot = db.prepare(
+    'SELECT title, summary, length(content) AS content_length FROM articles WHERE id = ?',
+  );
   const analysisChanged = () =>
     (readAnalysisVersion.get(articleId) ?? null) !== article.ai_processed_at;
+  const articleSnapshotChanged = () => {
+    const current = readArticleSnapshot.get(articleId) as
+      | {
+          title: string | null;
+          summary: string | null;
+          content_length: number | null;
+        }
+      | undefined;
+    if (!current) return true;
+    return (
+      (current.title ?? null) !== (article.title ?? null) ||
+      (current.summary ?? null) !== (article.summary ?? null) ||
+      Number(current.content_length ?? 0) !==
+        Number(article.content_length ?? 0)
+    );
+  };
 
   try {
     const outcome = await requestRankingScore(
@@ -471,6 +492,7 @@ async function scoreArticleWithJevInternal(
         const currentProvider = getRankingProviderSnapshot();
         if (
           analysisChanged() ||
+          articleSnapshotChanged() ||
           currentRevision !== profileRevision ||
           currentProvider.provider !== providerSnapshot.provider ||
           currentProvider.revision !== providerSnapshot.revision
@@ -508,6 +530,7 @@ async function scoreArticleWithJevInternal(
         const currentProvider = getRankingProviderSnapshot();
         if (
           analysisChanged() ||
+          articleSnapshotChanged() ||
           currentRevision !== profileRevision ||
           currentProvider.provider !== providerSnapshot.provider ||
           currentProvider.revision !== providerSnapshot.revision

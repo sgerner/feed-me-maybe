@@ -291,4 +291,143 @@ describe('Feed Fetcher', () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/unsupported content type/i);
   });
+
+  it('handles Atom prologs, XHTML/HTML title stripping, Media RSS, and rejects truncated Atom feeds', async () => {
+    const truncated = `<?xml version="1.0"?>
+      <?xml-stylesheet type="text/xsl" href="style.xsl"?>
+      <!DOCTYPE feed>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Truncated</title>
+        <entry><id>1</id><title>Partial</title><link href="https://example.com/1"/></entry>`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(truncated, {
+          headers: { 'content-type': 'application/atom+xml', etag: '"e1"' },
+        }),
+      ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    const truncatedResult = await fetchFeed('https://example.com/atom.xml');
+    expect(truncatedResult.success).toBe(false);
+    expect(truncatedResult.items).toEqual([]);
+    expect(truncatedResult.etag).toBeUndefined();
+
+    const valid = `<?xml version="1.0"?>
+      <?xml-stylesheet type="text/xsl" href="style.xsl"?>
+      <!-- comment -->
+      <!DOCTYPE feed>
+      <feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:base="https://example.com/feed/">
+        <title type="html">&lt;b&gt;News &amp;amp; Notes&lt;/b&gt;</title>
+        <entry xml:base="posts/">
+          <id>atom-1</id>
+          <title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><em>XHTML</em> &amp; Title</div></title>
+          <link href="post-1"/>
+          <content type="html" xml:base="assets/">&lt;p&gt;&lt;img src="diagram.png"&gt;&lt;/p&gt;</content>
+          <media:group>
+            <media:content url="video.mp4" type="video/mp4" medium="video"/>
+            <media:thumbnail url="thumb.jpg"/>
+            <media:description>Media summary text</media:description>
+          </media:group>
+        </entry>
+      </feed>`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(valid, {
+          headers: { 'content-type': 'application/atom+xml' },
+        }),
+      ),
+    );
+    const validResult = await fetchFeed('https://example.com/atom.xml');
+    expect(validResult.success).toBe(true);
+    expect(validResult.title).toBe('News & Notes');
+    expect(validResult.items[0]).toMatchObject({
+      guid: 'atom-1',
+      url: 'https://example.com/feed/posts/post-1',
+      title: 'XHTML & Title',
+      summary: 'Media summary text',
+      imageUrl: 'https://example.com/feed/posts/thumb.jpg',
+    });
+    expect(validResult.items[0]?.content).toContain(
+      'src="https://example.com/feed/posts/assets/diagram.png"',
+    );
+  });
+
+  it('parses RSS bare ampersands, image over audio media, empty guid objects, dc:date, and regional timezones', async () => {
+    const rss = `<?xml version="1.0"?>
+      <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <channel>
+          <title>R&D Feed</title>
+          <item>
+            <title>Episode 1</title>
+            <link>https://example.com/ep1?a=1&b=2</link>
+            <guid isPermaLink="false"></guid>
+            <dc:date>2026-02-01T12:00:00Z</dc:date>
+            <media:content url="https://example.com/ep1.mp3" type="audio/mpeg" medium="audio"/>
+            <media:thumbnail url="/thumbs/ep1.jpg"/>
+            <description><![CDATA[<script>alert(1)</script><p>Hello <a href="notes">notes</a> ${'a'.repeat(520)}</p>]]></description>
+          </item>
+          <item>
+            <title>Regional TZ</title>
+            <link>https://example.com/tz</link>
+            <pubDate>Mon, 02 Feb 2026 10:00:00 CET</pubDate>
+          </item>
+        </channel>
+      </rss>`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(rss, {
+          headers: { 'content-type': 'application/rss+xml' },
+        }),
+      ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/rss');
+    expect(result.success).toBe(true);
+    expect(result.title).toBe('R&D Feed');
+    expect(result.items[0]).toMatchObject({
+      guid: undefined,
+      url: 'https://example.com/ep1?a=1&b=2',
+      imageUrl: 'https://example.com/thumbs/ep1.jpg',
+      publishedAt: new Date('2026-02-01T12:00:00Z'),
+    });
+    expect(result.items[0]?.summary).not.toContain('alert(1)');
+    expect(result.items[0]?.summary?.length).toBeLessThanOrEqual(500);
+    expect(result.items[1]?.guid).toBeUndefined();
+    expect(result.items[1]?.publishedAt?.toISOString()).toBe(
+      '2026-02-02T09:00:00.000Z',
+    );
+  });
+
+  it('keeps external_url alongside url and derives summary in JSON Feed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          version: 'https://jsonfeed.org/version/1.1',
+          title: 'JSON Feed',
+          items: [
+            {
+              id: 'jf-1',
+              url: 'https://example.com/posts/1',
+              external_url: 'https://upstream.example/story',
+              title: 'Link Post',
+              content_html: '<p>Body <a href="sub/ref">ref</a></p>',
+            },
+          ],
+        }),
+      ),
+    );
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/feed.json');
+    expect(result.items[0]).toMatchObject({
+      guid: 'jf-1',
+      url: 'https://example.com/posts/1',
+      externalUrl: 'https://upstream.example/story',
+      summary:
+        '<p>Body <a href="https://example.com/posts/sub/ref" target="_blank" rel="noopener noreferrer">ref</a></p>',
+    });
+  });
 });

@@ -211,7 +211,15 @@ function scoreArticle(article: FeedArticleRow, now = Date.now()): number {
   const published = article.published_at ?? article.fetched_at ?? 0;
   const ageDays = Math.max(0, (now - published) / DAY_MS);
   const recentBoost =
-    ageDays <= 1 ? 8 : ageDays <= 3 ? 4 : ageDays <= 7 ? 2 : 0;
+    article.published_at == null
+      ? 0
+      : ageDays <= 1
+        ? 8
+        : ageDays <= 3
+          ? 4
+          : ageDays <= 7
+            ? 2
+            : 0;
   const agePenalty = Math.min(ageDays / 45, 10);
   return combined + recentBoost - agePenalty;
 }

@@ -51,7 +51,6 @@ export async function getConfiguredAiClient() {
   const modelInfo = providerInfo?.models.find(
     (model) => model.id === config.model_id,
   );
-  if (!modelInfo && !config.custom_base_url) return null;
   const baseUrl = config.custom_base_url || providerInfo.baseUrl;
 
   const keyVariable = [
