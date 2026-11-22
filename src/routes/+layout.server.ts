@@ -1,9 +1,10 @@
 import { getDb } from '#lib/server/db/index.ts';
+import { listPinnedSavedSearches } from '#lib/server/saved-searches.ts';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, depends }) => {
   if (!locals.sessionId) {
-    return { feeds: [], userId: 'admin' };
+    return { feeds: [], pinnedSearches: [], userId: 'admin' };
   }
 
   depends('app:reader-counts');
@@ -27,6 +28,7 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
     category: string | null;
     unread_count: number;
   }>;
+  const pinnedSearches = listPinnedSavedSearches();
 
   const openMode = db
     .prepare("SELECT value FROM app_settings WHERE key = 'article_open_mode'")
@@ -37,6 +39,7 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
 
   return {
     feeds,
+    pinnedSearches,
     sessionId: locals.sessionId,
     // This app currently has one local account. Keep the offline scope stable
     // across session expiry so cached private data remains correctly owned.

@@ -9,6 +9,14 @@ import {
   validateCssSelector,
 } from './archive';
 
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi
+      .fn()
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+  },
+}));
+
 describe('archive fetching safety and challenge detection', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
