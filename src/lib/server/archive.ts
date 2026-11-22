@@ -79,12 +79,12 @@ async function fetchPage(
     }
     const html = await readResponseText(response, MAX_HTML_RESPONSE_BYTES);
     return { url: finalUrl, html };
-  } catch (err) {
+  } catch {
     return null;
   }
 }
 
-function isCloudflareChallenge(html: string): boolean {
+export function isCloudflareChallenge(html: string): boolean {
   // Actual archive snapshots have <html style="background-color:#EEEEEE">
   // Challenge pages have plain <html> with challenge text
   const hasSnapshotStyle =
@@ -108,6 +108,8 @@ function isCloudflareChallenge(html: string): boolean {
     'cdn-cgi/challenge-platform',
     'cf-turnstile',
     'just a moment',
+    'attention required',
+    'enable javascript and cookies to continue',
     'ddos protection',
     'ray id',
     'cloudflare',
@@ -122,6 +124,18 @@ function isCloudflareChallenge(html: string): boolean {
     }
   }
 
+  return false;
+}
+
+export function isJinaErrorPayload(text: string): boolean {
+  if (isCloudflareChallenge(text)) return true;
+  if (
+    /^Warning:\s*(?:Target URL returned error\b|.*\b(?:401|403|404|429|5\d\d|captcha|cloudflare|challenge|blocked|access denied|forbidden)\b)/im.test(
+      text,
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -210,12 +224,17 @@ function extractImageFromHtml(
 }
 
 function decodeHtmlEntities(value: string): string {
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  const entities: Record<string, string> = {
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#39;': "'",
+  };
+  return value.replace(
+    /&(?:amp|lt|gt|quot|#39);/gi,
+    (match) => entities[match.toLowerCase()] ?? match,
+  );
 }
 
 function stripTags(value: string): string {
@@ -282,7 +301,7 @@ function extractCandidateHtml(html: string): string {
 }
 
 function normalizeContent(html: string, baseUrl: string): string {
-  return sanitizeContent(absolutizeUrls(html, baseUrl));
+  return sanitizeContent(absolutizeUrls(html, baseUrl), baseUrl);
 }
 
 function extractWithReadability(
@@ -308,9 +327,15 @@ export async function fetchPublisherArticle(
   proxyBaseUrl?: string,
 ) {
   const page = await fetchPage(url, 12000, proxyBaseUrl);
-  if (!page) return null;
+  if (!page || isCloudflareChallenge(page.html)) return null;
   const parsed = extractWithReadability(page.html, page.url);
-  if (!parsed || isGarbageContent(parsed.content)) return null;
+  if (
+    !parsed ||
+    isCloudflareChallenge(parsed.content) ||
+    isGarbageContent(parsed.content)
+  ) {
+    return null;
+  }
   return { ...parsed, imageUrl: extractImageFromHtml(page.html, page.url) };
 }
 
@@ -327,12 +352,14 @@ function extractWithFallback(
   return { title, content, imageUrl };
 }
 
-function isGarbageContent(content: string): boolean {
+export function isGarbageContent(content: string): boolean {
+  if (isCloudflareChallenge(content)) return true;
   const text = content
     .replace(/<[^>]*>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+  if (!text) return true;
   const garbageIndicators = [
     'google search',
     'google webcache',
@@ -340,11 +367,18 @@ function isGarbageContent(content: string): boolean {
     '404 not found',
     'page not found',
     'cache miss',
+    'access denied',
+    '403 forbidden',
+    'enable javascript and cookies to continue',
+    'please enable cookies',
+    'target url returned error',
+    'warning: target url returned error',
   ];
   for (const indicator of garbageIndicators) {
     if (
       text === indicator ||
-      (text.length < 500 && text.startsWith(indicator + ' '))
+      (text.length < 600 &&
+        (text.startsWith(indicator + ' ') || text.includes(indicator)))
     ) {
       return true;
     }
@@ -357,6 +391,7 @@ async function extractFromSnapshotPage(
   pageUrl: string,
   fallbackTitle: string,
 ): Promise<ArchivedArticle | null> {
+  if (isCloudflareChallenge(html)) return null;
   const title = extractTitleFromHtml(html, fallbackTitle);
   const imageUrl = extractImageFromHtml(html, pageUrl);
 
@@ -464,7 +499,10 @@ async function tryJinaAi(
   deadline: AbortSignal,
 ): Promise<ArchivedArticle | null> {
   try {
-    const jinaUrl = `https://r.jina.ai/http://${originalUrl.replace(/^https?:\/\//, '')}`;
+    const normalizedOriginal = /^https?:\/\//i.test(originalUrl)
+      ? originalUrl
+      : `https://${originalUrl}`;
+    const jinaUrl = `https://r.jina.ai/${normalizedOriginal}`;
     const { response } = await fetchSafe(
       jinaUrl,
       {
@@ -483,11 +521,18 @@ async function tryJinaAi(
       return null;
     }
     const text = await readResponseText(response, MAX_HTML_RESPONSE_BYTES);
-    if (!text.trim()) return null;
+    if (!text.trim() || isJinaErrorPayload(text)) return null;
 
     // Parse jina.ai markdown format
     const titleMatch = text.match(/^Title:\s*(.+)$/m);
     const title = titleMatch ? titleMatch[1].trim() : fallbackTitle;
+    if (
+      /^(?:just a moment|attention required|access denied|security check|403 forbidden|404 not found)/i.test(
+        title,
+      )
+    ) {
+      return null;
+    }
 
     // Extract markdown content after "Markdown Content:"
     const contentMatch = text.match(/Markdown Content:\s*\n?([\s\S]+)$/i);
@@ -505,19 +550,22 @@ async function tryJinaAi(
         .trim();
     }
 
-    if (!content) {
+    if (!content || isJinaErrorPayload(content)) {
       return null;
     }
 
     // Convert markdown-like content to HTML
-    const htmlContent = formatContent(content);
+    const htmlContent = formatContent(content, normalizedOriginal);
+    if (isGarbageContent(htmlContent)) {
+      return null;
+    }
 
     return {
       archiveUrl: jinaUrl,
       title,
       content: htmlContent,
     };
-  } catch (err) {
+  } catch {
     return null;
   }
 }
@@ -561,7 +609,7 @@ export async function fetchArchivedArticle(
 
   // 3. Last resort: fetch original directly with Readability
   const originalPage = await fetchPage(originalUrl, 8_000, proxyBaseUrl);
-  if (originalPage) {
+  if (originalPage && !isCloudflareChallenge(originalPage.html)) {
     const readability = extractWithReadability(
       originalPage.html,
       originalPage.url,

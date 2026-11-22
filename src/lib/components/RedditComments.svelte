@@ -1,20 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { formatContent } from '#lib/utils/format.ts';
-  import { buildProxyRequestUrl } from '#lib/proxy.ts';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
-  import {
-    normalizeRedditCommentsUrl,
-    parseRedditCommentsResponse,
-    type RedditComment,
-  } from '#lib/reddit-comments.ts';
+  import { type RedditComment } from '#lib/reddit-comments.ts';
 
   type Comment = RedditComment;
 
   let {
     permalink,
     useProxy = false,
-    proxyBaseUrl = null,
   }: {
     permalink: string;
     useProxy?: boolean;
@@ -25,7 +19,10 @@
   let loading = $state(true);
   let error = $state('');
   let expanded = $state(true);
+  let collapsedComments = $state<Record<string, boolean>>({});
+  let requestSeq = 0;
 
+  const MAX_VISUAL_INDENT_DEPTH = 4;
   const commentsId = $props.id();
 
   function timeAgo(iso: string): string {
@@ -38,25 +35,11 @@
     return `${Math.floor(diff / 86400)}d`;
   }
 
-  async function fetchComments(endpointUrl: string): Promise<Comment[]> {
-    const res = await fetch(endpointUrl, {
-      headers: { Accept: 'application/json' },
-    });
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || `Error ${res.status}`);
-    }
-
-    const data = await res.json();
-    return parseRedditCommentsResponse(data);
-  }
-
-  async function fetchCommentsFromServer(): Promise<Comment[]> {
+  async function fetchCommentsFromServer(url: string): Promise<Comment[]> {
     const res = await fetchWithCsrf('/api/reddit/comments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: permalink, useProxy }),
+      body: JSON.stringify({ url, useProxy }),
     });
 
     if (!res.ok) {
@@ -68,34 +51,33 @@
     return data.comments || [];
   }
 
-  onMount(async () => {
+  async function loadComments(targetPermalink = permalink) {
+    const seq = ++requestSeq;
+    loading = true;
+    error = '';
+    collapsedComments = {};
     try {
-      const targetUrl = normalizeRedditCommentsUrl(permalink);
-      const endpoints: string[] = [];
-
-      if (useProxy && proxyBaseUrl) {
-        endpoints.push(buildProxyRequestUrl(proxyBaseUrl, targetUrl));
-      }
-      endpoints.push(targetUrl);
-
-      for (const endpointUrl of endpoints) {
-        try {
-          comments = await fetchComments(endpointUrl);
-          error = '';
-          return;
-        } catch (err: unknown) {
-          error =
-            err instanceof Error ? err.message : 'Failed to load comments';
-        }
-      }
-
-      comments = await fetchCommentsFromServer();
+      const loaded = await fetchCommentsFromServer(targetPermalink);
+      if (seq !== requestSeq) return;
+      comments = loaded;
       error = '';
     } catch (err: unknown) {
+      if (seq !== requestSeq) return;
+      comments = [];
       error = err instanceof Error ? err.message : 'Failed to load comments';
     } finally {
-      loading = false;
+      if (seq === requestSeq) {
+        loading = false;
+      }
     }
+  }
+
+  function toggleComment(id: string) {
+    collapsedComments[id] = !collapsedComments[id];
+  }
+
+  onMount(() => {
+    void loadComments(permalink);
   });
 </script>
 
@@ -128,7 +110,7 @@
       >
         Reddit Comments
       </span>
-      {#if !loading}
+      {#if !loading && !error}
         <span class="text-sm" style="color: var(--color-surface-300);">
           {comments.length} top-level
         </span>
@@ -165,10 +147,17 @@
     {:else if error}
       <div
         role="alert"
-        class="py-3 text-sm"
-        style="color: var(--color-error-300);"
+        class="flex flex-wrap items-center justify-between gap-3 rounded-sm border px-3 py-2.5 text-sm"
+        style="color: var(--color-error-300); border-color: color-mix(in oklch, var(--color-error-500) 28%, transparent); background: color-mix(in oklch, var(--color-error-500) 8%, transparent);"
       >
-        {error}
+        <span>{error}</span>
+        <button
+          type="button"
+          class="btn btn-sm preset-tonal"
+          onclick={() => void loadComments(permalink)}
+        >
+          Retry
+        </button>
       </div>
     {:else if comments.length === 0}
       <div class="py-3 text-sm italic" style="color: var(--color-surface-300);">
@@ -181,33 +170,69 @@
 </div>
 
 {#snippet commentList(items: Comment[], depth = 0)}
-  <ul class="space-y-2" class:ml-3={depth > 0} role="list">
+  <ul
+    class="space-y-2 {depth > 0 && depth <= MAX_VISUAL_INDENT_DEPTH
+      ? 'ml-2 sm:ml-3'
+      : ''}"
+    role="list"
+  >
     {#each items as comment (comment.id)}
+      {@const isCollapsed = Boolean(collapsedComments[comment.id])}
       <li
-        class="rounded-sm px-3 py-2"
+        class="min-w-0 rounded-sm px-2.5 py-2 sm:px-3"
         style={depth > 0
           ? 'border-left: 2px solid color-mix(in oklch, var(--color-primary-500) 20%, transparent);'
           : 'background: color-mix(in oklch, var(--color-surface-800) 30%, transparent);'}
       >
-        <div class="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
-          <span class="font-semibold" style="color: var(--color-primary-300);">
-            u/{comment.author}
-          </span>
-          <span style="color: var(--color-surface-300);">
-            {comment.score} pts
-          </span>
-          <span style="color: var(--color-surface-300);">
-            {timeAgo(comment.createdAt)}
-          </span>
+        <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2 text-[11px]">
+            {#if depth > MAX_VISUAL_INDENT_DEPTH}
+              <span
+                class="rounded px-1 py-0.5 text-[10px]"
+                style="background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); color: var(--color-primary-300);"
+                title="Reply depth {depth}"
+              >
+                ↳ {depth}
+              </span>
+            {/if}
+            <span
+              class="font-semibold"
+              style="color: var(--color-primary-300);"
+            >
+              u/{comment.author}
+            </span>
+            <span style="color: var(--color-surface-300);">
+              {comment.score} pts
+            </span>
+            <span style="color: var(--color-surface-300);">
+              {timeAgo(comment.createdAt)}
+            </span>
+          </div>
+          <button
+            type="button"
+            class="rounded px-1.5 py-0.5 text-[11px] font-medium transition hover:bg-white/10"
+            style="color: var(--color-surface-300);"
+            aria-expanded={!isCollapsed}
+            aria-label={isCollapsed
+              ? `Expand comment by ${comment.author}`
+              : `Collapse comment by ${comment.author}`}
+            onclick={() => toggleComment(comment.id)}
+          >
+            {isCollapsed
+              ? `+ Expand${comment.replies?.length ? ` (${comment.replies.length})` : ''}`
+              : '−'}
+          </button>
         </div>
-        <div
-          class="prose prose-sm max-w-none text-sm leading-relaxed"
-          style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
-        >
-          {@html formatContent(comment.body)}
-        </div>
-        {#if comment.replies?.length}
-          {@render commentList(comment.replies, depth + 1)}
+        {#if !isCollapsed}
+          <div
+            class="prose prose-sm prose-glass max-w-none min-w-0 overflow-x-auto break-words text-sm leading-relaxed"
+            style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
+          >
+            {@html formatContent(comment.body, 'https://www.reddit.com')}
+          </div>
+          {#if comment.replies?.length}
+            {@render commentList(comment.replies, depth + 1)}
+          {/if}
         {/if}
       </li>
     {/each}

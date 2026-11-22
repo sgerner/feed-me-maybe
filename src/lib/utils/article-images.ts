@@ -7,16 +7,27 @@ export type ArticleImage = {
 };
 
 function decodeHtmlEntities(text: string): string {
-  return text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&#x2F;/g, '/')
-    .replace(/&#47;/g, '/')
-    .replace(/&nbsp;/g, ' ');
+  const entities: Record<string, string> = {
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#x27;': "'",
+    '&#39;': "'",
+    '&#x2f;': '/',
+    '&#47;': '/',
+    '&nbsp;': ' ',
+  };
+  return text.replace(
+    /&(?:amp|lt|gt|quot|nbsp|#x27|#39|#x2F|#47);/gi,
+    (match) => entities[match.toLowerCase()] ?? match,
+  );
+}
+
+function isPlaceholderImageSrc(value: string | undefined): boolean {
+  if (!value) return true;
+  const trimmed = decodeHtmlEntities(value).trim();
+  return !trimmed || /^(?:data:|blob:|about:)/i.test(trimmed);
 }
 
 function normalizeImageUrl(candidate: string, baseUrl: string): string | null {
@@ -24,11 +35,24 @@ function normalizeImageUrl(candidate: string, baseUrl: string): string | null {
   if (!trimmed) return null;
   if (
     trimmed.startsWith('#') ||
-    trimmed.startsWith('javascript:') ||
-    trimmed.startsWith('mailto:') ||
-    trimmed.startsWith('tel:')
+    /^(?:javascript:|data:|blob:|about:|mailto:|tel:)/i.test(trimmed)
   ) {
     return null;
+  }
+
+  if (trimmed.startsWith('//')) {
+    if (baseUrl) {
+      try {
+        return new URL(trimmed, baseUrl).href;
+      } catch {
+        // Fall through to https upgrade
+      }
+    }
+    try {
+      return new URL(`https:${trimmed}`).href;
+    } catch {
+      return null;
+    }
   }
 
   try {
@@ -50,15 +74,22 @@ function extractImageCandidates(text: string): { src: string; alt: string }[] {
     )) {
       attrs.set(name.toLowerCase(), doubleQuoted ?? singleQuoted);
     }
-    const src = attrs.get('src');
-    if (src)
+    const rawSrc = attrs.get('src');
+    const src = !isPlaceholderImageSrc(rawSrc)
+      ? rawSrc
+      : attrs.get('data-src') ||
+        attrs.get('data-lazy-src') ||
+        attrs.get('data-original');
+    if (src && !isPlaceholderImageSrc(src))
       candidates.push({ src, alt: decodeHtmlEntities(attrs.get('alt') ?? '') });
   }
 
   for (const [, alt, src] of text.matchAll(
     /!\[([^\]]*)]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
   )) {
-    candidates.push({ src, alt: decodeHtmlEntities(alt) });
+    if (!isPlaceholderImageSrc(src)) {
+      candidates.push({ src, alt: decodeHtmlEntities(alt) });
+    }
   }
   return candidates;
 }

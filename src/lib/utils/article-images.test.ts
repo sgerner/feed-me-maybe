@@ -17,15 +17,22 @@ describe('extractArticleImages', () => {
     ]);
   });
 
-  it('extracts markdown and relative image urls', () => {
+  it('extracts markdown, relative, lazy-loaded, and protocol-relative image urls', () => {
     const images = extractArticleImages({
       articleUrl: 'https://example.com/articles/123',
       content:
-        '![alt](images/one.png) and ![alt](https://cdn.example.com/two.png)',
+        '![alt](images/one.png) and ![alt](https://cdn.example.com/two.png)<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/three.png" alt="Three"><img data-lazy-src="//cdn.example.com/four.png" alt="Four">',
     });
 
-    expect(images.map((image) => image.alt)).toEqual(['alt', 'alt']);
+    expect(images.map((image) => image.alt)).toEqual([
+      'Three',
+      'Four',
+      'alt',
+      'alt',
+    ]);
     expect(images.map((image) => image.src)).toEqual([
+      'https://example.com/img/three.png',
+      'https://cdn.example.com/four.png',
       'https://example.com/articles/images/one.png',
       'https://cdn.example.com/two.png',
     ]);
