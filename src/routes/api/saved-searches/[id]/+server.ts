@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import { readJsonObject } from '#lib/server/request-body.ts';
 import {
   deleteSavedSearch,
   SavedSearchError,
@@ -15,10 +16,8 @@ function errorResponse(caught: unknown, fallback: string): Response {
 export const PATCH: RequestHandler = async ({ request, locals, params }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
+  const body = await readJsonObject(request);
+  if (!body) {
     return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
   try {
