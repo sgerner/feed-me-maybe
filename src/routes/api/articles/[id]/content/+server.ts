@@ -15,7 +15,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
   const article = db
     .prepare(
       `
-    SELECT a.url, a.external_url, a.content, f.use_proxy
+    SELECT a.url, a.external_url, a.content, a.summary, f.use_proxy
     FROM articles a JOIN feeds f ON f.id = a.feed_id
     WHERE a.id = ?
   `,
@@ -25,6 +25,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
         url: string;
         external_url: string | null;
         content: string | null;
+        summary: string | null;
         use_proxy: number;
       }
     | undefined;
@@ -42,19 +43,21 @@ export const POST: RequestHandler = async ({ locals, params }) => {
     );
   }
 
-  const textLength = (content: string) =>
-    content
+  const textLength = (content: string | null | undefined) =>
+    (content || '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim().length;
-  if (
-    article.content &&
-    textLength(result.content) <= textLength(article.content)
-  ) {
+  const existingLength = Math.max(
+    textLength(article.content),
+    textLength(article.summary),
+  );
+  if (existingLength > 0 && textLength(result.content) <= existingLength) {
     return Response.json(
       {
         error:
           'The publisher did not return more text than is already available.',
+        alreadyFullText: true,
       },
       { status: 422 },
     );

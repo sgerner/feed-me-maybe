@@ -3,8 +3,16 @@ import type { PageServerLoad } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { hasExplicitHide } from '#lib/server/preferences.ts';
 import { recordInteraction } from '#lib/server/interactions.ts';
-import { fetchArchivedArticle } from '#lib/server/archive.ts';
+import { fetchArchivedArticle, isGarbageContent } from '#lib/server/archive.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+
+function stripHtmlText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export const load: PageServerLoad = async ({ params, locals, url }) => {
   if (!locals.sessionId) {
@@ -46,6 +54,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
   if (readerState) Object.assign(article, readerState);
   article.explicitly_hidden = hasExplicitHide(params.id);
 
+  let archiveFailed = false;
   if (url.searchParams.get('mode') === 'archive') {
     const archived = await fetchArchivedArticle(
       String(article.external_url || article.url || ''),
@@ -53,11 +62,33 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
       article.feed_use_proxy ? getConfiguredProxyBaseUrl() : undefined,
     );
 
-    if (archived) {
-      article.title = archived.title || article.title;
-      article.content = archived.content;
-      article.image_url = archived.imageUrl || article.image_url;
+    if (archived && archived.content && !isGarbageContent(archived.content)) {
+      const existingLength = Math.max(
+        stripHtmlText(article.content).length,
+        stripHtmlText(article.summary).length,
+      );
+      const archivedLength = stripHtmlText(archived.content).length;
       article.archive_url = archived.archiveUrl;
+      article.image_url = archived.imageUrl || article.image_url;
+
+      if (archivedLength >= existingLength || !existingLength) {
+        article.title = archived.title || article.title;
+        article.content = archived.content;
+        if (archivedLength > existingLength) {
+          db.prepare(
+            "UPDATE articles SET content = ?, image_url = COALESCE(NULLIF(image_url, ''), ?), updated_at = ? WHERE id = ?",
+          ).run(
+            archived.content,
+            archived.imageUrl ?? null,
+            Date.now(),
+            params.id,
+          );
+        }
+      } else {
+        archiveFailed = true;
+      }
+    } else {
+      archiveFailed = true;
     }
   }
 
@@ -83,6 +114,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     article,
     neighbors: { previous: neighbor(true), next: neighbor(false) },
     proxyBaseUrl: getConfiguredProxyBaseUrl() || null,
+    archiveFailed,
   };
 };
 

@@ -141,4 +141,52 @@ describe('POST /api/articles/[id]/content', () => {
         .get('art-upgrade'),
     ).toEqual({ status: 'queued' });
   });
+
+  it('refuses to overwrite an article when extracted content is shorter than the existing summary', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { fetchPublisherArticle } = await import('#lib/server/archive.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-s', 'https://example.com/rss', 'Example Feed', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)`,
+    ).run(
+      'art-summary-longer',
+      'feed-s',
+      'https://example.com/paywalled',
+      'Paywalled Story',
+      'This existing feed summary contains a substantial multi-sentence overview of the story that is much longer than a paywall teaser.',
+      now,
+      now,
+      now,
+    );
+
+    vi.mocked(fetchPublisherArticle).mockResolvedValueOnce({
+      title: 'Paywalled Story',
+      content: '<p>Subscribe now to read.</p>',
+      imageUrl: undefined,
+    });
+
+    const response = await POST({
+      locals: { sessionId: 'sess-1' },
+      params: { id: 'art-summary-longer' },
+    } as Parameters<typeof POST>[0]);
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as {
+      error: string;
+      alreadyFullText?: boolean;
+    };
+    expect(body.alreadyFullText).toBe(true);
+
+    const art = db
+      .prepare('SELECT content, summary FROM articles WHERE id = ?')
+      .get('art-summary-longer') as { content: string; summary: string };
+    expect(art.content).toBe('');
+    expect(art.summary).toContain('substantial multi-sentence overview');
+  });
 });

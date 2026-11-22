@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatContent, renderContent } from './format';
+import { formatContent, renderContent, sanitizeHtml } from './format';
 
 describe('formatContent', () => {
   it('renders markdown formatting and links', () => {
@@ -21,14 +21,42 @@ describe('formatContent', () => {
     expect(html).toContain('rel="noopener noreferrer"');
   });
 
-  it('decodes escaped html bodies before rendering', () => {
+  it('preserves escaped generics, comparisons, and JSX inside raw HTML documents', () => {
     const html = renderContent(
-      '&lt;p&gt;<a href="https://example.com">example</a>&lt;/p&gt;',
+      '<p>When <code>a &lt; b &amp;&amp; c &gt; d</code>, use <code>Array&lt;T&gt;</code>.</p><pre><code>return &lt;Widget items={list} /&gt;;</code></pre>',
+    );
+
+    expect(html).toContain('<code>a &lt; b &amp;&amp; c &gt; d</code>');
+    expect(html).toContain('<code>Array&lt;T&gt;</code>');
+    expect(html).toContain(
+      '<pre tabindex="0"><code>return &lt;Widget items={list} /&gt;;</code></pre>',
+    );
+  });
+
+  it('decodes fully entity-escaped html bodies when no raw tags exist', () => {
+    const html = renderContent(
+      '&lt;p&gt;&lt;a href="https://example.com"&gt;example&lt;/a&gt;&lt;/p&gt;',
     );
 
     expect(html).toBe(
       '<p><a href="https://example.com" target="_blank" rel="noopener noreferrer">example</a></p>',
     );
+  });
+
+  it('preserves table structure, header IDs, fragment links, details/summary, focusable pre, and image link aria-labels', () => {
+    const html = sanitizeHtml(
+      '<table><caption>Quarterly metrics</caption><colgroup><col span="2"></colgroup><thead><tr><th id="col-name" scope="col">Name</th></tr></thead><tbody><tr><td headers="col-name">Alpha</td></tr></tbody></table><details open><summary>More</summary><p><a href="#col-name">Jump to table</a></p></details><a href="https://example.com/chart"><img src="https://example.com/chart.png" alt="Revenue chart"></a><a href="https://example.com/raw"><img src="https://example.com/raw.png"></a>',
+    );
+
+    expect(html).toContain('<caption>Quarterly metrics</caption>');
+    expect(html).toContain('<colgroup><col span="2" /></colgroup>');
+    expect(html).toContain('<th id="col-name" scope="col">Name</th>');
+    expect(html).toContain('<td headers="col-name">Alpha</td>');
+    expect(html).toContain('<details open=""><summary>More</summary>');
+    expect(html).toContain('<a href="#col-name">Jump to table</a>');
+    expect(html).not.toContain('href="#col-name" target="_blank"');
+    expect(html).toContain('aria-label="Revenue chart"');
+    expect(html).toContain('aria-label="https://example.com/raw"');
   });
 
   it('removes executable markup and unsafe URL protocols', () => {

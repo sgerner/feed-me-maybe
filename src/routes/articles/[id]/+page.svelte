@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
   import { formatContent, renderContent } from '#lib/utils/format.ts';
@@ -12,7 +12,7 @@
     shareArticleLink,
     type TriageAction,
   } from '#lib/client/triage.ts';
-  import { cacheArticles } from '#lib/offline/index.ts';
+  import { cacheArticles, getCachedArticles } from '#lib/offline/index.ts';
   import { page } from '$app/state';
   import RedditComments from '#lib/components/RedditComments.svelte';
   type InteractionType =
@@ -49,6 +49,7 @@
       article: ArticleData;
       proxyBaseUrl?: string | null;
       neighbors?: { previous: string | null; next: string | null };
+      archiveFailed?: boolean;
     };
   }>();
 
@@ -75,39 +76,239 @@
   let fetchedContent = $state<string | null>(null);
   let fetchingContent = $state(false);
   let fetchContentError = $state('');
+  let fullTextConfirmed = $state(false);
+  let showSummaryInstead = $state(false);
+  let heroImageBroken = $state(false);
+  let loadFullTextController: AbortController | null = null;
+  let activeArticleId = '';
+  let restoringScroll = false;
+
   let readerQueue = $state<{ ids: string[]; source: string } | null>(null);
+  let dismissedQueueIds = $state<string[]>([]);
+  let fallbackReturnPath = $state('/');
+
   const readerIndex = $derived(readerQueue?.ids.indexOf(article.id) ?? -1);
-  const previousId = $derived(
-    readerIndex >= 0
-      ? readerQueue?.ids[readerIndex - 1]
-      : pageData.neighbors?.previous,
-  );
-  const nextId = $derived(
-    readerIndex >= 0
-      ? readerQueue?.ids[readerIndex + 1]
-      : pageData.neighbors?.next,
-  );
+
+  const previousId = $derived.by(() => {
+    if (readerIndex > 0 && readerQueue) {
+      for (let idx = readerIndex - 1; idx >= 0; idx--) {
+        const candidate = readerQueue.ids[idx];
+        if (candidate && !dismissedQueueIds.includes(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    const fallbackPrev = pageData.neighbors?.previous ?? null;
+    return fallbackPrev &&
+      fallbackPrev !== article.id &&
+      !dismissedQueueIds.includes(fallbackPrev)
+      ? fallbackPrev
+      : null;
+  });
+
+  const nextId = $derived.by(() => {
+    if (readerIndex >= 0 && readerQueue) {
+      for (let idx = readerIndex + 1; idx < readerQueue.ids.length; idx++) {
+        const candidate = readerQueue.ids[idx];
+        if (candidate && !dismissedQueueIds.includes(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    const fallbackNext = pageData.neighbors?.next ?? null;
+    return fallbackNext &&
+      fallbackNext !== article.id &&
+      !dismissedQueueIds.includes(fallbackNext)
+      ? fallbackNext
+      : null;
+  });
+
   const returnPath = $derived(
-    readerIndex >= 0 ? readerQueue?.source || '/' : '/',
+    readerIndex >= 0
+      ? readerQueue?.source || fallbackReturnPath
+      : fallbackReturnPath,
   );
   const articleContent = $derived(fetchedContent ?? article.content);
+
+  function stripPlainText(value: string | null | undefined): string {
+    if (!value) return '';
+    return value
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  const canToggleSummaryAndFullText = $derived.by(() => {
+    const bodyText = stripPlainText(articleContent);
+    const summaryText = stripPlainText(article.summary);
+    return (
+      Boolean(bodyText && summaryText && bodyText !== summaryText) &&
+      (Boolean(fetchedContent) ||
+        fullTextConfirmed ||
+        bodyText.length > summaryText.length)
+    );
+  });
+
+  const activeBodyContent = $derived(
+    showSummaryInstead && article.summary ? null : articleContent,
+  );
 
   let fontScale = $state(1);
   let isSpeaking = $state(false);
 
+  const READING_PROGRESS_STORAGE_KEY = 'feed-me-maybe:reading-progress';
+  const MAX_READING_PROGRESS_ENTRIES = 200;
+
+  type SavedReadingProgress = {
+    ratio: number;
+    scrollTop: number;
+    updatedAt: number;
+  };
+
+  function readProgressMap(): Record<string, SavedReadingProgress> {
+    try {
+      const raw = localStorage.getItem(READING_PROGRESS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, SavedReadingProgress>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveArticleScrollProgress(
+    targetArticleId: string,
+    scrollTop: number,
+    maxScroll: number,
+  ): void {
+    if (!targetArticleId || restoringScroll) return;
+    try {
+      const map = readProgressMap();
+      if (scrollTop <= 0 && !map[targetArticleId]) return;
+      map[targetArticleId] = {
+        ratio:
+          maxScroll > 0 ? Math.min(1, Math.max(0, scrollTop / maxScroll)) : 0,
+        scrollTop: Math.max(0, Math.round(scrollTop)),
+        updatedAt: Date.now(),
+      };
+      const entries = Object.entries(map);
+      if (entries.length > MAX_READING_PROGRESS_ENTRIES) {
+        entries.sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0));
+        const trimmed = Object.fromEntries(
+          entries.slice(0, MAX_READING_PROGRESS_ENTRIES),
+        );
+        localStorage.setItem(
+          READING_PROGRESS_STORAGE_KEY,
+          JSON.stringify(trimmed),
+        );
+      } else {
+        localStorage.setItem(READING_PROGRESS_STORAGE_KEY, JSON.stringify(map));
+      }
+    } catch {
+      // Storage quota or privacy mode must not break scrolling.
+    }
+  }
+
+  async function restoreArticleScrollProgress(
+    targetArticleId: string,
+  ): Promise<void> {
+    if (typeof document === 'undefined') return;
+    restoringScroll = true;
+    await tick();
+    const main = document.querySelector<HTMLElement>('#main-content, main');
+    if (!main) {
+      restoringScroll = false;
+      return;
+    }
+    main.scrollLeft = 0;
+    const savedProgress = readProgressMap()[targetArticleId];
+    const max = Math.max(0, main.scrollHeight - main.clientHeight);
+    if (
+      savedProgress &&
+      (savedProgress.scrollTop > 0 || savedProgress.ratio > 0)
+    ) {
+      const targetTop =
+        max > 0 && savedProgress.ratio > 0
+          ? Math.round(savedProgress.ratio * max)
+          : savedProgress.scrollTop;
+      main.scrollTop = Math.max(0, Math.min(max || targetTop, targetTop));
+    } else {
+      main.scrollTop = 0;
+    }
+    const updatedMax = Math.max(0, main.scrollHeight - main.clientHeight);
+    readingProgress =
+      updatedMax > 0 ? Math.round((main.scrollTop / updatedMax) * 100) : 0;
+    restoringScroll = false;
+  }
+
+  function syncQueueSessionStorage(nextDismissed: string[]): void {
+    if (!readerQueue) return;
+    try {
+      const filteredIds = readerQueue.ids.filter(
+        (id) => !nextDismissed.includes(id),
+      );
+      sessionStorage.setItem(
+        'feed-me-maybe:reader-queue',
+        JSON.stringify({
+          ids: filteredIds,
+          source: readerQueue.source,
+        }),
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  function markQueueArticleDismissed(id: string, dismissed: boolean): void {
+    const next = dismissed
+      ? dismissedQueueIds.includes(id)
+        ? dismissedQueueIds
+        : [...dismissedQueueIds, id]
+      : dismissedQueueIds.filter((item) => item !== id);
+    dismissedQueueIds = next;
+    syncQueueSessionStorage(next);
+  }
+
   $effect(() => {
+    const nextArticleId = article.id;
     liked = !!article.thumbs_up;
     disliked = !!article.thumbs_down || !!article.rejected;
     saved = !!article.saved;
     hidden = !!article.hidden;
     explicitlyHidden = Boolean(article.explicitly_hidden);
     read = !!article.read;
+
+    if (activeArticleId !== nextArticleId) {
+      const hadPreviousArticle = activeArticleId !== '';
+      activeArticleId = nextArticleId;
+      loadFullTextController?.abort();
+      loadFullTextController = null;
+      fetchedContent = null;
+      fetchingContent = false;
+      fetchContentError = '';
+      fullTextConfirmed = false;
+      showSummaryInstead = false;
+      heroImageBroken = false;
+      readerMoreOpen = false;
+      lightboxOpen = false;
+      lightboxIndex = 0;
+      iframeLoading = true;
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      isSpeaking = false;
+      if (hadPreviousArticle) {
+        void restoreArticleScrollProgress(nextArticleId);
+      }
+    }
   });
 
   const isEmbeddedMode = $derived(mode === 'iframe' || mode === 'proxy');
   const isReaderMode = $derived(mode === 'app' || mode === 'archive');
   const reactionsLocked = $derived(explicitlyHidden || disliked);
-  const canRestore = $derived(explicitlyHidden || disliked);
+  const canRestore = $derived(hidden || explicitlyHidden || disliked);
   const isRedditPost = $derived(
     Boolean(
       article.url?.includes('reddit.com') &&
@@ -115,19 +316,20 @@
     ),
   );
   const renderedArticleContent = $derived(
-    articleContent ? renderContent(articleContent, article.url) : '',
+    activeBodyContent ? renderContent(activeBodyContent, article.url) : '',
   );
   const articleImages = $derived(
     extractArticleImages({
       articleUrl: article.url,
-      heroUrl: article.image_url,
-      content: articleContent,
+      heroUrl: heroImageBroken ? null : article.image_url,
+      content: activeBodyContent,
     }),
   );
   const activeLightboxImage = $derived(articleImages[lightboxIndex] ?? null);
   const sourceHref = $derived(
     mode === 'archive'
-      ? `https://archive.is/${encodeURIComponent(article.url)}`
+      ? article.archive_url ||
+          `https://archive.is/${encodeURIComponent(article.url)}`
       : article.url,
   );
 
@@ -143,16 +345,33 @@
     thumbsDown: boolean;
   };
 
-  async function cacheReaderState(state: ReaderStateSnapshot): Promise<void> {
+  async function cacheReaderState(
+    state: ReaderStateSnapshot,
+    targetId = article.id,
+  ): Promise<void> {
+    if (article.id !== targetId) return;
     try {
-      await cacheArticles(offlineScope(), [
+      const scope = offlineScope();
+      const candidateContent = String(articleContent || article.content || '');
+      let bestContent = candidateContent;
+      const existing = (await getCachedArticles(scope)).find(
+        (item) => item.id === targetId,
+      );
+      if (
+        existing?.content &&
+        existing.content.length > candidateContent.length
+      ) {
+        bestContent = existing.content;
+      }
+      if (article.id !== targetId) return;
+      await cacheArticles(scope, [
         {
           id: article.id,
           feed_id: article.feed_id,
           url: article.url,
           title: article.title,
-          summary: article.summary?.slice(0, 3000) ?? '',
-          content: String(articleContent || '').slice(0, 30_000),
+          summary: article.summary ?? '',
+          content: bestContent,
           image_url: article.image_url,
           published_at: article.published_at,
           fetched_at: article.fetched_at,
@@ -172,10 +391,30 @@
     }
   }
 
-  // The root layout owns the scrolling <main> element and remains mounted
-  // during client-side navigation. Always start a newly opened article at
-  // the top, regardless of where the reader was opened from in the feed.
   onMount(() => {
+    try {
+      const fromParam = page.url.searchParams.get('from');
+      if (
+        fromParam &&
+        fromParam.startsWith('/') &&
+        !fromParam.startsWith('//') &&
+        !fromParam.includes('\\')
+      ) {
+        fallbackReturnPath = fromParam;
+      } else if (document.referrer) {
+        const refUrl = new URL(document.referrer);
+        if (
+          refUrl.origin === location.origin &&
+          !refUrl.pathname.startsWith('/articles/') &&
+          !refUrl.pathname.startsWith('/login')
+        ) {
+          fallbackReturnPath = `${refUrl.pathname}${refUrl.search}`;
+        }
+      }
+    } catch {
+      // Keep default '/'
+    }
+
     try {
       const stored = JSON.parse(
         sessionStorage.getItem('feed-me-maybe:reader-queue') || 'null',
@@ -183,6 +422,7 @@
       if (
         Array.isArray(stored?.ids) &&
         stored.ids.every((id: unknown) => typeof id === 'string') &&
+        stored.ids.includes(article.id) &&
         typeof stored.source === 'string' &&
         stored.source.startsWith('/') &&
         !stored.source.startsWith('//') &&
@@ -194,37 +434,57 @@
     } catch {
       // The fallback order comes from the current feed.
     }
-    const main = document.querySelector('main');
-    if (main) {
-      main.scrollTop = 0;
-      main.scrollLeft = 0;
 
-      try {
-        const savedScale = Number(
-          localStorage.getItem('feed-me-maybe:reader-scale'),
-        );
-        if (Number.isFinite(savedScale)) {
+    try {
+      const rawScale = localStorage.getItem('feed-me-maybe:reader-scale');
+      if (rawScale !== null && rawScale.trim() !== '') {
+        const savedScale = Number(rawScale);
+        if (Number.isFinite(savedScale) && savedScale > 0) {
           fontScale = Math.max(0.9, Math.min(1.25, savedScale));
         }
-      } catch {
-        // Reader controls remain useful when storage is unavailable.
       }
-
-      const updateProgress = () => {
-        const max = main.scrollHeight - main.clientHeight;
-        readingProgress =
-          max > 0 ? Math.round((main.scrollTop / max) * 100) : 0;
-      };
-      main.addEventListener('scroll', updateProgress, { passive: true });
-      updateProgress();
-
-      return () => main.removeEventListener('scroll', updateProgress);
+    } catch {
+      // Reader controls remain useful when storage is unavailable.
     }
+
+    const main = document.querySelector<HTMLElement>('#main-content, main');
+    void restoreArticleScrollProgress(article.id);
+
+    const updateProgress = () => {
+      if (!main) return;
+      const max = Math.max(0, main.scrollHeight - main.clientHeight);
+      readingProgress = max > 0 ? Math.round((main.scrollTop / max) * 100) : 0;
+      saveArticleScrollProgress(article.id, main.scrollTop, max);
+    };
+
+    main?.addEventListener('scroll', updateProgress, { passive: true });
+
+    return () => {
+      main?.removeEventListener('scroll', updateProgress);
+      loadFullTextController?.abort();
+      loadFullTextController = null;
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      isSpeaking = false;
+    };
   });
 
   $effect(() => {
     if (typeof window === 'undefined') return;
-    void cacheArticles(offlineScope(), [article]).catch(() => undefined);
+    const currentId = article.id;
+    const currentContent = articleContent || article.content || '';
+    void cacheReaderState(
+      {
+        read,
+        saved,
+        hidden,
+        thumbsUp: liked,
+        thumbsDown: disliked,
+      },
+      currentId,
+    );
+    void currentContent;
   });
 
   function adjustFontScale(delta: number) {
@@ -255,7 +515,12 @@
       return;
     }
 
-    const text = articleContentEl?.textContent?.trim();
+    const rawReadable = stripPlainText(
+      activeBodyContent || articleContent || article.summary,
+    );
+    const text = rawReadable
+      ? articleContentEl?.textContent?.trim() || rawReadable
+      : '';
     if (!text) {
       addToast('There is no readable text for this article', 'info');
       return;
@@ -273,7 +538,7 @@
   // Prevent main scroll when in iframe/proxy mode
   $effect(() => {
     if (isEmbeddedMode) {
-      const main = document.querySelector('main');
+      const main = document.querySelector<HTMLElement>('#main-content, main');
       if (main) main.style.overflow = 'hidden';
       return () => {
         if (main) main.style.overflow = '';
@@ -284,13 +549,9 @@
   $effect(() => {
     if (!lightboxOpen) return;
 
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
     requestAnimationFrame(() => lightboxBackdropEl?.focus());
 
     return () => {
-      document.body.style.overflow = previousOverflow;
       lightboxPreviouslyFocused?.focus?.();
       lightboxPreviouslyFocused = null;
     };
@@ -353,27 +614,39 @@
 
   // Check if the hero image is already the first thing in the content to avoid duplicates
   function contentFirstImg(): string | null {
-    if (!articleContent) return null;
+    const sourceContent = activeBodyContent;
+    if (!sourceContent) return null;
 
-    const htmlMatch = articleContent.match(/<img[^>]+src=["']([^"']+)["']/i);
-    if (htmlMatch) return htmlMatch[1];
+    const imgTagMatch = sourceContent.match(/<img\b[^>]*>/i);
+    if (imgTagMatch) {
+      const tag = imgTagMatch[0];
+      const srcAttr = tag.match(/\bsrc=["']([^"']+)["']/i)?.[1];
+      const lazyAttr = tag.match(
+        /\bdata-(?:src|lazy-src|original)=["']([^"']+)["']/i,
+      )?.[1];
+      const candidate =
+        srcAttr && !/^(?:data:|blob:|about:)/i.test(srcAttr.trim())
+          ? srcAttr
+          : lazyAttr || srcAttr;
+      if (candidate) return candidate;
+    }
 
-    const markdownMatch = articleContent.match(
+    const markdownMatch = sourceContent.match(
       /!\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/,
     );
     return markdownMatch ? markdownMatch[1] : null;
   }
 
   function shouldShowHero(): boolean {
-    if (!article.image_url) return false;
+    if (!article.image_url || heroImageBroken) return false;
     const firstImg = contentFirstImg();
     if (!firstImg) return true;
 
-    // Normalize and compare
+    // Normalize against article.url so relative first-image paths deduplicate properly
     try {
-      const heroUrl = new URL(article.image_url).pathname;
-      const firstUrl = new URL(firstImg).pathname;
-      return heroUrl !== firstUrl;
+      const heroUrl = new URL(article.image_url, article.url);
+      const firstUrl = new URL(firstImg, article.url);
+      return heroUrl.pathname !== firstUrl.pathname;
     } catch {
       return article.image_url !== firstImg;
     }
@@ -414,10 +687,9 @@
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
-        event.shiftKey ||
         (event.target instanceof Element &&
           event.target.closest(
-            'input, textarea, select, button, summary, [contenteditable], [aria-modal="true"]',
+            'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="dialog"], dialog[open], [aria-modal="true"]',
           ))
       )
         return;
@@ -426,7 +698,7 @@
         key === 'j' ? nextId : key === 'k' ? previousId : null;
       if (destination) {
         event.preventDefault();
-        void goto(readerHref(destination));
+        void goto(readerHref(destination), { replaceState: true });
       }
       if (key === 'o') {
         event.preventDefault();
@@ -491,12 +763,13 @@
   async function interact(type: InteractionType) {
     if (pendingAction) return;
 
+    const targetArticleId = article.id;
     const visibleArticleIds =
       type === 'thumbs_up' ||
       type === 'thumbs_down' ||
       type === 'save' ||
       type === 'hide'
-        ? [article.id]
+        ? [targetArticleId]
         : undefined;
 
     // Optimistic UI updates
@@ -508,14 +781,19 @@
     const prevRead = read;
     pendingAction = type;
 
-    const restoring = type === 'hide' && (explicitlyHidden || disliked);
-    const restoringRejection = restoring && disliked;
+    const restoring =
+      type === 'hide' && (prevHidden || prevExplicitlyHidden || prevDisliked);
+    const restoringRejection = restoring && prevDisliked;
     const shouldHide =
       (!restoring && type === 'hide') || type === 'thumbs_down';
 
     if (type === 'thumbs_up') {
       liked = !liked;
-      if (liked) disliked = false;
+      if (liked) {
+        disliked = false;
+        hidden = false;
+        explicitlyHidden = false;
+      }
     } else if (type === 'thumbs_down') {
       disliked = true;
       liked = false;
@@ -531,41 +809,58 @@
       if (type === 'hide') explicitlyHidden = true;
     }
 
+    if (shouldHide) {
+      markQueueArticleDismissed(targetArticleId, true);
+    } else if (restoring || (type === 'thumbs_up' && !prevLiked)) {
+      markQueueArticleDismissed(targetArticleId, false);
+    }
+
     try {
       const actualType: TriageAction =
         type === 'save' && prevSaved
           ? 'unsave'
           : type === 'thumbs_up' && prevLiked
             ? 'unthumbs_up'
-            : type === 'hide' && restoring
-              ? restoringRejection
-                ? 'restore'
-                : 'unhide'
-              : type;
+            : type === 'thumbs_up' && (prevHidden || prevDisliked)
+              ? 'boost'
+              : type === 'hide' && restoring
+                ? restoringRejection
+                  ? 'restore'
+                  : 'unhide'
+                : type;
 
       const result = await executeArticleTriage({
-        articleId: article.id,
+        articleId: targetArticleId,
         action: actualType,
         scope: offlineScope(),
         visibleArticleIds,
         onUndo: () => {
-          liked = prevLiked;
-          disliked = prevDisliked;
-          saved = prevSaved;
-          hidden = prevHidden;
-          explicitlyHidden = prevExplicitlyHidden;
-          read = prevRead;
-          void cacheReaderState({
-            read: prevRead,
-            saved: prevSaved,
-            hidden: prevHidden,
-            thumbsUp: prevLiked,
-            thumbsDown: prevDisliked,
-          });
+          if (article.id === targetArticleId) {
+            liked = prevLiked;
+            disliked = prevDisliked;
+            saved = prevSaved;
+            hidden = prevHidden;
+            explicitlyHidden = prevExplicitlyHidden;
+            read = prevRead;
+          }
+          markQueueArticleDismissed(
+            targetArticleId,
+            prevHidden || prevDisliked,
+          );
+          void cacheReaderState(
+            {
+              read: prevRead,
+              saved: prevSaved,
+              hidden: prevHidden,
+              thumbsUp: prevLiked,
+              thumbsDown: prevDisliked,
+            },
+            targetArticleId,
+          );
         },
       });
 
-      if (result.mode === 'online') {
+      if (result.mode === 'online' && article.id === targetArticleId) {
         const after = result.after;
         const state = after
           ? {
@@ -590,24 +885,26 @@
           disliked = state.thumbsDown;
         }
         if (actualType === 'hide') explicitlyHidden = true;
-        else if (actualType === 'restore' || actualType === 'unhide') {
+        else if (
+          actualType === 'restore' ||
+          actualType === 'unhide' ||
+          actualType === 'boost'
+        ) {
           explicitlyHidden = false;
         }
-        if (
-          actualType === 'thumbs_up' ||
-          (actualType === 'save' && state.saved)
-        ) {
-          void cacheReaderState(state);
-        }
+        void cacheReaderState(state, targetArticleId);
       }
     } catch {
       // Revert on failure
-      liked = prevLiked;
-      disliked = prevDisliked;
-      saved = prevSaved;
-      hidden = prevHidden;
-      explicitlyHidden = prevExplicitlyHidden;
-      read = prevRead;
+      if (article.id === targetArticleId) {
+        liked = prevLiked;
+        disliked = prevDisliked;
+        saved = prevSaved;
+        hidden = prevHidden;
+        explicitlyHidden = prevExplicitlyHidden;
+        read = prevRead;
+      }
+      markQueueArticleDismissed(targetArticleId, prevHidden || prevDisliked);
       addToast('Action failed', 'error');
     } finally {
       pendingAction = null;
@@ -620,31 +917,43 @@
 
   async function toggleRead() {
     if (pendingAction) return;
+    const targetArticleId = article.id;
     const prevRead = read;
     const nextAction: TriageAction = prevRead ? 'unread' : 'read';
     pendingAction = nextAction;
     read = !prevRead;
     try {
       const result = await executeArticleTriage({
-        articleId: article.id,
+        articleId: targetArticleId,
         action: nextAction,
         scope: offlineScope(),
         onUndo: () => {
-          read = prevRead;
-          void cacheReaderState({
-            read: prevRead,
-            saved,
-            hidden,
-            thumbsUp: liked,
-            thumbsDown: disliked,
-          });
+          if (article.id === targetArticleId) {
+            read = prevRead;
+          }
+          void cacheReaderState(
+            {
+              read: prevRead,
+              saved,
+              hidden,
+              thumbsUp: liked,
+              thumbsDown: disliked,
+            },
+            targetArticleId,
+          );
         },
       });
-      if (result.mode === 'online' && result.after) {
+      if (
+        result.mode === 'online' &&
+        result.after &&
+        article.id === targetArticleId
+      ) {
         read = result.after.read;
       }
     } catch {
-      read = prevRead;
+      if (article.id === targetArticleId) {
+        read = prevRead;
+      }
       addToast(
         prevRead
           ? 'Could not mark article as unread'
@@ -658,26 +967,64 @@
 
   async function loadFullText() {
     if (fetchingContent) return;
+    const requestedId = article.id;
+    loadFullTextController?.abort();
+    const controller = new AbortController();
+    loadFullTextController = controller;
     fetchingContent = true;
     fetchContentError = '';
     try {
       const response = await fetchWithCsrf(
-        `/api/articles/${encodeURIComponent(article.id)}/content`,
-        { method: 'POST' },
+        `/api/articles/${encodeURIComponent(requestedId)}/content`,
+        { method: 'POST', signal: controller.signal },
       );
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
-      fetchedContent = result.content;
-      void cacheArticles(offlineScope(), [
-        { ...article, content: result.content },
-      ]).catch(() => undefined);
+      const result = (await response.json()) as {
+        content?: string;
+        error?: string;
+        alreadyFullText?: boolean;
+      };
+      if (controller.signal.aborted || article.id !== requestedId) return;
+      if (!response.ok) {
+        if (
+          response.status === 422 &&
+          (result.alreadyFullText ||
+            result.error?.includes('more text than is already available'))
+        ) {
+          fullTextConfirmed = true;
+          fetchContentError = '';
+          addToast('Full article text is already loaded', 'info');
+          return;
+        }
+        throw new Error(result.error);
+      }
+      if (result.content) {
+        fetchedContent = result.content;
+        fullTextConfirmed = true;
+        showSummaryInstead = false;
+        void cacheReaderState(
+          {
+            read,
+            saved,
+            hidden,
+            thumbsUp: liked,
+            thumbsDown: disliked,
+          },
+          requestedId,
+        );
+      }
     } catch (error) {
+      if (controller.signal.aborted || article.id !== requestedId) return;
       fetchContentError =
         error instanceof Error && error.message
           ? error.message
           : 'Could not load full article text.';
     } finally {
-      fetchingContent = false;
+      if (loadFullTextController === controller) {
+        loadFullTextController = null;
+      }
+      if (article.id === requestedId) {
+        fetchingContent = false;
+      }
     }
   }
 
@@ -689,10 +1036,25 @@
 
   let touchStartX: number | null = null;
   let touchStartY: number | null = null;
-  const SWIPE_ACTION_THRESHOLD = 40;
-  const SWIPE_LONG_LEFT_THRESHOLD = 140;
+  let swipeOffsetX = $state(0);
+  const SWIPE_ACTION_THRESHOLD = 88;
+  const SWIPE_LONG_LEFT_THRESHOLD = 168;
+  const SWIPE_MAX_VERTICAL_DRIFT = 72;
   const SWIPE_EXCLUDED_SELECTOR =
-    'a, button, input, select, textarea, table, pre, code, [role="dialog"], [contenteditable="true"], [data-no-reader-swipe]';
+    'a, button, summary, details, input, select, textarea, table, pre, code, img, picture, figure, header, nav, .reader-action-bar, [data-reader-more], [role="dialog"], [aria-modal="true"], [contenteditable="true"], [data-no-reader-swipe]';
+
+  const swipeHintLabel = $derived.by(() => {
+    if (swipeOffsetX > SWIPE_ACTION_THRESHOLD) {
+      return saved ? 'Release to Unsave' : 'Release to Save';
+    }
+    if (swipeOffsetX < -SWIPE_LONG_LEFT_THRESHOLD) {
+      return 'Release to Dislike & Hide';
+    }
+    if (swipeOffsetX < -SWIPE_ACTION_THRESHOLD) {
+      return canRestore ? 'Release to Restore' : 'Release to Hide';
+    }
+    return '';
+  });
 
   function isSwipeExcluded(target: EventTarget | null): boolean {
     return (
@@ -701,9 +1063,17 @@
     );
   }
 
+  function resetSwipeState() {
+    touchStartX = null;
+    touchStartY = null;
+    swipeOffsetX = 0;
+  }
+
   function handlePointerDown(e: PointerEvent) {
     if (
       isEmbeddedMode ||
+      lightboxOpen ||
+      readerMoreOpen ||
       e.pointerType === 'mouse' ||
       !e.isPrimary ||
       isSwipeExcluded(e.target)
@@ -711,20 +1081,41 @@
       return;
     touchStartX = e.clientX;
     touchStartY = e.clientY;
+    swipeOffsetX = 0;
+  }
+
+  function handlePointerMove(e: PointerEvent) {
+    if (!e.isPrimary || touchStartX === null || touchStartY === null) return;
+    const dx = e.clientX - touchStartX;
+    const dy = e.clientY - touchStartY;
+    if (
+      Math.abs(dy) > SWIPE_MAX_VERTICAL_DRIFT ||
+      Math.abs(dy) > Math.abs(dx)
+    ) {
+      swipeOffsetX = 0;
+      return;
+    }
+    if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 2) {
+      swipeOffsetX = Math.max(-220, Math.min(220, Math.round(dx)));
+    } else {
+      swipeOffsetX = 0;
+    }
   }
 
   function handlePointerUp(e: PointerEvent) {
     if (!e.isPrimary || touchStartX === null || touchStartY === null) return;
     const dx = e.clientX - touchStartX;
     const dy = e.clientY - touchStartY;
-    touchStartX = null;
-    touchStartY = null;
+    resetSwipeState();
 
     if (isSwipeExcluded(e.target)) return;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      if (dx < -SWIPE_LONG_LEFT_THRESHOLD) interact('thumbs_down');
-      else if (dx < -SWIPE_ACTION_THRESHOLD) interact('hide');
-      else if (dx > SWIPE_ACTION_THRESHOLD) interact('save');
+    if (
+      Math.abs(dy) <= SWIPE_MAX_VERTICAL_DRIFT &&
+      Math.abs(dx) > Math.abs(dy) * 2
+    ) {
+      if (dx < -SWIPE_LONG_LEFT_THRESHOLD) void interact('thumbs_down');
+      else if (dx < -SWIPE_ACTION_THRESHOLD) void interact('hide');
+      else if (dx > SWIPE_ACTION_THRESHOLD) void interact('save');
     }
   }
 </script>
@@ -742,14 +1133,6 @@
   class={isEmbeddedMode
     ? 'absolute inset-0 z-0 bg-surface-950'
     : 'mx-auto max-w-4xl'}
-  style:touch-action={isEmbeddedMode ? 'auto' : 'pan-y pinch-zoom'}
-  role="presentation"
-  onpointerdown={handlePointerDown}
-  onpointerup={handlePointerUp}
-  onpointercancel={() => {
-    touchStartX = null;
-    touchStartY = null;
-  }}
 >
   {#if isEmbeddedMode}
     <div class="relative h-full w-full overflow-hidden" in:fade>
@@ -781,26 +1164,74 @@
       ></iframe>
     </div>
   {:else}
-    <article class="glass-card glass-card-hover overflow-hidden">
-      <div class="px-4 pt-4">
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <article
+      class="glass-card glass-card-hover relative overflow-x-clip"
+      style:touch-action="pan-y pinch-zoom"
+      onpointerdown={handlePointerDown}
+      onpointermove={handlePointerMove}
+      onpointerup={handlePointerUp}
+      onpointercancel={resetSwipeState}
+    >
+      {#if swipeHintLabel}
+        <div
+          class="pointer-events-none sticky top-3 z-30 mx-4 mt-3 flex justify-center"
+          aria-live="polite"
+        >
+          <span
+            class="rounded-full border px-3 py-1 text-xs font-semibold shadow-lg backdrop-blur-md"
+            style="background: color-mix(in oklch, var(--color-surface-900) 90%, transparent); border-color: color-mix(in oklch, var(--color-primary-400) 40%, transparent); color: var(--color-surface-100);"
+          >
+            {swipeHintLabel}
+          </span>
+        </div>
+      {/if}
+
+      <div class="flex flex-wrap items-center gap-2 px-4 pt-4">
         <button
           type="button"
           class="btn preset-tonal"
           onclick={loadFullText}
-          disabled={fetchingContent || Boolean(fetchedContent)}
+          disabled={fetchingContent ||
+            Boolean(fetchedContent) ||
+            fullTextConfirmed}
         >
           {fetchingContent
             ? 'Fetching full text…'
-            : fetchedContent
+            : fetchedContent || fullTextConfirmed
               ? 'Full text loaded'
               : 'Fetch full text'}
         </button>
-        <p role="alert" class="text-sm text-error-300">{fetchContentError}</p>
+        {#if canToggleSummaryAndFullText}
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined"
+            onclick={() => (showSummaryInstead = !showSummaryInstead)}
+          >
+            {showSummaryInstead ? 'Show full text' : 'Show feed summary'}
+          </button>
+        {/if}
+        {#if fetchContentError}
+          <p role="alert" class="w-full text-sm text-error-300">
+            {fetchContentError}
+          </p>
+        {/if}
+        {#if mode === 'archive' && pageData.archiveFailed}
+          <p
+            role="status"
+            class="w-full rounded-sm border px-3 py-2 text-xs"
+            style="color: var(--color-warning-300, var(--color-surface-200)); border-color: color-mix(in oklch, var(--color-surface-100) 18%, transparent); background: color-mix(in oklch, var(--color-surface-800) 40%, transparent);"
+          >
+            Archived snapshot was unavailable or shorter than stored text;
+            showing saved feed content instead.
+          </p>
+        {/if}
       </div>
+
       {#if shouldShowHero()}
         <button
           type="button"
-          class="group relative block w-full overflow-hidden text-left"
+          class="group relative mt-3 block w-full overflow-hidden text-left"
           onclick={(event) => openLightbox(0, event.currentTarget)}
           aria-label="Open article image"
         >
@@ -810,6 +1241,7 @@
             class="h-64 w-full object-cover transition-transform duration-300 group-hover:scale-[1.01] md:h-80 cursor-zoom-in"
             decoding="async"
             fetchpriority="high"
+            onerror={() => (heroImageBroken = true)}
           />
           <div
             class="pointer-events-none absolute inset-0 bg-gradient-to-t from-[var(--color-surface-950)] via-transparent to-transparent opacity-80"
@@ -817,7 +1249,11 @@
         </button>
       {/if}
 
-      <div bind:this={readerArticleEl} class="p-5 pb-28 md:p-8 md:pb-32">
+      <div
+        bind:this={readerArticleEl}
+        class="p-5 pb-28 md:p-8 md:pb-32"
+        style="--reader-font-scale: {fontScale};"
+      >
         <div class="mb-6">
           <div
             class="flex flex-wrap items-center gap-2 text-xs"
@@ -907,8 +1343,10 @@
             {/if}
           </div>
           <h1
-            class="mt-3 text-2xl font-bold leading-tight md:text-3xl"
-            style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
+            class="mt-3 font-bold leading-tight"
+            style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3); font-size: clamp({(
+              1.5 * fontScale
+            ).toFixed(3)}rem, 2.5vw, {(1.875 * fontScale).toFixed(3)}rem);"
           >
             {article.title}
           </h1>
@@ -940,24 +1378,26 @@
               AI Summary
             </div>
             <div
-              class="text-sm leading-relaxed prose prose-sm max-w-none"
-              style="color: color-mix(in oklch, var(--color-surface-100) 75%, transparent);"
+              class="prose prose-sm prose-glass max-w-none leading-relaxed"
+              style="color: color-mix(in oklch, var(--color-surface-100) 75%, transparent); font-size: {(
+                fontScale * 0.875
+              ).toFixed(3)}rem;"
             >
-              {@html formatContent(article.ai_summary)}
+              {@html formatContent(article.ai_summary, article.url)}
             </div>
           </div>
         {/if}
 
         <div
-          class="prose max-w-none prose-glass [&_img]:cursor-zoom-in"
+          class="prose prose-glass max-w-none min-w-0 overflow-x-auto break-words [&_img]:cursor-zoom-in"
           bind:this={articleContentEl}
-          style="font-size: {fontScale * 1.125}rem;"
+          style="font-size: {(fontScale * 1.125).toFixed(3)}rem;"
         >
-          {#if articleContent}
+          {#if activeBodyContent}
             {@html renderedArticleContent}
           {:else if article.summary}
             <div class="leading-relaxed">
-              {@html formatContent(article.summary)}
+              {@html formatContent(article.summary, article.url)}
             </div>
           {:else}
             <p class="italic" style="color: var(--color-surface-300);">
@@ -967,11 +1407,13 @@
         </div>
 
         {#if isRedditPost}
-          <RedditComments
-            permalink={article.url}
-            useProxy={Boolean(article.feed_use_proxy)}
-            proxyBaseUrl={pageData.proxyBaseUrl}
-          />
+          {#key article.id}
+            <RedditComments
+              permalink={article.url}
+              useProxy={Boolean(article.feed_use_proxy)}
+              proxyBaseUrl={pageData.proxyBaseUrl}
+            />
+          {/key}
         {/if}
       </div>
     </article>
@@ -979,16 +1421,19 @@
 
   {#if lightboxOpen && activeLightboxImage}
     <div
-      class="fixed inset-0 z-[70] bg-black/95"
+      class="fixed inset-0 z-[70] overscroll-contain bg-black/95"
       role="dialog"
       tabindex="-1"
       aria-modal="true"
       aria-label="Article image viewer"
+      data-no-reader-swipe
       in:fade={{ duration: 160 }}
       bind:this={lightboxBackdropEl}
     >
       <div class="flex h-full w-full flex-col">
-        <div class="flex items-center justify-between gap-3 p-3 md:p-4">
+        <div
+          class="flex items-center justify-between gap-3 px-3 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:p-4"
+        >
           <div class="text-xs font-medium text-white/70" role="status">
             {lightboxIndex + 1} / {articleImages.length}
           </div>
@@ -1121,14 +1566,16 @@
   {/if}
 
   <div
-    class="reader-action-bar fixed bottom-[calc(var(--fmm-mobile-nav-height)+env(safe-area-inset-bottom))] left-0 right-0 z-50 flex flex-wrap items-center justify-center gap-1.5 rounded-t-sm border p-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] shadow-2xl backdrop-blur-xl md:bottom-6 md:left-1/2 md:right-auto md:max-w-[calc(100vw-2rem)] md:-translate-x-1/2 md:rounded-sm md:pb-1.5"
+    class="reader-action-bar fixed bottom-[calc(var(--fmm-mobile-nav-height)+env(safe-area-inset-bottom))] left-0 right-0 z-50 flex flex-wrap items-center justify-center gap-1.5 rounded-t-sm border p-1.5 shadow-2xl backdrop-blur-xl md:bottom-6 md:left-1/2 md:right-auto md:max-w-[calc(100vw-2rem)] md:-translate-x-1/2 md:rounded-sm"
     role="group"
     aria-label="Article reader actions"
+    data-no-reader-swipe
     style="background: color-mix(in oklch, var(--color-surface-900) 80%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
     in:fly={{ y: 20, duration: 400, delay: 400 }}
   >
     <a
       href={returnPath}
+      data-sveltekit-replacestate
       class="action-btn h-9 px-3 rounded-full"
       aria-label="Back to article list"
       title="Back"
@@ -1149,6 +1596,7 @@
       <a
         class="action-btn h-9 px-3 rounded-full"
         href={readerHref(previousId)}
+        data-sveltekit-replacestate
         aria-label="Previous article"
         title="Previous article (k)">←</a
       >
@@ -1157,6 +1605,7 @@
       <a
         class="action-btn h-9 px-3 rounded-full"
         href={readerHref(nextId)}
+        data-sveltekit-replacestate
         aria-label="Next article"
         title="Next article (j)">→</a
       >
@@ -1215,6 +1664,27 @@
         >{read ? 'Mark as unread' : 'Mark as read'}</span
       >
     </button>
+
+    {#if isReaderMode && isSpeaking}
+      <button
+        type="button"
+        class="action-btn min-h-11 px-3 rounded-full !inline-flex !text-primary-300 !bg-primary-500/15 !border-primary-500/30"
+        onclick={speakArticle}
+        aria-label="Stop reading aloud"
+        title="Stop reading aloud"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+          ><rect x="6" y="6" width="12" height="12" rx="2" /></svg
+        >
+        <span class="ml-1.5">Stop</span>
+      </button>
+    {/if}
 
     {#if isReaderMode}
       <button
@@ -1280,7 +1750,7 @@
         >
           <button
             type="button"
-            class="action-btn min-h-11 min-w-11 rounded-full !p-0 {liked
+            class="action-btn min-h-11 flex-1 rounded-full px-3 {liked
               ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
               : ''}"
             disabled={Boolean(pendingAction) || reactionsLocked}
@@ -1297,14 +1767,16 @@
               fill={liked ? 'currentColor' : 'none'}
               stroke="currentColor"
               stroke-width="2"
+              aria-hidden="true"
               ><path d="M7 10v12" /><path
                 d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
               /></svg
             >
+            <span class="ml-1.5">{liked ? 'Liked' : 'Like'}</span>
           </button>
           <button
             type="button"
-            class="action-btn min-h-11 min-w-11 rounded-full !p-0 {disliked
+            class="action-btn min-h-11 flex-1 rounded-full px-3 {disliked
               ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
               : ''}"
             disabled={Boolean(pendingAction) || reactionsLocked}
@@ -1321,27 +1793,27 @@
               fill={disliked ? 'currentColor' : 'none'}
               stroke="currentColor"
               stroke-width="2"
+              aria-hidden="true"
               ><path d="M17 14V2" /><path
                 d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
               /></svg
             >
+            <span class="ml-1.5">{disliked ? 'Disliked' : 'Dislike'}</span>
           </button>
         </div>
 
         {#if isReaderMode}
-          <div
-            class="flex items-center gap-0.5 border-r border-white/10 pr-1.5"
-          >
+          <div class="flex items-center gap-1 border-r border-white/10 pr-1.5">
             <button
               type="button"
-              class="action-btn min-h-11 min-w-11 rounded-full !p-0"
+              class="action-btn min-h-11 flex-1 rounded-full px-3"
               onclick={() => adjustFontScale(-0.05)}
               aria-label="Decrease text size"
               title="Decrease text size">A−</button
             >
             <button
               type="button"
-              class="action-btn min-h-11 min-w-11 rounded-full !p-0"
+              class="action-btn min-h-11 flex-1 rounded-full px-3"
               onclick={() => adjustFontScale(0.05)}
               aria-label="Increase text size"
               title="Increase text size">A+</button
@@ -1368,13 +1840,12 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
               ><path d="M11 5 6 9H2v6h4l5 4z" /><path
                 d="M19.07 4.93a10 10 0 0 1 0 14.14"
               /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /></svg
             >
-            <span class="ml-1.5 hidden sm:inline"
-              >{isSpeaking ? 'Stop' : 'Listen'}</span
-            >
+            <span class="ml-1.5">{isSpeaking ? 'Stop' : 'Listen'}</span>
           </button>
         {/if}
 
@@ -1398,6 +1869,7 @@
             fill="none"
             stroke="currentColor"
             stroke-width="2"
+            aria-hidden="true"
             ><path
               d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
             /><polyline points="15 3 21 3 21 9" /><line
@@ -1407,43 +1879,52 @@
               y2="3"
             /></svg
           >
-          <span class="ml-1.5 hidden sm:inline">Source</span>
+          <span class="ml-1.5">Source</span>
         </a>
 
         <button
           type="button"
-          class="action-btn min-h-11 px-3 rounded-full !inline-flex hover:!text-error-400 {canRestore
-            ? '!text-success-400'
-            : ''}"
+          class="action-btn min-h-11 px-3 rounded-full !inline-flex {canRestore
+            ? '!text-success-400 hover:!text-success-300'
+            : 'hover:!text-error-400'}"
           disabled={Boolean(pendingAction)}
           onclick={() => interact('hide')}
-          aria-label={canRestore
-            ? 'Restore article'
-            : hidden
-              ? 'Keep article hidden'
-              : 'Hide article'}
+          aria-label={canRestore ? 'Restore article' : 'Hide article'}
           aria-pressed={explicitlyHidden}
-          title={canRestore
-            ? 'Restore Article'
-            : hidden
-              ? 'Keep Article Hidden'
-              : 'Hide Article'}
+          title={canRestore ? 'Restore Article' : 'Hide Article'}
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            ><path d="M3 6h18" /><path
-              d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"
-            /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg
-          >
-          <span class="ml-1.5 hidden sm:inline"
-            >{hidden ? 'Restore' : 'Hide'}</span
-          >
+          {#if canRestore}
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+            </svg>
+          {:else}
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+              ><path d="M3 6h18" /><path
+                d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"
+              /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg
+            >
+          {/if}
+          <span class="ml-1.5">{canRestore ? 'Restore' : 'Hide'}</span>
         </button>
       </div>
     </details>
@@ -1453,6 +1934,55 @@
 <style>
   :global(#main-content:has(.reader-action-bar)) {
     scroll-padding-bottom: calc(12rem + env(safe-area-inset-bottom));
+  }
+
+  :global(.prose-glass table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  :global(.prose-glass pre) {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  :global(.prose-glass.prose h1) {
+    font-size: 1.6em;
+  }
+
+  :global(.prose-glass.prose h2) {
+    font-size: 1.35em;
+  }
+
+  :global(.prose-glass.prose h3) {
+    font-size: 1.15em;
+  }
+
+  :global(.prose-glass.prose h4) {
+    font-size: 1.05em;
+  }
+
+  :global(.prose-glass.prose ul) {
+    list-style-type: disc;
+  }
+
+  :global(.prose-glass.prose ol) {
+    list-style-type: decimal;
+  }
+
+  :global(.prose-glass.prose pre code) {
+    background: transparent;
+    padding: 0;
+  }
+
+  :global(.prose-glass.prose th),
+  :global(.prose-glass.prose td) {
+    border: 1px solid
+      color-mix(in oklch, var(--color-surface-100) 14%, transparent);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
   }
 
   @media (min-width: 768px) {
