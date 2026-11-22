@@ -12,17 +12,21 @@ import {
 } from '#lib/server/feed-management.ts';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
+export const ARTICLE_CRAWL_JOB_TYPE = 'article_crawl';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
 export const JEV_PROCESS_JOB_TYPE = 'jev_process';
 
 export const DEFAULT_FEED_FETCH_MAX_ATTEMPTS = 4;
 const MAX_CONCURRENT_FEED_FETCHES = 3;
+export const DEFAULT_ARTICLE_CRAWL_MAX_ATTEMPTS = 2;
+const MAX_CONCURRENT_ARTICLE_CRAWLS = 3;
 export const DEFAULT_AI_PROCESS_MAX_ATTEMPTS = 3;
 export const DEFAULT_JEV_PROCESS_MAX_ATTEMPTS = 4;
 export const DEFAULT_JEV_QUEUE_CAPACITY = 4;
 export const DEFAULT_JEV_BACKFILL_BATCH_SIZE = 4;
 export const DEFAULT_JEV_JOBS_PER_RUN = 4;
 export const FEED_FETCH_LEASE_MS = 10 * 60 * 1000;
+export const ARTICLE_CRAWL_LEASE_MS = 2 * 60 * 1000;
 export const AI_PROCESS_LEASE_MS = 5 * 60 * 1000;
 export const JEV_PROCESS_LEASE_MS = 5 * 60 * 1000;
 export const DEFAULT_RETRY_BASE_MS = 30 * 1000;
@@ -34,6 +38,11 @@ export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 export type FeedFetchJobPayload = {
   feedId: string;
   force?: boolean;
+};
+
+export type ArticleCrawlJobPayload = {
+  articleId: string;
+  feedId?: string;
 };
 
 export type AiProcessJobPayload = {
@@ -50,7 +59,10 @@ export type JevProcessJobPayload = {
 };
 
 export type JobPayload =
-  FeedFetchJobPayload | AiProcessJobPayload | JevProcessJobPayload;
+  | FeedFetchJobPayload
+  | ArticleCrawlJobPayload
+  | AiProcessJobPayload
+  | JevProcessJobPayload;
 
 export type JobRecord = {
   id: string;
@@ -210,6 +222,7 @@ export function getRetryDelayMs(
 }
 
 function leaseMsForJobType(type: string): number {
+  if (type === ARTICLE_CRAWL_JOB_TYPE) return ARTICLE_CRAWL_LEASE_MS;
   if (type === AI_PROCESS_JOB_TYPE) return AI_PROCESS_LEASE_MS;
   if (type === JEV_PROCESS_JOB_TYPE) return JEV_PROCESS_LEASE_MS;
   return FEED_FETCH_LEASE_MS;
@@ -553,6 +566,131 @@ export function enqueueFeedFetch(
   );
 }
 
+export function enqueueArticleCrawl(
+  articleId: string,
+  options: { feedId?: string; now?: number } = {},
+): JobRecord | null {
+  const db = getDb();
+  const article = db
+    .prepare(
+      `SELECT a.feed_id, a.hidden, a.rejected, a.thumbs_down, a.cleared_at,
+              f.enabled AS feed_enabled, f.fetch_full_text AS feed_fetch_full_text
+       FROM articles a
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE a.id = ?`,
+    )
+    .get(articleId) as
+    | {
+        feed_id: string;
+        hidden: number | null;
+        rejected: number | null;
+        thumbs_down: number | null;
+        cleared_at: number | null;
+        feed_enabled: number | null;
+        feed_fetch_full_text: number | null;
+      }
+    | undefined;
+  if (
+    !article ||
+    !article.feed_enabled ||
+    !article.feed_fetch_full_text ||
+    article.cleared_at != null ||
+    article.hidden ||
+    article.rejected ||
+    article.thumbs_down
+  ) {
+    return null;
+  }
+
+  return enqueueJob(
+    ARTICLE_CRAWL_JOB_TYPE,
+    { articleId, feedId: options.feedId ?? article.feed_id },
+    'articleId',
+    articleId,
+    {
+      now: options.now,
+      maxAttempts: DEFAULT_ARTICLE_CRAWL_MAX_ATTEMPTS,
+    },
+  );
+}
+
+export function settleArticleCrawlJob(
+  articleId: string,
+  disposition: 'completed' | 'failed',
+  options: {
+    feedId?: string;
+    result?: Record<string, unknown>;
+    errorMessage?: string;
+    recordIfMissing?: boolean;
+    now?: number;
+  } = {},
+): void {
+  const db = getDb();
+  const now = options.now ?? Date.now();
+  const serializedResult = JSON.stringify(options.result ?? {});
+  const errorMessage =
+    disposition === 'failed'
+      ? options.errorMessage || 'Failed to extract full text from publisher'
+      : '';
+
+  db.transaction(() => {
+    const queued = readActiveJobByStatus(
+      ARTICLE_CRAWL_JOB_TYPE,
+      'articleId',
+      articleId,
+      'queued',
+    );
+    if (queued) {
+      db.prepare(
+        `
+          UPDATE jobs
+          SET status = ?, result = ?, error_message = ?,
+              completed_at = ?, started_at = NULL, scheduled_at = NULL
+          WHERE id = ? AND status = 'queued'
+        `,
+      ).run(disposition, serializedResult, errorMessage, now, queued.id);
+      return;
+    }
+
+    if (!options.recordIfMissing) return;
+
+    const existing = db
+      .prepare(
+        `
+          SELECT 1 FROM jobs
+          WHERE type = ?
+            AND CASE WHEN json_valid(payload) = 1
+                     THEN json_extract(payload, '$.articleId') END = ?
+          LIMIT 1
+        `,
+      )
+      .get(ARTICLE_CRAWL_JOB_TYPE, articleId);
+    if (existing) return;
+
+    db.prepare(
+      `
+        INSERT INTO jobs (
+          id, type, status, payload, result, error_message, attempts,
+          max_attempts, scheduled_at, completed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?)
+      `,
+    ).run(
+      crypto.randomUUID(),
+      ARTICLE_CRAWL_JOB_TYPE,
+      disposition,
+      JSON.stringify({
+        articleId,
+        ...(options.feedId ? { feedId: options.feedId } : {}),
+      } satisfies ArticleCrawlJobPayload),
+      serializedResult,
+      errorMessage,
+      DEFAULT_ARTICLE_CRAWL_MAX_ATTEMPTS,
+      now,
+      now,
+    );
+  }).immediate();
+}
+
 export function enqueueAiProcess(
   articleId: string,
   options: { feedId?: string; now?: number } = {},
@@ -773,6 +911,13 @@ export function enqueueJevBackfill(
              SELECT 1 FROM ranking_refresh_queue r
              WHERE r.article_id = a.id
            )
+           AND NOT EXISTS (
+             SELECT 1 FROM jobs crawl
+             WHERE crawl.type = 'article_crawl'
+               AND crawl.status IN ('queued', 'processing')
+               AND CASE WHEN json_valid(crawl.payload) = 1
+                        THEN json_extract(crawl.payload, '$.articleId') END = +a.id
+           )
            AND (? = 0 OR NOT EXISTS (
              SELECT 1 FROM jobs ai
              WHERE ai.type = 'ai_process'
@@ -878,6 +1023,13 @@ export function enqueueAiBackfill(
                  AND CASE WHEN json_valid(ai.payload) = 1
                           THEN json_extract(ai.payload, '$.articleId') END = +a.id
              )
+             AND NOT EXISTS (
+               SELECT 1 FROM jobs crawl
+               WHERE crawl.type = 'article_crawl'
+                 AND crawl.status IN ('queued', 'processing')
+                 AND CASE WHEN json_valid(crawl.payload) = 1
+                          THEN json_extract(crawl.payload, '$.articleId') END = +a.id
+             )
            ORDER BY a.fetched_at DESC, a.id DESC
            LIMIT ?`,
         )
@@ -969,6 +1121,31 @@ export function deleteJobsForFeeds(feedIds: string[], db = getDb()): number {
   return result.changes;
 }
 
+export function cancelQueuedCrawlWorkForFeeds(
+  feedIds: string[],
+  db = getDb(),
+): number {
+  if (feedIds.length === 0) return 0;
+  const placeholders = feedIds.map(() => '?').join(', ');
+  const result = db
+    .prepare(
+      `
+        DELETE FROM jobs
+        WHERE status = 'queued'
+          AND type = ?
+          AND json_valid(payload) = 1
+          AND (
+            json_extract(payload, '$.feedId') IN (${placeholders})
+            OR json_extract(payload, '$.articleId') IN (
+              SELECT id FROM articles WHERE feed_id IN (${placeholders})
+            )
+          )
+      `,
+    )
+    .run(ARTICLE_CRAWL_JOB_TYPE, ...feedIds, ...feedIds);
+  return result.changes;
+}
+
 export function cancelQueuedArticleWorkForFeeds(
   feedIds: string[],
   db = getDb(),
@@ -980,7 +1157,7 @@ export function cancelQueuedArticleWorkForFeeds(
       `
         DELETE FROM jobs
         WHERE status = 'queued'
-          AND type IN (?, ?)
+          AND type IN (?, ?, ?)
           AND json_valid(payload) = 1
           AND (
             json_extract(payload, '$.feedId') IN (${placeholders})
@@ -990,7 +1167,13 @@ export function cancelQueuedArticleWorkForFeeds(
           )
       `,
     )
-    .run(AI_PROCESS_JOB_TYPE, JEV_PROCESS_JOB_TYPE, ...feedIds, ...feedIds);
+    .run(
+      ARTICLE_CRAWL_JOB_TYPE,
+      AI_PROCESS_JOB_TYPE,
+      JEV_PROCESS_JOB_TYPE,
+      ...feedIds,
+      ...feedIds,
+    );
   const refreshResult = db
     .prepare(
       `
@@ -1013,7 +1196,7 @@ export function cancelQueuedWorkForClearedArticles(
       `
         DELETE FROM jobs
         WHERE status = 'queued'
-          AND type IN (?, ?)
+          AND type IN (?, ?, ?)
           AND json_valid(payload) = 1
           AND json_extract(payload, '$.articleId') IN (
             SELECT id FROM articles
@@ -1021,7 +1204,12 @@ export function cancelQueuedWorkForClearedArticles(
           )
       `,
     )
-    .run(AI_PROCESS_JOB_TYPE, JEV_PROCESS_JOB_TYPE, feedId);
+    .run(
+      ARTICLE_CRAWL_JOB_TYPE,
+      AI_PROCESS_JOB_TYPE,
+      JEV_PROCESS_JOB_TYPE,
+      feedId,
+    );
   const refreshResult = db
     .prepare(
       `
@@ -1101,16 +1289,36 @@ export function getNextQueuedJobAt(now = Date.now()): number | null {
                 AND f.enabled = 0
               )
             )
+            AND (
+              type NOT IN (?, ?)
+              OR NOT EXISTS (
+                SELECT 1 FROM jobs crawl
+                WHERE crawl.type = ?
+                  AND crawl.status IN ('queued', 'processing')
+                  AND CASE WHEN json_valid(crawl.payload) = 1
+                           THEN json_extract(crawl.payload, '$.articleId') END =
+                      CASE WHEN json_valid(jobs.payload) = 1
+                           THEN json_extract(jobs.payload, '$.articleId') END
+              )
+            )
           UNION ALL
           SELECT MIN(CASE WHEN ? = 1 THEN MAX(not_before, ?) ELSE ? END) AS scheduled_at
           FROM ranking_refresh_queue
-          WHERE ? = 0 OR (
+          WHERE (? = 0 OR (
             SELECT COUNT(*) FROM jobs
             WHERE type = ? AND status IN ('queued', 'processing')
-          ) < ?
+          ) < ?)
+            AND NOT EXISTS (
+              SELECT 1 FROM jobs crawl
+              WHERE crawl.type = ?
+                AND crawl.status IN ('queued', 'processing')
+                AND CASE WHEN json_valid(crawl.payload) = 1
+                         THEN json_extract(crawl.payload, '$.articleId') END = ranking_refresh_queue.article_id
+            )
           UNION ALL
           SELECT MIN(
             started_at + CASE type
+              WHEN 'article_crawl' THEN ?
               WHEN 'ai_process' THEN ?
               WHEN 'jev_process' THEN ?
               ELSE ?
@@ -1129,12 +1337,17 @@ export function getNextQueuedJobAt(now = Date.now()): number | null {
       aiConfigured ? 1 : 0,
       AI_PROCESS_JOB_TYPE,
       FEED_FETCH_JOB_TYPE,
+      AI_PROCESS_JOB_TYPE,
+      JEV_PROCESS_JOB_TYPE,
+      ARTICLE_CRAWL_JOB_TYPE,
       rankingProviderConfigured ? 1 : 0,
       jevCooldown,
       now,
       rankingProviderConfigured ? 1 : 0,
       JEV_PROCESS_JOB_TYPE,
       DEFAULT_JEV_QUEUE_CAPACITY,
+      ARTICLE_CRAWL_JOB_TYPE,
+      ARTICLE_CRAWL_LEASE_MS,
       AI_PROCESS_LEASE_MS,
       JEV_PROCESS_LEASE_MS,
       FEED_FETCH_LEASE_MS,
@@ -1185,6 +1398,7 @@ function claimNextJob(
   options: {
     allowJev?: boolean;
     allowFeed?: boolean;
+    allowCrawl?: boolean;
     allowAi?: boolean;
     allowScoring?: boolean;
     jobId?: string;
@@ -1196,6 +1410,7 @@ function claimNextJob(
   const allowAi =
     options.allowScoring === false ? false : options.allowAi !== false;
   const allowFeed = options.allowFeed !== false;
+  const allowCrawl = options.allowCrawl !== false;
   const claimTx = db.transaction(() => {
     if (allowFeed) {
       db.prepare(
@@ -1237,6 +1452,7 @@ function claimNextJob(
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
+            AND (? = 1 OR type != ?)
             AND (? IS NULL OR (id = ? AND type = 'feed_fetch'))
             AND (
               type != ?
@@ -1250,6 +1466,18 @@ function claimNextJob(
                            THEN json_extract(jobs.payload, '$.feedId') END
               )
             )
+            AND (
+              type NOT IN (?, ?)
+              OR NOT EXISTS (
+                SELECT 1 FROM jobs active_crawl
+                WHERE active_crawl.type = ?
+                  AND active_crawl.status IN ('queued', 'processing')
+                  AND CASE WHEN json_valid(active_crawl.payload) = 1
+                           THEN json_extract(active_crawl.payload, '$.articleId') END =
+                      CASE WHEN json_valid(jobs.payload) = 1
+                           THEN json_extract(jobs.payload, '$.articleId') END
+              )
+            )
             AND (type != ? OR NOT EXISTS (
               SELECT 1 FROM ranking_refresh_queue q
               WHERE q.article_id = CASE WHEN json_valid(jobs.payload) = 1
@@ -1258,13 +1486,14 @@ function claimNextJob(
             ))
           ORDER BY CASE
                      WHEN type = ? THEN 0
+                     WHEN type = ? THEN 1
                      WHEN type = ? AND json_valid(payload) = 1
-                       AND json_extract(payload, '$.feedback') = 1 THEN 1
-                     WHEN type = ? THEN 2
-                     ELSE 1
+                       AND json_extract(payload, '$.feedback') = 1 THEN 2
+                     WHEN type = ? THEN 3
+                     ELSE 2
                    END ASC,
                    CASE
-                     WHEN type = ? AND attempts = 0 THEN 0
+                     WHEN type IN (?, ?) AND attempts = 0 THEN 0
                      ELSE 1
                    END ASC,
                    COALESCE(scheduled_at, created_at) ASC, created_at ASC
@@ -1277,6 +1506,8 @@ function claimNextJob(
         JEV_PROCESS_JOB_TYPE,
         allowFeed ? 1 : 0,
         FEED_FETCH_JOB_TYPE,
+        allowCrawl ? 1 : 0,
+        ARTICLE_CRAWL_JOB_TYPE,
         allowAi &&
           getProviderCooldown(AI_PROCESS_JOB_TYPE) <= now &&
           isAiProcessingConfigured()
@@ -1287,12 +1518,17 @@ function claimNextJob(
         options.jobId ?? null,
         FEED_FETCH_JOB_TYPE,
         FEED_FETCH_JOB_TYPE,
+        AI_PROCESS_JOB_TYPE,
+        JEV_PROCESS_JOB_TYPE,
+        ARTICLE_CRAWL_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         now,
         FEED_FETCH_JOB_TYPE,
+        ARTICLE_CRAWL_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         FEED_FETCH_JOB_TYPE,
+        ARTICLE_CRAWL_JOB_TYPE,
       ) as RawJobRow | undefined;
     if (!row) return null;
 
@@ -1412,7 +1648,10 @@ function failOrRetryJob(
   return 'retried';
 }
 
-async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
+async function executeJob(
+  job: JobRecord,
+  now = Date.now(),
+): Promise<Record<string, unknown>> {
   const payload = job.payload as Record<string, unknown>;
 
   if (job.type === FEED_FETCH_JOB_TYPE) {
@@ -1439,6 +1678,30 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
       );
     }
     return result as unknown as Record<string, unknown>;
+  }
+
+  if (job.type === ARTICLE_CRAWL_JOB_TYPE) {
+    const articleId =
+      typeof payload.articleId === 'string' ? payload.articleId : '';
+    if (!articleId) {
+      throw new FeedJobError('Article crawl job is missing articleId', true);
+    }
+    const { crawlAndSaveArticleFullText } =
+      await import('#lib/server/feed/article-crawl.ts');
+    const outcome = await crawlAndSaveArticleFullText(articleId, { now });
+    if (outcome.status === 'failed') {
+      throw new FeedJobError(
+        outcome.error || 'Failed to extract full text from publisher',
+        true,
+      );
+    }
+    return {
+      articleId,
+      crawled: outcome.status !== 'skipped',
+      upgraded: outcome.upgraded,
+      status: outcome.status,
+      ...(outcome.status === 'skipped' ? { reason: outcome.reason } : {}),
+    };
   }
 
   if (job.type === AI_PROCESS_JOB_TYPE) {
@@ -1562,8 +1825,10 @@ export function isClaimableFeedFetchJob(
 let activeRun: Promise<RunJobsResult> | null = null;
 type JobRunControl = {
   feedBudget: number;
+  crawlBudget: number;
   scoringBudget: number;
   feedProcessed: number;
+  crawlProcessed: number;
   scoringProcessed: number;
   targetedFeedJobIds: Set<string>;
   wake?: () => void;
@@ -1594,7 +1859,7 @@ async function runDueJobsInternal(
 
   async function processJob(job: JobRecord) {
     try {
-      const output = await executeJob(job);
+      const output = await executeJob(job, getNow());
       completeJob(job, output, getNow());
       result.completed += 1;
     } catch (error) {
@@ -1615,6 +1880,7 @@ async function runDueJobsInternal(
 
   const pending = new Set<Promise<void>>();
   let activeFeeds = 0;
+  let activeCrawls = 0;
   let activeAi = false;
   let activeJev = false;
   let workerFailure: { error: unknown } | undefined;
@@ -1624,6 +1890,9 @@ async function runDueJobsInternal(
       const canClaimFeed = () =>
         activeFeeds < MAX_CONCURRENT_FEED_FETCHES &&
         control.feedProcessed < control.feedBudget;
+      const canClaimCrawl = () =>
+        activeCrawls < MAX_CONCURRENT_ARTICLE_CRAWLS &&
+        control.crawlProcessed < control.crawlBudget;
       const canClaimScoring = () =>
         control.scoringProcessed < control.scoringBudget;
       const canClaimAi = () => !activeAi && canClaimScoring();
@@ -1632,7 +1901,7 @@ async function runDueJobsInternal(
         canClaimScoring() &&
         isRankingProviderConfigured() &&
         jevExecutions < DEFAULT_JEV_JOBS_PER_RUN;
-      if (canClaimFeed() || canClaimAi() || canClaimJev()) {
+      if (canClaimFeed() || canClaimCrawl() || canClaimAi() || canClaimJev()) {
         const now = getNow();
         if (canClaimScoring()) {
           await flushRankingRefreshQueue(now, DEFAULT_JEV_QUEUE_CAPACITY);
@@ -1641,6 +1910,7 @@ async function runDueJobsInternal(
           }
         }
         const allowFeed = canClaimFeed();
+        const allowCrawl = canClaimCrawl();
         const allowAi = canClaimAi();
         const allowJev = canClaimJev();
         let jobId: string | undefined;
@@ -1657,14 +1927,16 @@ async function runDueJobsInternal(
           control.targetedFeedJobIds.delete(jobId);
           job = claimNextJob(now, {
             allowFeed: true,
+            allowCrawl: false,
             allowAi: false,
             allowJev: false,
             jobId,
           });
         }
-        if (!job && (allowFeed || allowAi || allowJev)) {
+        if (!job && (allowFeed || allowCrawl || allowAi || allowJev)) {
           job = claimNextJob(now, {
             allowFeed,
+            allowCrawl,
             allowAi,
             allowJev,
           });
@@ -1681,10 +1953,14 @@ async function runDueJobsInternal(
       }
       result.processed += 1;
       const isFeed = job.type === FEED_FETCH_JOB_TYPE;
+      const isCrawl = job.type === ARTICLE_CRAWL_JOB_TYPE;
       const isJev = job.type === JEV_PROCESS_JOB_TYPE;
       if (isFeed) {
         control.feedProcessed += 1;
         activeFeeds += 1;
+      } else if (isCrawl) {
+        control.crawlProcessed += 1;
+        activeCrawls += 1;
       } else {
         control.scoringProcessed += 1;
         if (isJev) {
@@ -1700,6 +1976,7 @@ async function runDueJobsInternal(
         })
         .finally(() => {
           if (isFeed) activeFeeds -= 1;
+          else if (isCrawl) activeCrawls -= 1;
           else if (isJev) activeJev = false;
           else activeAi = false;
           pending.delete(work);
@@ -1733,6 +2010,10 @@ export function runDueJobs(
       runControl.feedBudget,
       runControl.feedProcessed + budget,
     );
+    runControl.crawlBudget = Math.max(
+      runControl.crawlBudget,
+      runControl.crawlProcessed + budget,
+    );
     runControl.scoringBudget = Math.max(
       runControl.scoringBudget,
       runControl.scoringProcessed + budget,
@@ -1743,8 +2024,10 @@ export function runDueJobs(
   }
   runControl = {
     feedBudget: budget,
+    crawlBudget: budget,
     scoringBudget: budget,
     feedProcessed: 0,
+    crawlProcessed: 0,
     scoringProcessed: 0,
     targetedFeedJobIds: new Set(claimableJobId ? [claimableJobId] : []),
   };

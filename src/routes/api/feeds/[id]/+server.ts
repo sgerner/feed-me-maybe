@@ -8,10 +8,12 @@ import {
 } from '#lib/server/feed-management.ts';
 import type { FetchResult } from '#lib/server/feed/fetcher.ts';
 import { commitFetchedFeedResult } from '#lib/server/feed/ingester.ts';
+import { validateCssSelector } from '#lib/server/archive.ts';
 import { validatePublicUrl } from '#lib/server/network.ts';
 import { isRedditUrl } from '#lib/server/sources/reddit.ts';
 import {
   cancelQueuedArticleWorkForFeeds,
+  cancelQueuedCrawlWorkForFeeds,
   deleteJobsForFeeds,
   enqueueFeedFetch,
   FEED_FETCH_JOB_TYPE,
@@ -53,7 +55,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   const db = getDb();
   const existing = db
     .prepare(
-      'SELECT url, title, custom_title, source_type, enabled, use_proxy, poll_interval_mins FROM feeds WHERE id = ?',
+      'SELECT url, title, custom_title, source_type, enabled, use_proxy, fetch_full_text, css_selector, poll_interval_mins FROM feeds WHERE id = ?',
     )
     .get(params.id) as
     | {
@@ -63,6 +65,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
         source_type: string | null;
         enabled: number;
         use_proxy: number;
+        fetch_full_text: number;
+        css_selector: string | null;
         poll_interval_mins: number | null;
       }
     | undefined;
@@ -80,6 +84,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   let nextCustomTitle = Boolean(existing.custom_title);
   let nextEnabled = Boolean(existing.enabled);
   let useProxyChanged = false;
+  let fullTextDisabledNow = false;
   let reEnabled = false;
   let pollIntervalChanged = false;
 
@@ -136,6 +141,37 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
     useProxyChanged = (body.use_proxy ? 1 : 0) !== existing.use_proxy;
     updates.push('use_proxy = ?');
     values.push(body.use_proxy ? 1 : 0);
+  }
+
+  if (body.fetch_full_text !== undefined) {
+    if (typeof body.fetch_full_text !== 'boolean') {
+      return Response.json(
+        { error: 'fetch_full_text must be a boolean' },
+        { status: 400 },
+      );
+    }
+    fullTextDisabledNow =
+      Boolean(existing.fetch_full_text) && !body.fetch_full_text;
+    updates.push('fetch_full_text = ?');
+    values.push(body.fetch_full_text ? 1 : 0);
+  }
+
+  if (body.css_selector !== undefined) {
+    if (body.css_selector !== null && typeof body.css_selector !== 'string') {
+      return Response.json(
+        { error: 'css_selector must be a string or null' },
+        { status: 400 },
+      );
+    }
+    const validation = validateCssSelector(body.css_selector ?? '');
+    if (!validation.valid) {
+      return Response.json(
+        { error: validation.error, field: 'css_selector' },
+        { status: 400 },
+      );
+    }
+    updates.push('css_selector = ?');
+    values.push(validation.normalized);
   }
 
   if (body.open_mode !== undefined) {
@@ -287,6 +323,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 
         if (disabledNow) {
           cancelQueuedArticleWorkForFeeds([params.id], db);
+        } else if (fullTextDisabledNow) {
+          cancelQueuedCrawlWorkForFeeds([params.id], db);
         }
 
         if (urlChanged) {

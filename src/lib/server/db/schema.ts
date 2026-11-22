@@ -42,6 +42,10 @@ export const feeds = sqliteTable('feeds', {
   iconUrl: text('icon_url').default(''),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   useProxy: integer('use_proxy', { mode: 'boolean' }).notNull().default(false),
+  fetchFullText: integer('fetch_full_text', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  cssSelector: text('css_selector').default(''),
   errorCount: integer('error_count').notNull().default(0),
   lastFetchStatus: text('last_fetch_status').default('never'),
   lastFetchAt: integer('last_fetch_at', { mode: 'timestamp' }),
@@ -244,7 +248,7 @@ export const jobs = sqliteTable(
   'jobs',
   {
     id: text('id').primaryKey(),
-    type: text('type').notNull(), // feed_fetch, ai_process, memory_summarize
+    type: text('type').notNull(), // feed_fetch, article_crawl, ai_process, jev_process, memory_summarize
     status: text('status').notNull().default('queued'), // queued, processing, completed, failed
     payload: text('payload').default('{}'), // JSON
     result: text('result').default('{}'), // JSON
@@ -294,7 +298,7 @@ export const jobs = sqliteTable(
       index('idx_jobs_prunable_completed')
         .on(table.completedAt)
         .where(
-          sql`${table.type} IN ('feed_fetch', 'ai_process') AND ${table.status} IN ('completed', 'failed')`,
+          sql`${table.type} IN ('feed_fetch', 'article_crawl', 'ai_process') AND ${table.status} IN ('completed', 'failed')`,
         ),
     ];
   },

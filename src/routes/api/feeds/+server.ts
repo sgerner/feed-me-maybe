@@ -5,6 +5,7 @@ import { wakePoller } from '#lib/server/poller.ts';
 import { isRedditUrl } from '#lib/server/sources/reddit.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import { recordAppError } from '#lib/server/logging.ts';
+import { validateCssSelector } from '#lib/server/archive.ts';
 import { validatePublicUrl } from '#lib/server/network.ts';
 import {
   discoverAndValidateFeedSource,
@@ -23,8 +24,8 @@ export const GET: RequestHandler = async ({ locals }) => {
   const rows = db
     .prepare(
       `SELECT f.id, f.url, f.title, f.description, f.site_url, f.category,
-              f.icon_url, f.enabled, f.use_proxy, f.error_count,
-              f.last_fetch_status, f.last_fetch_at, f.last_error,
+              f.icon_url, f.enabled, f.use_proxy, f.fetch_full_text, f.css_selector,
+              f.error_count, f.last_fetch_status, f.last_fetch_at, f.last_error,
               f.source_type, f.source_metadata, f.created_at, f.updated_at,
               COUNT(CASE WHEN COALESCE(a.read, 0) = 0 AND COALESCE(a.hidden, 0) = 0 AND COALESCE(a.rejected, 0) = 0 AND COALESCE(a.thumbs_down, 0) = 0 THEN 1 END) AS unread_count,
               COUNT(CASE WHEN COALESCE(a.saved, 0) = 1 THEN 1 END) AS saved_count,
@@ -84,6 +85,38 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       { error: 'Feed URL is required', field: 'url' },
       { status: 400 },
     );
+  }
+
+  let fetchFullText = false;
+  if (body.fetch_full_text !== undefined) {
+    if (typeof body.fetch_full_text !== 'boolean') {
+      return Response.json(
+        {
+          error: 'fetch_full_text must be a boolean',
+          field: 'fetch_full_text',
+        },
+        { status: 400 },
+      );
+    }
+    fetchFullText = body.fetch_full_text;
+  }
+
+  let cssSelector = '';
+  if (body.css_selector !== undefined && body.css_selector !== null) {
+    if (typeof body.css_selector !== 'string') {
+      return Response.json(
+        { error: 'css_selector must be a string', field: 'css_selector' },
+        { status: 400 },
+      );
+    }
+    const selectorValidation = validateCssSelector(body.css_selector);
+    if (!selectorValidation.valid) {
+      return Response.json(
+        { error: selectorValidation.error, field: 'css_selector' },
+        { status: 400 },
+      );
+    }
+    cssSelector = selectorValidation.normalized;
   }
 
   // Reject unsupported protocols, embedded credentials, and obvious private
@@ -157,9 +190,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         `INSERT INTO feeds (
           id, url, title, custom_title, description, site_url, icon_url,
           category, source_type, source_metadata, use_proxy,
+          fetch_full_text, css_selector,
           etag, last_modified_header, last_fetch_status, last_fetch_at,
           poll_interval_mins, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, NULL, ?, ?)`,
       ).run(
         id,
         normalizedUrl,
@@ -172,6 +206,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         sourceType,
         sourceMetadata,
         useProxy ? 1 : 0,
+        fetchFullText ? 1 : 0,
+        cssSelector,
         fetchResult.etag || null,
         fetchResult.lastModified || null,
         nowMs,

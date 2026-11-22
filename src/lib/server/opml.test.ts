@@ -287,4 +287,75 @@ describe('parseOpml', () => {
       custom_title: 0,
     });
   });
+
+  it('preserves full-text flags, CSS rules, and Miniflux crawler/scraper_rules attributes in OPML export and import', () => {
+    const db = getDb();
+    const now = Date.now();
+    const roundTripUrl = 'https://fulltext-opml.example/feed.xml';
+
+    db.prepare(
+      `INSERT INTO feeds (
+        id, url, title, enabled, fetch_full_text, css_selector, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, 1, ?, ?, ?)`,
+    ).run(
+      'fulltext-opml-feed',
+      roundTripUrl,
+      'Full Text OPML Feed',
+      'article .post-content, [itemprop="articleBody"]',
+      now,
+      now,
+    );
+
+    const exported = exportOpml();
+    expect(exported).toContain('fmmFetchFullText="true"');
+    expect(exported).toContain('crawler="true"');
+    expect(exported).toContain(
+      'fmmCssSelector="article .post-content, [itemprop=&quot;articleBody&quot;]"',
+    );
+
+    db.prepare('DELETE FROM feeds WHERE id = ?').run('fulltext-opml-feed');
+    expect(importOpml(exported)).toEqual({ imported: 1, errors: [] });
+
+    expect(
+      db
+        .prepare(
+          'SELECT fetch_full_text, css_selector FROM feeds WHERE url = ?',
+        )
+        .get(roundTripUrl),
+    ).toEqual({
+      fetch_full_text: 1,
+      css_selector: 'article .post-content, [itemprop="articleBody"]',
+    });
+
+    // Imports Miniflux OPML outlines with crawler="true" and scraper_rules
+    const minifluxOpml = `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <body>
+    <outline text="Miniflux Crawled" xmlUrl="https://miniflux-crawled.example/rss" crawler="true" scraper_rules="main .article-body" />
+    <outline text="Miniflux Teaser Only" xmlUrl="https://miniflux-plain.example/rss" crawler="false" scraper_rules="div[" />
+  </body>
+</opml>`;
+    expect(importOpml(minifluxOpml)).toEqual({ imported: 2, errors: [] });
+
+    expect(
+      db
+        .prepare(
+          'SELECT fetch_full_text, css_selector FROM feeds WHERE url = ?',
+        )
+        .get('https://miniflux-crawled.example/rss'),
+    ).toEqual({
+      fetch_full_text: 1,
+      css_selector: 'main .article-body',
+    });
+    expect(
+      db
+        .prepare(
+          'SELECT fetch_full_text, css_selector FROM feeds WHERE url = ?',
+        )
+        .get('https://miniflux-plain.example/rss'),
+    ).toEqual({
+      fetch_full_text: 0,
+      css_selector: '',
+    });
+  });
 });

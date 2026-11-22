@@ -515,4 +515,180 @@ describe('feed settings, refresh, and batch APIs', () => {
         .all(),
     ).toEqual([]);
   });
+
+  it('validates and saves fetch_full_text and css_selector in PATCH /api/feeds/[id] and cancels queued crawl jobs on disable, clear, or delete', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { PATCH, DELETE } = await import('./[id]/+server');
+    const { POST: clearPost } = await import('./[id]/clear/+server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, fetch_full_text, css_selector, created_at, updated_at) VALUES (?, ?, ?, 1, 0, ?, ?, ?)',
+    ).run(
+      'feed-crawl-cfg',
+      'https://crawl-cfg.example/rss',
+      'Crawl Feed',
+      '',
+      now,
+      now,
+    );
+
+    // Rejects invalid CSS selector syntax with HTTP 400 before saving any settings
+    const badSelectorRes = await PATCH(
+      requestEvent(
+        'PATCH',
+        {
+          title: 'Should Not Save',
+          fetch_full_text: true,
+          css_selector: 'article > [unclosed',
+        },
+        { id: 'feed-crawl-cfg' },
+      ),
+    );
+    expect(badSelectorRes.status).toBe(400);
+    expect(
+      db
+        .prepare(
+          'SELECT title, fetch_full_text, css_selector FROM feeds WHERE id = ?',
+        )
+        .get('feed-crawl-cfg'),
+    ).toEqual({
+      title: 'Crawl Feed',
+      fetch_full_text: 0,
+      css_selector: '',
+    });
+
+    // Rejects non-boolean fetch_full_text with HTTP 400
+    const badFlagRes = await PATCH(
+      requestEvent(
+        'PATCH',
+        { fetch_full_text: 'yes' },
+        { id: 'feed-crawl-cfg' },
+      ),
+    );
+    expect(badFlagRes.status).toBe(400);
+
+    // Saves valid fetch_full_text and normalized css_selector
+    const okRes = await PATCH(
+      requestEvent(
+        'PATCH',
+        {
+          fetch_full_text: true,
+          css_selector: '  article .entry-content ,  main .post-body  ',
+        },
+        { id: 'feed-crawl-cfg' },
+      ),
+    );
+    expect(okRes.status).toBe(200);
+    const okBody = await okRes.json();
+    expect(okBody.feed).toMatchObject({
+      fetch_full_text: 1,
+      css_selector: 'article .entry-content , main .post-body',
+    });
+
+    //Turning off fetch_full_text cancels queued article_crawl jobs while keeping ai_process
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'art-crawl-1',
+      'feed-crawl-cfg',
+      'https://crawl-cfg.example/1',
+      'Item 1',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('crawl-q-1', 'article_crawl', 'queued', ?, 0, 2, ?),
+              ('ai-q-1', 'ai_process', 'queued', ?, 0, 3, ?)`,
+    ).run(
+      JSON.stringify({ articleId: 'art-crawl-1', feedId: 'feed-crawl-cfg' }),
+      now,
+      JSON.stringify({ articleId: 'art-crawl-1', feedId: 'feed-crawl-cfg' }),
+      now,
+    );
+
+    const turnOffCrawl = await PATCH(
+      requestEvent(
+        'PATCH',
+        { fetch_full_text: false },
+        { id: 'feed-crawl-cfg' },
+      ),
+    );
+    expect(turnOffCrawl.status).toBe(200);
+    expect(
+      db.prepare("SELECT id FROM jobs WHERE id = 'crawl-q-1'").get(),
+    ).toBeUndefined();
+    expect(db.prepare("SELECT id FROM jobs WHERE id = 'ai-q-1'").get()).toEqual(
+      { id: 'ai-q-1' },
+    );
+
+    // Re-enable full text and verify clearFeedArticles cancels queued article_crawl for cleared items
+    await PATCH(
+      requestEvent(
+        'PATCH',
+        { fetch_full_text: true },
+        { id: 'feed-crawl-cfg' },
+      ),
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('crawl-q-clear', 'article_crawl', 'queued', ?, 0, 2, ?)`,
+    ).run(
+      JSON.stringify({ articleId: 'art-crawl-1', feedId: 'feed-crawl-cfg' }),
+      now,
+    );
+
+    const clearRes = await clearPost(
+      requestEvent('POST', undefined, { id: 'feed-crawl-cfg' }),
+    );
+    expect(clearRes.status).toBe(200);
+    expect(
+      db.prepare("SELECT id FROM jobs WHERE id = 'crawl-q-clear'").get(),
+    ).toBeUndefined();
+
+    // Disabling feed cancels queued article_crawl jobs
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'art-crawl-2',
+      'feed-crawl-cfg',
+      'https://crawl-cfg.example/2',
+      'Item 2',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('crawl-q-disable', 'article_crawl', 'queued', ?, 0, 2, ?)`,
+    ).run(
+      JSON.stringify({ articleId: 'art-crawl-2', feedId: 'feed-crawl-cfg' }),
+      now,
+    );
+    await PATCH(
+      requestEvent('PATCH', { enabled: false }, { id: 'feed-crawl-cfg' }),
+    );
+    expect(
+      db.prepare("SELECT id FROM jobs WHERE id = 'crawl-q-disable'").get(),
+    ).toBeUndefined();
+
+    // Deleting feed removes any remaining crawl jobs
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('crawl-q-delete', 'article_crawl', 'queued', ?, 0, 2, ?)`,
+    ).run(
+      JSON.stringify({ articleId: 'art-crawl-2', feedId: 'feed-crawl-cfg' }),
+      now,
+    );
+    const delRes = await DELETE(
+      requestEvent('DELETE', undefined, { id: 'feed-crawl-cfg' }),
+    );
+    expect(delRes.status).toBe(200);
+    expect(
+      db.prepare("SELECT id FROM jobs WHERE id = 'crawl-q-delete'").get(),
+    ).toBeUndefined();
+  });
 });

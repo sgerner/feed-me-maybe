@@ -1677,4 +1677,277 @@ describe('feed job queue', () => {
       ingest.mockRestore();
     }
   });
+
+  it('finishes article_crawl before AI and ranking, upgrades only when extracted plain text is longer, and updates FTS5 + offline snapshots', async () => {
+    const archiveMod = await import('#lib/server/archive.ts');
+    const { buildSafeDecisionInput } =
+      await import('#lib/server/ai/decision-input.ts');
+    const { stripHtml } = await import('#lib/server/normalization.ts');
+    const { GET: offlineGet } =
+      await import('../../../routes/api/offline/articles/+server');
+    const {
+      enqueueAiProcess,
+      enqueueArticleCrawl,
+      enqueueJevProcess,
+      getJob,
+      runDueJobs,
+    } = await import('./job-queue');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 80_000_000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, fetch_full_text, css_selector, created_at, updated_at) VALUES (?, ?, ?, 1, 1, ?, ?, ?)',
+    ).run(
+      'feed-crawl-order',
+      'https://crawl-order.example/rss',
+      'Crawl Order Feed',
+      '.article-main',
+      now,
+      now,
+    );
+
+    const teaser = 'Brief summary sentence from feed.';
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?),
+              (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'art-crawl-full',
+      'feed-crawl-order',
+      'https://crawl-order.example/p1',
+      'Deep Dive Systems Post',
+      teaser,
+      `<p>${teaser}</p>`,
+      now,
+      now,
+      now,
+      'art-crawl-shorter',
+      'feed-crawl-order',
+      'https://crawl-order.example/p2',
+      'Already Longer Summary Post',
+      'This stored feed summary already has much more text than the tiny paywall snippet returned by the publisher page.',
+      '<p>This stored feed summary already has much more text than the tiny paywall snippet returned by the publisher page.</p>',
+      now - 1,
+      now - 1,
+      now - 1,
+    );
+
+    const events: string[] = [];
+    let aiSeenContent = '';
+    let jevSeenExcerpt = '';
+
+    const fetchPubSpy = vi
+      .spyOn(archiveMod, 'fetchPublisherArticle')
+      .mockImplementation(async (url, _proxy, cssSelector) => {
+        events.push(`crawl:${url}:${cssSelector || ''}`);
+        if (url.endsWith('/p1')) {
+          return {
+            title: 'Deep Dive Systems Post',
+            content: `<p>${teaser} Uniquepublisherkeyword architecture walkthrough with detailed benchmarks and implementation notes across distributed storage nodes.</p>`,
+            imageUrl: 'https://crawl-order.example/hero.png',
+          };
+        }
+        return {
+          title: 'Already Longer Summary Post',
+          content: '<p>Tiny stub.</p>',
+          imageUrl: undefined,
+        };
+      });
+
+    aiMocks.processArticle.mockImplementation(async (articleId?: string) => {
+      events.push(`ai:${articleId}`);
+      if (articleId === 'art-crawl-full') {
+        const row = db
+          .prepare('SELECT summary, content, title FROM articles WHERE id = ?')
+          .get(articleId) as {
+          summary: string;
+          content: string;
+          title: string;
+        };
+        aiSeenContent = row.content;
+        const safeInput = buildSafeDecisionInput({
+          reader_profile: {},
+          candidate: {
+            title: row.title,
+            summary: row.summary,
+            content_excerpt: stripHtml(row.content),
+          },
+        });
+        jevSeenExcerpt = String(safeInput.candidate.content_excerpt || '');
+      }
+    });
+    jevMocks.processJevArticle.mockImplementation(
+      async (articleId?: string) => {
+        events.push(`jev:${articleId}`);
+      },
+    );
+
+    try {
+      const aiJob = enqueueAiProcess('art-crawl-full', {
+        feedId: 'feed-crawl-order',
+        now,
+      })!;
+      const jevJob = enqueueJevProcess('art-crawl-full', {
+        feedId: 'feed-crawl-order',
+        now,
+      })!;
+      const crawlJob1 = enqueueArticleCrawl('art-crawl-full', {
+        feedId: 'feed-crawl-order',
+        now: now + 10,
+      })!;
+      const crawlJob2 = enqueueArticleCrawl('art-crawl-shorter', {
+        feedId: 'feed-crawl-order',
+        now: now + 20,
+      })!;
+
+      await runDueJobs({ now: now + 50, maxJobs: 4 });
+
+      expect(getJob(crawlJob1.id)?.status).toBe('completed');
+      expect(getJob(crawlJob2.id)?.status).toBe('completed');
+      expect(getJob(aiJob.id)?.status).toBe('completed');
+      expect(getJob(jevJob.id)?.status).toBe('completed');
+
+      // Crawl for art-crawl-full finished strictly before AI and Jev ran for art-crawl-full
+      const crawlIdx = events.indexOf(
+        'crawl:https://crawl-order.example/p1:.article-main',
+      );
+      const aiIdx = events.indexOf('ai:art-crawl-full');
+      const jevIdx = events.indexOf('jev:art-crawl-full');
+      expect(crawlIdx).toBeGreaterThanOrEqual(0);
+      expect(aiIdx).toBeGreaterThan(crawlIdx);
+      expect(jevIdx).toBeGreaterThan(crawlIdx);
+
+      // AI received upgraded content, and buildSafeDecisionInput stripped the duplicate teaser sentence
+      expect(aiSeenContent).toContain('Uniquepublisherkeyword');
+      expect(jevSeenExcerpt).toContain('Uniquepublisherkeyword');
+      expect(jevSeenExcerpt).not.toContain(teaser);
+
+      // Shorter extracted text did NOT overwrite stored content
+      const untouched = db
+        .prepare('SELECT content FROM articles WHERE id = ?')
+        .pluck()
+        .get('art-crawl-shorter') as string;
+      expect(untouched).toContain('much more text than the tiny paywall');
+
+      // FTS5 article_search automatically indexed the newly crawled body text
+      const ftsHit = db
+        .prepare(
+          "SELECT article_id FROM article_search WHERE article_search MATCH 'Uniquepublisherkeyword'",
+        )
+        .all();
+      expect(ftsHit).toEqual([{ article_id: 'art-crawl-full' }]);
+
+      // Offline snapshot endpoint serves the crawled body text
+      const offlineRes = await offlineGet({
+        locals: { sessionId: 'sess-offline' },
+      } as Parameters<typeof offlineGet>[0]);
+      const offlineData = (await offlineRes.json()) as {
+        articles: Array<{ id: string; content: string | null }>;
+      };
+      const offlineArt = offlineData.articles.find(
+        (item) => item.id === 'art-crawl-full',
+      );
+      expect(offlineArt?.content).toContain('Uniquepublisherkeyword');
+    } finally {
+      fetchPubSpy.mockRestore();
+    }
+  });
+
+  it('keeps feed teaser, avoids feed error increments, releases AI/ranking on failed crawl, and prunes finished crawls after 30 days', async () => {
+    const archiveMod = await import('#lib/server/archive.ts');
+    const { pruneOperationalHistory } = await import('#lib/server/logging.ts');
+    const {
+      enqueueAiProcess,
+      enqueueArticleCrawl,
+      enqueueJevProcess,
+      getJob,
+      runDueJobs,
+    } = await import('./job-queue');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 90_000_000;
+
+    db.prepare(
+      "INSERT INTO feeds (id, url, title, enabled, fetch_full_text, error_count, last_error, last_fetch_status, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 0, '', 'success', ?, ?)",
+    ).run(
+      'feed-crawl-fail',
+      'https://crawl-fail.example/rss',
+      'Fail Crawl Feed',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'art-crawl-fail',
+      'feed-crawl-fail',
+      'https://crawl-fail.example/blocked',
+      'Blocked Publisher Post',
+      'Preserved RSS teaser text.',
+      '<p>Preserved RSS teaser text.</p>',
+      now,
+      now,
+      now,
+    );
+
+    const fetchPubSpy = vi
+      .spyOn(archiveMod, 'fetchPublisherArticle')
+      .mockResolvedValue(null);
+
+    try {
+      const crawlJob = enqueueArticleCrawl('art-crawl-fail', {
+        feedId: 'feed-crawl-fail',
+        now,
+      })!;
+      const aiJob = enqueueAiProcess('art-crawl-fail', {
+        feedId: 'feed-crawl-fail',
+        now,
+      })!;
+      const jevJob = enqueueJevProcess('art-crawl-fail', {
+        feedId: 'feed-crawl-fail',
+        now,
+      })!;
+
+      await runDueJobs({ now: now + 10, maxJobs: 4 });
+
+      expect(getJob(crawlJob.id)?.status).toBe('failed');
+      expect(getJob(aiJob.id)?.status).toBe('completed');
+      expect(getJob(jevJob.id)?.status).toBe('completed');
+      expect(aiMocks.processArticle).toHaveBeenCalledWith('art-crawl-fail');
+      expect(jevMocks.processJevArticle).toHaveBeenCalledWith('art-crawl-fail');
+
+      // Preserves feed teaser and does NOT increment feed error_count
+      expect(
+        db
+          .prepare('SELECT content, summary FROM articles WHERE id = ?')
+          .get('art-crawl-fail'),
+      ).toEqual({
+        content: '<p>Preserved RSS teaser text.</p>',
+        summary: 'Preserved RSS teaser text.',
+      });
+      expect(
+        db
+          .prepare(
+            'SELECT error_count, last_error, last_fetch_status FROM feeds WHERE id = ?',
+          )
+          .get('feed-crawl-fail'),
+      ).toEqual({
+        error_count: 0,
+        last_error: '',
+        last_fetch_status: 'success',
+      });
+
+      // Prunes finished article_crawl jobs older than 30 days
+      const thirtyOneDaysMs = 31 * 24 * 60 * 60 * 1000;
+      pruneOperationalHistory(now + 10 + 1_000);
+      expect(getJob(crawlJob.id)).not.toBeNull();
+
+      pruneOperationalHistory(now + 10 + thirtyOneDaysMs);
+      expect(getJob(crawlJob.id)).toBeNull();
+    } finally {
+      fetchPubSpy.mockRestore();
+    }
+  });
 });

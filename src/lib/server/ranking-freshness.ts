@@ -453,6 +453,16 @@ export async function flushRankingRefreshQueue(
        JOIN articles a ON a.id = q.article_id
        JOIN feeds f ON f.id = a.feed_id
        WHERE (? = 0 OR f.enabled = 0 OR q.not_before <= ?)
+         AND (
+           f.enabled = 0
+           OR NOT EXISTS (
+             SELECT 1 FROM jobs crawl
+             WHERE crawl.type = 'article_crawl'
+               AND crawl.status IN ('queued', 'processing')
+               AND CASE WHEN json_valid(crawl.payload) = 1
+                        THEN json_extract(crawl.payload, '$.articleId') END = q.article_id
+           )
+         )
        ORDER BY q.created_at ASC, q.article_id ASC
        LIMIT ?`,
     )

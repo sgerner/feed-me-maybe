@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 describe('interaction side effects', () => {
@@ -384,5 +384,97 @@ describe('interaction side effects', () => {
         )
         .get(),
     ).toEqual({ evidence_count: 1 });
+  });
+
+  it('immediately extracts and saves full text when opening a pending article in app mode', async () => {
+    const archiveMod = await import('#lib/server/archive.ts');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { load } = await import('../../routes/articles/[id]/+page.server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, enabled, fetch_full_text, css_selector, open_mode, created_at, updated_at) VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?)',
+    ).run(
+      'feed-app-open',
+      'https://example.com/app-open.xml',
+      'App Open Feed',
+      '.story-content',
+      'app',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT OR REPLACE INTO articles (id, feed_id, url, title, summary, content, state_version, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+    ).run(
+      'article-pending-app',
+      'feed-app-open',
+      'https://example.com/pending-story',
+      'Pending Story',
+      'Short RSS teaser.',
+      '<p>Short RSS teaser.</p>',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('pending-crawl-job', 'article_crawl', 'queued', ?, 0, 2, ?)`,
+    ).run(
+      JSON.stringify({
+        articleId: 'article-pending-app',
+        feedId: 'feed-app-open',
+      }),
+      now,
+    );
+
+    const spy = vi
+      .spyOn(archiveMod, 'fetchPublisherArticle')
+      .mockResolvedValueOnce({
+        title: 'Pending Story',
+        content:
+          '<p>Immediate app mode extracted full article body with rich details saved directly to SQLite.</p>',
+        imageUrl: 'https://example.com/story-cover.jpg',
+      });
+
+    try {
+      const loaded = (await load({
+        params: { id: 'article-pending-app' },
+        locals: { sessionId: 'sess' },
+        url: new URL('http://localhost/articles/article-pending-app?mode=app'),
+      } as never)) as {
+        article: { content: string; image_url: string; read: number };
+      };
+
+      expect(spy).toHaveBeenCalledWith(
+        'https://example.com/pending-story',
+        undefined,
+        '.story-content',
+      );
+      expect(loaded.article.content).toContain(
+        'Immediate app mode extracted full article body',
+      );
+      expect(loaded.article.image_url).toBe(
+        'https://example.com/story-cover.jpg',
+      );
+
+      expect(
+        db
+          .prepare('SELECT content, image_url FROM articles WHERE id = ?')
+          .get('article-pending-app'),
+      ).toEqual({
+        content:
+          '<p>Immediate app mode extracted full article body with rich details saved directly to SQLite.</p>',
+        image_url: 'https://example.com/story-cover.jpg',
+      });
+      expect(
+        db
+          .prepare("SELECT status FROM jobs WHERE id = 'pending-crawl-job'")
+          .get(),
+      ).toEqual({ status: 'completed' });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

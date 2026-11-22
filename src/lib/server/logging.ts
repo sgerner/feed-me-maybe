@@ -102,7 +102,7 @@ export function pruneOperationalHistory(now: number): void {
        WHERE status IN ('completed', 'failed')
          AND completed_at < ?
          AND (
-           type IN ('feed_fetch', 'ai_process')
+           type IN ('feed_fetch', 'article_crawl', 'ai_process')
            OR (
              type = 'jev_process'
              AND NOT (

@@ -300,8 +300,465 @@ function extractCandidateHtml(html: string): string {
   return best || body;
 }
 
+const MAX_CSS_SELECTOR_LENGTH = 500;
+
+export type CssSelectorValidationResult =
+  { valid: true; normalized: string } | { valid: false; error: string };
+
+function splitTopLevelCommas(
+  input: string,
+): { parts: string[] } | { error: string } {
+  const parts: string[] = [];
+  let quote: '"' | "'" | null = null;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let start = 0;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '[') {
+      bracketDepth++;
+      continue;
+    }
+    if (ch === ']') {
+      bracketDepth--;
+      if (bracketDepth < 0) {
+        return { error: 'Unbalanced square brackets in CSS selector' };
+      }
+      continue;
+    }
+    if (bracketDepth > 0) {
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth++;
+      continue;
+    }
+    if (ch === ')') {
+      parenDepth--;
+      if (parenDepth < 0) {
+        return { error: 'Unbalanced parentheses in CSS selector' };
+      }
+      continue;
+    }
+    if (ch === ',' && parenDepth === 0) {
+      parts.push(input.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  if (quote) {
+    return { error: 'Unclosed string literal in CSS selector' };
+  }
+  if (bracketDepth !== 0) {
+    return { error: 'Unbalanced square brackets in CSS selector' };
+  }
+  if (parenDepth !== 0) {
+    return { error: 'Unbalanced parentheses in CSS selector' };
+  }
+
+  parts.push(input.slice(start));
+  return { parts };
+}
+
+function consumeCssIdentifier(
+  input: string,
+  start: number,
+  allowColon = false,
+): { nextIndex: number } | null {
+  if (start >= input.length) return null;
+
+  let i = start;
+  if (input[i] === '\\') {
+    if (i + 1 >= input.length) return null;
+    i += 2;
+  } else if (input[i] === '-') {
+    if (i + 1 >= input.length) return null;
+    const next = input[i + 1];
+    if (next === '\\') {
+      if (i + 2 >= input.length) return null;
+      i += 3;
+    } else if (/[A-Za-z_-]/.test(next)) {
+      i += 2;
+    } else {
+      return null;
+    }
+  } else if (/[A-Za-z_]/.test(input[i])) {
+    i++;
+  } else {
+    return null;
+  }
+
+  const bodyCharPattern = allowColon ? /[A-Za-z0-9_:-]/ : /[A-Za-z0-9_-]/;
+  while (i < input.length) {
+    if (input[i] === '\\') {
+      if (i + 1 >= input.length) return null;
+      i += 2;
+    } else if (bodyCharPattern.test(input[i])) {
+      i++;
+    } else {
+      break;
+    }
+  }
+
+  return { nextIndex: i };
+}
+
+function findMatchingBracket(input: string, openIndex: number): number {
+  let quote: '"' | "'" | null = null;
+  for (let i = openIndex + 1; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ']') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function findMatchingParen(input: string, openIndex: number): number {
+  let quote: '"' | "'" | null = null;
+  let bracketDepth = 0;
+  let parenDepth = 1;
+  for (let i = openIndex + 1; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '[') {
+      bracketDepth++;
+      continue;
+    }
+    if (ch === ']' && bracketDepth > 0) {
+      bracketDepth--;
+      continue;
+    }
+    if (bracketDepth > 0) {
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth++;
+      continue;
+    }
+    if (ch === ')') {
+      parenDepth--;
+      if (parenDepth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function validateAttributeSelector(inner: string): string | null {
+  const trimmed = inner.trim();
+  if (!trimmed) return 'Empty attribute selector';
+
+  const attrIdent = consumeCssIdentifier(trimmed, 0, true);
+  if (!attrIdent) return 'Invalid attribute name in CSS selector';
+
+  let i = attrIdent.nextIndex;
+  while (i < trimmed.length && /\s/.test(trimmed[i])) i++;
+  if (i === trimmed.length) return null;
+
+  const opMatch = trimmed.slice(i).match(/^([~|^$*]?=)/);
+  if (!opMatch) return 'Invalid attribute operator in CSS selector';
+  i += opMatch[1].length;
+
+  while (i < trimmed.length && /\s/.test(trimmed[i])) i++;
+  if (i >= trimmed.length) return 'Missing attribute value in CSS selector';
+
+  if (trimmed[i] === '"' || trimmed[i] === "'") {
+    const quote = trimmed[i];
+    i++;
+    let closed = false;
+    while (i < trimmed.length) {
+      if (trimmed[i] === '\\') {
+        i += 2;
+        continue;
+      }
+      if (trimmed[i] === quote) {
+        closed = true;
+        i++;
+        break;
+      }
+      i++;
+    }
+    if (!closed) return 'Unclosed attribute value quote in CSS selector';
+  } else {
+    const valueStart = i;
+    while (i < trimmed.length) {
+      if (trimmed[i] === '\\') {
+        if (i + 1 >= trimmed.length) {
+          return 'Invalid escape in attribute selector';
+        }
+        i += 2;
+        continue;
+      }
+      if (/[\s"'`=\]<>]/.test(trimmed[i])) break;
+      i++;
+    }
+    if (i === valueStart) return 'Invalid attribute value in CSS selector';
+  }
+
+  const remainder = trimmed.slice(i).trim();
+  if (remainder && !/^[iIsS]$/.test(remainder)) {
+    return 'Unexpected token in attribute selector';
+  }
+  return null;
+}
+
+function validateSelectorList(
+  input: string,
+  allowLeadingCombinator: boolean,
+): string | null {
+  const split = splitTopLevelCommas(input);
+  if ('error' in split) return split.error;
+
+  for (const rawPart of split.parts) {
+    const part = rawPart.trim();
+    if (!part) return 'Empty selector in CSS selector list';
+
+    let i = 0;
+    let expectingOperand = true;
+    let sawToken = false;
+
+    while (i < part.length) {
+      const ch = part[i];
+      if (/\s/.test(ch)) {
+        i++;
+        continue;
+      }
+
+      if (ch === '>' || ch === '+' || ch === '~') {
+        if (expectingOperand) {
+          if (allowLeadingCombinator && !sawToken) {
+            sawToken = true;
+            expectingOperand = true;
+            i++;
+            continue;
+          }
+          return 'Unexpected combinator in CSS selector';
+        }
+        expectingOperand = true;
+        i++;
+        continue;
+      }
+
+      const atCompoundStart = i === 0 || /[\s>+~]/.test(part[i - 1]);
+
+      if (ch === '*') {
+        if (!atCompoundStart) return 'Unexpected universal selector';
+        expectingOperand = false;
+        sawToken = true;
+        i++;
+        continue;
+      }
+
+      if (ch === '.' || ch === '#') {
+        const ident = consumeCssIdentifier(part, i + 1);
+        if (!ident) {
+          return ch === '.' ? 'Invalid class selector' : 'Invalid ID selector';
+        }
+        i = ident.nextIndex;
+        expectingOperand = false;
+        sawToken = true;
+        continue;
+      }
+
+      if (ch === '[') {
+        const closeBracket = findMatchingBracket(part, i);
+        if (closeBracket === -1) {
+          return 'Unbalanced square brackets in CSS selector';
+        }
+        const attrError = validateAttributeSelector(
+          part.slice(i + 1, closeBracket),
+        );
+        if (attrError) return attrError;
+        i = closeBracket + 1;
+        expectingOperand = false;
+        sawToken = true;
+        continue;
+      }
+
+      if (ch === ':') {
+        let j = i + 1;
+        if (part[j] === ':') j++;
+        const pseudoIdent = consumeCssIdentifier(part, j);
+        if (!pseudoIdent) return 'Invalid pseudo-selector in CSS selector';
+        const pseudoName = part.slice(j, pseudoIdent.nextIndex).toLowerCase();
+        j = pseudoIdent.nextIndex;
+        if (part[j] === '(') {
+          const closeParen = findMatchingParen(part, j);
+          if (closeParen === -1) {
+            return 'Unbalanced parentheses in CSS selector';
+          }
+          const arg = part.slice(j + 1, closeParen).trim();
+          if (!arg) return 'Empty pseudo-selector argument in CSS selector';
+          if (
+            pseudoName === 'is' ||
+            pseudoName === 'where' ||
+            pseudoName === 'not' ||
+            pseudoName === 'matches'
+          ) {
+            const innerErr = validateSelectorList(arg, false);
+            if (innerErr) return innerErr;
+          } else if (pseudoName === 'has') {
+            const innerErr = validateSelectorList(arg, true);
+            if (innerErr) return innerErr;
+          }
+          j = closeParen + 1;
+        }
+        i = j;
+        expectingOperand = false;
+        sawToken = true;
+        continue;
+      }
+
+      const typeIdent = consumeCssIdentifier(part, i);
+      if (!typeIdent || !atCompoundStart) {
+        return 'Invalid token in CSS selector';
+      }
+      i = typeIdent.nextIndex;
+      expectingOperand = false;
+      sawToken = true;
+    }
+
+    if (expectingOperand || !sawToken) {
+      return 'Incomplete CSS selector';
+    }
+  }
+
+  return null;
+}
+
+export function validateCssSelector(
+  selector: string,
+): CssSelectorValidationResult {
+  const normalized = selector.trim().replace(/\s+/g, ' ');
+  if (!normalized) {
+    return { valid: true, normalized: '' };
+  }
+  if (normalized.length > MAX_CSS_SELECTOR_LENGTH) {
+    return {
+      valid: false,
+      error: `CSS selector must be ${MAX_CSS_SELECTOR_LENGTH} characters or fewer`,
+    };
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(normalized)) {
+    return {
+      valid: false,
+      error: 'CSS selector contains invalid control characters',
+    };
+  }
+
+  const syntaxError = validateSelectorList(normalized, false);
+  if (syntaxError) {
+    return { valid: false, error: syntaxError };
+  }
+
+  try {
+    const { document } = parseHTML(
+      '<div><article><p class="probe">ok</p></article></div>',
+    );
+    document.querySelectorAll(normalized);
+  } catch {
+    return { valid: false, error: 'Invalid CSS selector syntax' };
+  }
+
+  return { valid: true, normalized };
+}
+
 function normalizeContent(html: string, baseUrl: string): string {
   return sanitizeContent(absolutizeUrls(html, baseUrl), baseUrl);
+}
+
+export function extractWithCssSelector(
+  html: string,
+  pageUrl: string,
+  cssSelector: string,
+): { title: string; content: string } | null {
+  const validation = validateCssSelector(cssSelector);
+  if (!validation.valid || !validation.normalized) {
+    return null;
+  }
+
+  try {
+    const { document } = parseHTML(html);
+    const matches = Array.from(
+      document.querySelectorAll(validation.normalized),
+    );
+    if (matches.length === 0) {
+      return null;
+    }
+
+    const topLevelMatches = matches.filter(
+      (candidate, index) =>
+        !matches.some(
+          (other, otherIndex) =>
+            otherIndex !== index &&
+            typeof other.contains === 'function' &&
+            other.contains(candidate),
+        ),
+    );
+
+    const combinedHtml = topLevelMatches
+      .map((element) => element.outerHTML || element.innerHTML || '')
+      .filter(Boolean)
+      .join('\n');
+    if (!combinedHtml.trim()) {
+      return null;
+    }
+
+    const content = normalizeContent(combinedHtml, pageUrl);
+    if (
+      !content.trim() ||
+      isCloudflareChallenge(content) ||
+      isGarbageContent(content)
+    ) {
+      return null;
+    }
+
+    return {
+      title: extractTitleFromHtml(html, ''),
+      content,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function extractWithReadability(
@@ -325,10 +782,15 @@ function extractWithReadability(
 export async function fetchPublisherArticle(
   url: string,
   proxyBaseUrl?: string,
+  cssSelector?: string | null,
 ) {
   const page = await fetchPage(url, 12000, proxyBaseUrl);
   if (!page || isCloudflareChallenge(page.html)) return null;
-  const parsed = extractWithReadability(page.html, page.url);
+  const trimmedSelector = cssSelector?.trim() || '';
+  const selectorParsed = trimmedSelector
+    ? extractWithCssSelector(page.html, page.url, trimmedSelector)
+    : null;
+  const parsed = selectorParsed ?? extractWithReadability(page.html, page.url);
   if (
     !parsed ||
     isCloudflareChallenge(parsed.content) ||
