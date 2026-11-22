@@ -6,6 +6,7 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
   if (!locals.sessionId) {
     return {
       feeds: [],
+      pinnedSearches: [],
       totalFeeds: 0,
       pausedFeeds: 0,
       feedCategories: [],
