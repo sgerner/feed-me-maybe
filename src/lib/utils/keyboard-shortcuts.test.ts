@@ -165,6 +165,34 @@ describe('keyboard-shortcuts utilities', () => {
         }),
       ).toBe(false);
     });
+
+    it('blocks shortcuts from or while an article action menu is open', () => {
+      const menuButton = {
+        tagName: 'BUTTON',
+        closest: (selector: string) =>
+          selector.includes('[data-reader-more]')
+            ? { tagName: 'DETAILS' }
+            : null,
+      };
+      expect(
+        canTriggerSingleKeyShortcut(
+          createKeyEvent('v', { target: menuButton }),
+        ),
+      ).toBe(false);
+
+      const docWithOpenMenu: DocumentLike = {
+        activeElement: { tagName: 'BODY' },
+        querySelector: (selector: string) =>
+          selector.includes('[data-article-overflow][open]')
+            ? { tagName: 'DETAILS', open: true }
+            : null,
+      };
+      expect(
+        canTriggerSingleKeyShortcut(createKeyEvent('x'), {
+          doc: docWithOpenMenu,
+        }),
+      ).toBe(false);
+    });
   });
 
   describe('modifier, repeat, and defaultPrevented guards', () => {

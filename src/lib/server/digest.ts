@@ -1721,3 +1721,129 @@ export function getWeeklyDigestSelectionPreview(
     buildArticleContext(article, clusterMap),
   );
 }
+
+function findNeighborsInIds(
+  ids: readonly string[],
+  articleId: string,
+): { previous: string | null; next: string | null } | null {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    deduped.push(id);
+  }
+  const index = deduped.indexOf(articleId);
+  if (index < 0) return null;
+  return {
+    previous: index > 0 ? deduped[index - 1] : null,
+    next: index + 1 < deduped.length ? deduped[index + 1] : null,
+  };
+}
+
+/**
+ * Resolves section neighbors from an already-cached digest in SQLite without
+ * ever triggering AI synthesis or network calls.
+ */
+export function getCachedDigestNeighbors(
+  articleId: string,
+  requestedWindowDays?: number | null,
+): { previous: string | null; next: string | null } {
+  const db = getDb();
+  const caches: DigestCachePayload[] = [];
+
+  if (
+    typeof requestedWindowDays === 'number' &&
+    Number.isInteger(requestedWindowDays) &&
+    requestedWindowDays >= CALM_BRIEFING_MIN_DAYS &&
+    requestedWindowDays <= CALM_BRIEFING_MAX_DAYS
+  ) {
+    const exact = loadCache(db, cacheKey(requestedWindowDays));
+    if (exact) caches.push(exact);
+  } else {
+    const primary = loadCache(db, WEEKLY_DIGEST_CACHE_KEY);
+    if (primary) caches.push(primary);
+    const otherRows = db
+      .prepare(
+        "SELECT value FROM app_settings WHERE key LIKE 'weekly_digest_cache:%' ORDER BY updated_at DESC LIMIT 5",
+      )
+      .all() as Array<{ value: string }>;
+    for (const row of otherRows) {
+      try {
+        const parsed = JSON.parse(row.value) as DigestCachePayload;
+        if (parsed?.raw) caches.push(parsed);
+      } catch {
+        // Ignore malformed cache entries.
+      }
+    }
+  }
+
+  for (const cached of caches) {
+    if (!cached?.raw) continue;
+    const windowDays = normalizeWindowDays(cached.windowDays);
+    const windowEnd = Number.isFinite(cached.generatedAt)
+      ? cached.generatedAt
+      : Date.now();
+    const windowStart = windowEnd - windowDays * DAY_MS;
+    const select = `${buildFeedArticleSelect()} WHERE f.enabled = 1 AND a.cleared_at IS NULL AND COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
+    const windowArticles = db
+      .prepare(select)
+      .all(windowStart, windowEnd) as DigestArticleRow[];
+    const allArticles = windowArticles.filter(
+      (article) =>
+        !article.cleared_at &&
+        !article.thumbs_down &&
+        !article.rejected &&
+        (!article.hidden ||
+          (Boolean(article.read) && !hasExplicitHide(article.id))),
+    );
+    const { representatives, clusters } =
+      deduplicateDigestArticles(allArticles);
+    const inclusionCounts = getInclusionCounts(
+      windowArticles,
+      allArticles,
+      representatives.length,
+    );
+    const digestResult = buildDigestResult(
+      cached.raw,
+      allArticles,
+      windowStart,
+      windowEnd,
+      windowEnd,
+      windowDays,
+      true,
+      windowEnd,
+      false,
+      cached.source === 'ai',
+      inclusionCounts,
+      clusters,
+      [],
+    );
+
+    const rankedIds = [
+      ...(digestResult.briefing?.topSignal || digestResult.topStories || []),
+      ...(digestResult.briefing?.worthYourTime ||
+        digestResult.missedStories ||
+        []),
+      ...(digestResult.briefing?.whatChanged || []),
+    ].map((story) => story.article.id);
+    const rankedMatch = findNeighborsInIds(rankedIds, articleId);
+    if (rankedMatch) return rankedMatch;
+
+    for (const theme of digestResult.themes) {
+      const themeMatch = findNeighborsInIds(
+        theme.articles.slice(0, 3).map((item) => item.id),
+        articleId,
+      );
+      if (themeMatch) return themeMatch;
+    }
+
+    const allMatch = findNeighborsInIds(
+      digestResult.allArticles.map((item) => item.id),
+      articleId,
+    );
+    if (allMatch) return allMatch;
+  }
+
+  return { previous: null, next: null };
+}

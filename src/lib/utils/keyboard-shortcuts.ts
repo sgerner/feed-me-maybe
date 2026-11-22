@@ -10,6 +10,9 @@ const EDITABLE_SELECTOR =
   'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], [role="textbox"]';
 const MODAL_SELECTOR = 'dialog[open], [role="dialog"], [aria-modal="true"]';
 const OPEN_MODAL_DOCUMENT_SELECTOR = 'dialog[open], [aria-modal="true"]';
+const MENU_SELECTOR = '[data-article-overflow], [data-reader-more]';
+const OPEN_MENU_DOCUMENT_SELECTOR =
+  '[data-article-overflow][open], [data-reader-more][open]';
 const MODIFIER_ONLY_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 type ElementLike = {
@@ -170,6 +173,35 @@ export function isModalTargetOrOpen(
   return false;
 }
 
+function isMenuTargetOrOpen(
+  target: unknown,
+  doc: DocumentLike | null | undefined,
+): boolean {
+  const node = asElementLike(target);
+  if (
+    node &&
+    typeof node.closest === 'function' &&
+    node.closest(MENU_SELECTOR)
+  ) {
+    return true;
+  }
+  if (!doc) return false;
+
+  const activeElement = asElementLike(doc.activeElement);
+  if (
+    activeElement &&
+    typeof activeElement.closest === 'function' &&
+    activeElement.closest(MENU_SELECTOR)
+  ) {
+    return true;
+  }
+
+  return Boolean(
+    typeof doc.querySelector === 'function' &&
+    doc.querySelector(OPEN_MENU_DOCUMENT_SELECTOR),
+  );
+}
+
 export function canTriggerSingleKeyShortcut(
   event: Pick<
     ShortcutKeyEvent,
@@ -204,6 +236,7 @@ export function canTriggerSingleKeyShortcut(
   if (isEditableTarget(event.target)) return false;
   if (doc?.activeElement && isEditableTarget(doc.activeElement)) return false;
   if (isModalTargetOrOpen(event.target, doc)) return false;
+  if (isMenuTargetOrOpen(event.target, doc)) return false;
 
   return true;
 }
