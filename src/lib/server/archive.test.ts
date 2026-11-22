@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import dns from 'node:dns/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchArchivedArticle,
   fetchPublisherArticle,
@@ -8,7 +9,17 @@ import {
 } from './archive';
 
 describe('archive fetching safety and challenge detection', () => {
+  beforeEach(() => {
+    vi.spyOn(dns, 'lookup').mockImplementation(async (hostname: string) => {
+      if (hostname.includes('private') || hostname.includes('127.0.0.1')) {
+        return [{ address: '127.0.0.1', family: 4 }] as never;
+      }
+      return [{ address: '93.184.216.34', family: 4 }] as never;
+    });
+  });
+
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
