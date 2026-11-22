@@ -6,6 +6,10 @@ import { recordAppError } from '#lib/server/logging.ts';
 import { isRankingProviderConfigured } from '#lib/server/ai/jev.ts';
 import { hasArticleAnalysisText } from '#lib/server/ai/prompts.ts';
 import { isAiProcessingConfigured } from '#lib/server/ai/runtime.ts';
+import {
+  getEffectivePollIntervalMins,
+  getGlobalPollIntervalMins,
+} from '#lib/server/feed-management.ts';
 
 export const FEED_FETCH_JOB_TYPE = 'feed_fetch';
 export const AI_PROCESS_JOB_TYPE = 'ai_process';
@@ -154,10 +158,11 @@ function readJob(id: string): JobRecord | null {
   return row ? toJobRecord(row) : null;
 }
 
-function readActiveJob(
+function readActiveJobByStatus(
   type: string,
   key: string,
   value: string,
+  status: 'queued' | 'processing',
 ): JobRecord | null {
   const payloadPath =
     key === 'articleId' ? '$.articleId' : key === 'feedId' ? '$.feedId' : null;
@@ -168,15 +173,26 @@ function readActiveJob(
       `
         SELECT * FROM jobs
         WHERE type = ?
-          AND status IN ('queued', 'processing')
+          AND status = ?
           AND CASE WHEN json_valid(payload) = 1
                    THEN json_extract(payload, '${payloadPath}') END = ?
-        ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, created_at ASC
+        ORDER BY created_at ASC
         LIMIT 1
       `,
     )
-    .get(type, value) as RawJobRow | undefined;
+    .get(type, status, value) as RawJobRow | undefined;
   return row ? toJobRecord(row) : null;
+}
+
+function readActiveJob(
+  type: string,
+  key: string,
+  value: string,
+): JobRecord | null {
+  return (
+    readActiveJobByStatus(type, key, value, 'processing') ??
+    readActiveJobByStatus(type, key, value, 'queued')
+  );
 }
 
 /**
@@ -205,12 +221,11 @@ function getPayloadId(row: RawJobRow, key: string): string | null {
   return typeof value === 'string' && value ? value : null;
 }
 
-/**
- * Requeue work left in `processing` after a process restart or a worker crash.
- * The existing `started_at` column acts as a lease timestamp. Jobs that have
- * exhausted their attempt budget become terminally failed instead of looping.
- */
-export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
+function recoverProcessingJobsInternal(
+  now: number,
+  options: { ignoreLease: boolean },
+): RecoveryResult {
+  const { ignoreLease } = options;
   const db = getDb();
   const recovered = db
     .transaction(() => {
@@ -227,19 +242,28 @@ export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
       let jobsRequeued = 0;
       let jobsFailed = 0;
       const feedIds = new Set<string>();
+      const abandonedFeedStarts = new Map<string, number>();
       const exhaustedFeeds = new Map<string, number>();
 
       for (const job of candidates) {
         const startedAt = Number(job.started_at || 0);
-        if (now - startedAt < leaseMsForJobType(job.type)) continue;
+        if (!ignoreLease && now - startedAt < leaseMsForJobType(job.type)) {
+          continue;
+        }
 
         const exhausted =
           Number(job.attempts || 0) >= Number(job.max_attempts || 0);
-        const message = `Recovered abandoned ${job.type} job after its lease expired`;
+        const message = ignoreLease
+          ? `Reclaimed interrupted ${job.type} job on startup`
+          : `Recovered abandoned ${job.type} job after its lease expired`;
         if (job.type === FEED_FETCH_JOB_TYPE) {
           const feedId = getPayloadId(job, 'feedId');
           if (feedId) {
             feedIds.add(feedId);
+            const prevStart = abandonedFeedStarts.get(feedId);
+            if (prevStart === undefined || startedAt < prevStart) {
+              abandonedFeedStarts.set(feedId, startedAt);
+            }
             if (exhausted) exhaustedFeeds.set(feedId, startedAt);
           }
         }
@@ -265,36 +289,65 @@ export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
         }
       }
 
-      const staleFetchLogs = db
-        .prepare(
-          `
-          SELECT id, feed_id FROM feed_fetch_logs
-          WHERE status = 'fetching'
-            AND started_at IS NOT NULL
-            AND started_at < ?
-        `,
-        )
-        .all(now - FEED_FETCH_LEASE_MS) as Array<{
+      const staleFetchLogs = (
+        ignoreLease
+          ? db
+              .prepare(
+                `
+                SELECT id, feed_id FROM feed_fetch_logs
+                WHERE status IN ('pending', 'fetching')
+              `,
+              )
+              .all()
+          : db
+              .prepare(
+                `
+                SELECT id, feed_id FROM feed_fetch_logs
+                WHERE status IN ('pending', 'fetching')
+                  AND started_at IS NOT NULL
+                  AND started_at < ?
+              `,
+              )
+              .all(now - FEED_FETCH_LEASE_MS)
+      ) as Array<{
         id: string;
         feed_id: string;
       }>;
 
+      const staleFetchLogIds = new Set<string>();
       for (const log of staleFetchLogs) {
         feedIds.add(log.feed_id);
+        staleFetchLogIds.add(log.id);
       }
 
+      const staleLogMessage = ignoreLease
+        ? 'Fetch interrupted by server restart'
+        : 'Fetch abandoned after its lease expired';
+
       if (staleFetchLogs.length > 0) {
-        db.prepare(
-          `
-          UPDATE feed_fetch_logs
-          SET status = 'error',
-              error_message = 'Fetch abandoned after its lease expired',
-              completed_at = ?
-          WHERE status = 'fetching'
-            AND started_at IS NOT NULL
-            AND started_at < ?
-        `,
-        ).run(now, now - FEED_FETCH_LEASE_MS);
+        if (ignoreLease) {
+          db.prepare(
+            `
+            UPDATE feed_fetch_logs
+            SET status = 'error',
+                error_message = ?,
+                completed_at = ?
+            WHERE status IN ('pending', 'fetching')
+          `,
+          ).run(staleLogMessage, now);
+        } else {
+          db.prepare(
+            `
+            UPDATE feed_fetch_logs
+            SET status = 'error',
+                error_message = ?,
+                completed_at = ?
+            WHERE status IN ('pending', 'fetching')
+              AND started_at IS NOT NULL
+              AND started_at < ?
+          `,
+          ).run(staleLogMessage, now, now - FEED_FETCH_LEASE_MS);
+        }
       }
 
       for (const feedId of feedIds) {
@@ -302,23 +355,27 @@ export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
           .prepare(
             `
             SELECT 1 FROM feed_fetch_logs
-            WHERE feed_id = ? AND status = 'fetching'
+            WHERE feed_id = ? AND status IN ('pending', 'fetching')
             LIMIT 1
           `,
           )
           .get(feedId);
         if (activeFetch) continue;
 
-        const latestLog = db
+        const abandonedStart = abandonedFeedStarts.get(feedId) ?? null;
+        // Only inspect fetch logs created at/after the abandoned job started
+        // so 30-day-old errors superseded by newer successes are never copied.
+        const logAfterStart = db
           .prepare(
             `
             SELECT id, status, created_at, error_message FROM feed_fetch_logs
             WHERE feed_id = ?
+              AND (? IS NULL OR created_at >= ?)
             ORDER BY created_at DESC, id DESC
             LIMIT 1
           `,
           )
-          .get(feedId) as
+          .get(feedId, abandonedStart, abandonedStart) as
           | {
               id: string;
               status: string;
@@ -326,31 +383,56 @@ export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
               error_message: string | null;
             }
           | undefined;
-        const recoveredLatestLog =
-          latestLog && staleFetchLogs.some((log) => log.id === latestLog.id);
-        const exhaustedAt = exhaustedFeeds.get(feedId);
-        if (
-          !recoveredLatestLog &&
-          (exhaustedAt === undefined ||
-            (latestLog && latestLog.created_at >= exhaustedAt))
-        )
-          continue;
 
-        db.prepare(
-          `
-          UPDATE feeds
-          SET last_fetch_status = 'error',
-              last_error = ?,
-              error_count = COALESCE(error_count, 0) + 1,
-              updated_at = ?
-          WHERE id = ?
-        `,
-        ).run(
-          (recoveredLatestLog && latestLog.error_message) ||
-            'Fetch abandoned after its lease expired',
-          now,
-          feedId,
-        );
+        if (logAfterStart?.status === 'success') continue;
+
+        const recoveredLog =
+          Boolean(logAfterStart) && staleFetchLogIds.has(logAfterStart!.id);
+        const exhausted = exhaustedFeeds.has(feedId);
+
+        if (ignoreLease && !exhausted) {
+          db.prepare(
+            `
+            UPDATE feeds
+            SET last_fetch_status = CASE WHEN last_fetch_status = 'fetching' THEN 'never' ELSE last_fetch_status END,
+                updated_at = ?
+            WHERE id = ?
+          `,
+          ).run(now, feedId);
+          continue;
+        }
+
+        const missingErrorRow = !logAfterStart;
+        if (!recoveredLog && !missingErrorRow && !exhausted) continue;
+
+        const errorMessage =
+          (recoveredLog && logAfterStart?.error_message) ||
+          logAfterStart?.error_message ||
+          staleLogMessage;
+
+        if (!recoveredLog && !missingErrorRow && exhausted) {
+          db.prepare(
+            `
+            UPDATE feeds
+            SET last_fetch_status = 'error',
+                last_error = ?,
+                error_count = MAX(COALESCE(error_count, 0), 1),
+                updated_at = ?
+            WHERE id = ?
+          `,
+          ).run(errorMessage, now, feedId);
+        } else {
+          db.prepare(
+            `
+            UPDATE feeds
+            SET last_fetch_status = 'error',
+                last_error = ?,
+                error_count = COALESCE(error_count, 0) + 1,
+                updated_at = ?
+            WHERE id = ?
+          `,
+          ).run(errorMessage, now, feedId);
+        }
       }
 
       return {
@@ -362,6 +444,25 @@ export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
     .immediate();
 
   return recovered;
+}
+
+/**
+ * Requeue work left in `processing` after a process restart or a worker crash.
+ * The existing `started_at` column acts as a lease timestamp. Jobs that have
+ * exhausted their attempt budget become terminally failed instead of looping.
+ */
+export function recoverAbandonedJobs(now = Date.now()): RecoveryResult {
+  return recoverProcessingJobsInternal(now, { ignoreLease: false });
+}
+
+/**
+ * Reclaim any `processing` jobs and `fetching` logs left behind by a previous
+ * process on startup instead of waiting 5-30 minute worker leases.
+ */
+export function reclaimInterruptedProcessingJobs(
+  now = Date.now(),
+): RecoveryResult {
+  return recoverProcessingJobsInternal(now, { ignoreLease: true });
 }
 
 function enqueueJob(
@@ -378,19 +479,16 @@ function enqueueJob(
     options.scheduledAt === undefined ? now : options.scheduledAt;
 
   const enqueueTx = db.transaction(() => {
-    const existing = readActiveJob(type, key, value);
-    if (existing) {
-      const forceRefresh =
-        type === FEED_FETCH_JOB_TYPE &&
-        (payload as FeedFetchJobPayload).force === true;
-      const explicitJevRefresh = type === JEV_PROCESS_JOB_TYPE;
+    const forceRefresh =
+      type === FEED_FETCH_JOB_TYPE &&
+      (payload as FeedFetchJobPayload).force === true;
+    const explicitJevRefresh = type === JEV_PROCESS_JOB_TYPE;
+
+    const existingQueued = readActiveJobByStatus(type, key, value, 'queued');
+    if (existingQueued) {
       // Polls should leave retry delays intact. A manual refresh may wake a
       // transient error, but must still honor an upstream Retry-After deadline.
-      if (
-        scheduledAt !== null &&
-        existing.status === 'queued' &&
-        (forceRefresh || explicitJevRefresh)
-      ) {
+      if (scheduledAt !== null && (forceRefresh || explicitJevRefresh)) {
         db.prepare(
           `
             UPDATE jobs
@@ -408,10 +506,20 @@ function enqueueJob(
           scheduledAt,
           forceRefresh ? 1 : 0,
           explicitJevRefresh ? 1 : 0,
-          existing.id,
+          existingQueued.id,
         );
       }
-      return readJob(existing.id) || existing;
+      return readJob(existingQueued.id) || existingQueued;
+    }
+
+    const existingProcessing = readActiveJobByStatus(
+      type,
+      key,
+      value,
+      'processing',
+    );
+    if (existingProcessing && !forceRefresh) {
+      return existingProcessing;
     }
 
     const id = crypto.randomUUID();
@@ -804,6 +912,26 @@ export function getLatestFeedFetchJob(feedId: string): JobRecord | null {
   return row ? toJobRecord(row) : null;
 }
 
+export function deleteJobsForFeeds(feedIds: string[], db = getDb()): number {
+  if (feedIds.length === 0) return 0;
+  const placeholders = feedIds.map(() => '?').join(', ');
+  const result = db
+    .prepare(
+      `
+        DELETE FROM jobs
+        WHERE json_valid(payload) = 1
+          AND (
+            json_extract(payload, '$.feedId') IN (${placeholders})
+            OR json_extract(payload, '$.articleId') IN (
+              SELECT id FROM articles WHERE feed_id IN (${placeholders})
+            )
+          )
+      `,
+    )
+    .run(...feedIds, ...feedIds);
+  return result.changes;
+}
+
 export function getProviderCooldown(type: string, db = getDb()): number {
   const row = db
     .prepare(
@@ -828,11 +956,12 @@ export function setProviderCooldown(
     .run(`provider_cooldown_${type}`, String(retryAt), now);
 }
 
-export function getNextQueuedJobAt(): number | null {
+export function getNextQueuedJobAt(now = Date.now()): number | null {
+  const db = getDb();
   const rankingProviderConfigured = isRankingProviderConfigured();
   const aiConfigured = isAiProcessingConfigured();
-  const jevCooldown = getProviderCooldown(JEV_PROCESS_JOB_TYPE);
-  const row = getDb()
+  const jevCooldown = getProviderCooldown(JEV_PROCESS_JOB_TYPE, db);
+  const row = db
     .prepare(
       `
         SELECT MIN(scheduled_at) AS scheduled_at FROM (
@@ -857,6 +986,17 @@ export function getNextQueuedJobAt(): number | null {
           WHERE status = 'queued' AND attempts < max_attempts
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
+            AND (
+              type != ?
+              OR NOT EXISTS (
+                SELECT 1 FROM feeds f
+                WHERE f.id = CASE
+                  WHEN json_valid(jobs.payload) = 1
+                  THEN json_extract(jobs.payload, '$.feedId')
+                END
+                AND f.enabled = 0
+              )
+            )
           UNION ALL
           SELECT MIN(CASE WHEN ? = 1 THEN MAX(not_before, ?) ELSE ? END) AS scheduled_at
           FROM ranking_refresh_queue
@@ -864,24 +1004,76 @@ export function getNextQueuedJobAt(): number | null {
             SELECT COUNT(*) FROM jobs
             WHERE type = ? AND status IN ('queued', 'processing')
           ) < ?
+          UNION ALL
+          SELECT MIN(
+            started_at + CASE type
+              WHEN 'ai_process' THEN ?
+              WHEN 'jev_process' THEN ?
+              ELSE ?
+            END
+          ) AS scheduled_at
+          FROM jobs
+          WHERE status = 'processing' AND started_at IS NOT NULL
         )
       `,
     )
     .get(
-      getProviderCooldown(AI_PROCESS_JOB_TYPE),
+      getProviderCooldown(AI_PROCESS_JOB_TYPE, db),
       jevCooldown,
       rankingProviderConfigured ? 1 : 0,
       JEV_PROCESS_JOB_TYPE,
       aiConfigured ? 1 : 0,
       AI_PROCESS_JOB_TYPE,
+      FEED_FETCH_JOB_TYPE,
       rankingProviderConfigured ? 1 : 0,
       jevCooldown,
-      Date.now(),
+      now,
       rankingProviderConfigured ? 1 : 0,
       JEV_PROCESS_JOB_TYPE,
       DEFAULT_JEV_QUEUE_CAPACITY,
+      AI_PROCESS_LEASE_MS,
+      JEV_PROCESS_LEASE_MS,
+      FEED_FETCH_LEASE_MS,
     ) as { scheduled_at: number | null } | undefined;
-  return row?.scheduled_at == null ? null : Number(row.scheduled_at);
+
+  let earliest = row?.scheduled_at == null ? null : Number(row.scheduled_at);
+
+  const globalIntervalMins = getGlobalPollIntervalMins();
+  const polledFeeds = db
+    .prepare(
+      `
+        SELECT f.last_fetch_at, f.poll_interval_mins, f.fetch_count_since_change, f.error_count
+        FROM feeds f
+        WHERE f.enabled = 1
+          AND f.last_fetch_at IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM jobs j
+            WHERE j.type = ?
+              AND j.status IN ('queued', 'processing')
+              AND json_valid(j.payload) = 1
+              AND json_extract(j.payload, '$.feedId') = f.id
+          )
+      `,
+    )
+    .all(FEED_FETCH_JOB_TYPE) as Array<{
+    last_fetch_at: number;
+    poll_interval_mins: number | null;
+    fetch_count_since_change: number | null;
+    error_count: number | null;
+  }>;
+
+  for (const feed of polledFeeds) {
+    const intervalMins = getEffectivePollIntervalMins(
+      feed.poll_interval_mins,
+      feed.fetch_count_since_change,
+      globalIntervalMins,
+      feed.error_count ?? 0,
+    );
+    const dueAt = Number(feed.last_fetch_at) + intervalMins * 60_000;
+    earliest = earliest === null ? dueAt : Math.min(earliest, dueAt);
+  }
+
+  return earliest;
 }
 
 function claimNextJob(
@@ -899,7 +1091,38 @@ function claimNextJob(
     options.allowScoring === false ? false : options.allowJev !== false;
   const allowAi =
     options.allowScoring === false ? false : options.allowAi !== false;
+  const allowFeed = options.allowFeed !== false;
   const claimTx = db.transaction(() => {
+    if (allowFeed) {
+      db.prepare(
+        `
+          UPDATE jobs
+          SET status = 'completed',
+              result = '{"skipped":true,"reason":"feed_disabled"}',
+              error_message = '',
+              completed_at = ?,
+              started_at = NULL,
+              scheduled_at = NULL
+          WHERE type = ?
+            AND status = 'queued'
+            AND (scheduled_at IS NULL OR scheduled_at <= ?)
+            AND (? IS NULL OR id = ?)
+            AND EXISTS (
+              SELECT 1 FROM feeds f
+              WHERE f.id = CASE WHEN json_valid(jobs.payload) = 1
+                                THEN json_extract(jobs.payload, '$.feedId') END
+                AND f.enabled = 0
+            )
+        `,
+      ).run(
+        now,
+        FEED_FETCH_JOB_TYPE,
+        now,
+        options.jobId ?? null,
+        options.jobId ?? null,
+      );
+    }
+
     const row = db
       .prepare(
         `
@@ -911,6 +1134,18 @@ function claimNextJob(
             AND (? = 1 OR type != ?)
             AND (? = 1 OR type != ?)
             AND (? IS NULL OR (id = ? AND type = 'feed_fetch'))
+            AND (
+              type != ?
+              OR NOT EXISTS (
+                SELECT 1 FROM jobs active_feed
+                WHERE active_feed.type = ?
+                  AND active_feed.status = 'processing'
+                  AND json_valid(active_feed.payload) = 1
+                  AND json_extract(active_feed.payload, '$.feedId') =
+                      CASE WHEN json_valid(jobs.payload) = 1
+                           THEN json_extract(jobs.payload, '$.feedId') END
+              )
+            )
             AND (type != ? OR NOT EXISTS (
               SELECT 1 FROM ranking_refresh_queue q
               WHERE q.article_id = CASE WHEN json_valid(jobs.payload) = 1
@@ -924,6 +1159,10 @@ function claimNextJob(
                      WHEN type = ? THEN 2
                      ELSE 1
                    END ASC,
+                   CASE
+                     WHEN type = ? AND attempts = 0 THEN 0
+                     ELSE 1
+                   END ASC,
                    COALESCE(scheduled_at, created_at) ASC, created_at ASC
           LIMIT 1
         `,
@@ -932,7 +1171,7 @@ function claimNextJob(
         now,
         allowJev && getProviderCooldown(JEV_PROCESS_JOB_TYPE) <= now ? 1 : 0,
         JEV_PROCESS_JOB_TYPE,
-        options.allowFeed === false ? 0 : 1,
+        allowFeed ? 1 : 0,
         FEED_FETCH_JOB_TYPE,
         allowAi &&
           getProviderCooldown(AI_PROCESS_JOB_TYPE) <= now &&
@@ -942,11 +1181,14 @@ function claimNextJob(
         AI_PROCESS_JOB_TYPE,
         options.jobId ?? null,
         options.jobId ?? null,
+        FEED_FETCH_JOB_TYPE,
+        FEED_FETCH_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         now,
         FEED_FETCH_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
         JEV_PROCESS_JOB_TYPE,
+        FEED_FETCH_JOB_TYPE,
       ) as RawJobRow | undefined;
     if (!row) return null;
 
@@ -1073,6 +1315,12 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     const feedId = typeof payload.feedId === 'string' ? payload.feedId : '';
     if (!feedId)
       throw new FeedJobError('Feed fetch job is missing feedId', true);
+    const feed = getDb()
+      .prepare('SELECT enabled FROM feeds WHERE id = ?')
+      .get(feedId) as { enabled: number } | undefined;
+    if (feed && !feed.enabled) {
+      return { feedId, skipped: true, reason: 'feed_disabled' };
+    }
     const { ingestFeed } = await import('#lib/server/feed/ingester.ts');
     const result = await ingestFeed({
       feedId,
@@ -1176,8 +1424,10 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
 
 let activeRun: Promise<RunJobsResult> | null = null;
 type JobRunControl = {
-  budget: number;
-  processed: number;
+  feedBudget: number;
+  scoringBudget: number;
+  feedProcessed: number;
+  scoringProcessed: number;
   targetedFeedJobIds: Set<string>;
   wake?: () => void;
 };
@@ -1187,14 +1437,15 @@ async function runDueJobsInternal(
   options: RunJobsOptions,
   control: JobRunControl,
 ): Promise<RunJobsResult> {
-  const now = options.now ?? Date.now();
-  const recovered = recoverAbandonedJobs(now);
+  const getNow = () => options.now ?? Date.now();
+  const initialNow = getNow();
+  const recovered = recoverAbandonedJobs(initialNow);
   const { flushRankingRefreshQueue } =
     await import('#lib/server/ranking-freshness.ts');
   // Preference refreshes use their own durable lane and claim Jev capacity
   // before ordinary unscored-article backfill.
-  await flushRankingRefreshQueue(now, DEFAULT_JEV_QUEUE_CAPACITY);
-  enqueueJevBackfill({ now });
+  await flushRankingRefreshQueue(initialNow, DEFAULT_JEV_QUEUE_CAPACITY);
+  enqueueJevBackfill({ now: initialNow });
   const result: RunJobsResult = {
     processed: 0,
     completed: 0,
@@ -1207,10 +1458,10 @@ async function runDueJobsInternal(
   async function processJob(job: JobRecord) {
     try {
       const output = await executeJob(job);
-      completeJob(job, output, Date.now());
+      completeJob(job, output, getNow());
       result.completed += 1;
     } catch (error) {
-      const disposition = failOrRetryJob(job, error, Date.now());
+      const disposition = failOrRetryJob(job, error, getNow());
       result[disposition] += 1;
       recordAppError({
         source: 'jobs.worker',
@@ -1233,19 +1484,31 @@ async function runDueJobsInternal(
   try {
     while (!workerFailure) {
       let job: JobRecord | null = null;
-      if (result.processed < control.budget) {
-        await flushRankingRefreshQueue(Date.now(), DEFAULT_JEV_QUEUE_CAPACITY);
-        if (jevExecutions < DEFAULT_JEV_JOBS_PER_RUN) {
-          enqueueJevBackfill({ now: Date.now() });
+      const allowFeed =
+        activeFeeds < MAX_CONCURRENT_FEED_FETCHES &&
+        control.feedProcessed < control.feedBudget;
+      const canClaimScoring = control.scoringProcessed < control.scoringBudget;
+      const allowAi = !activeAi && canClaimScoring;
+      const allowJev =
+        !activeJev &&
+        canClaimScoring &&
+        isRankingProviderConfigured() &&
+        jevExecutions < DEFAULT_JEV_JOBS_PER_RUN;
+      if (allowFeed || allowAi || allowJev) {
+        const now = getNow();
+        if (canClaimScoring) {
+          await flushRankingRefreshQueue(now, DEFAULT_JEV_QUEUE_CAPACITY);
+          if (jevExecutions < DEFAULT_JEV_JOBS_PER_RUN) {
+            enqueueJevBackfill({ now });
+          }
         }
-        const jobId = control.targetedFeedJobIds.values().next().value;
-        job = claimNextJob(Date.now(), {
-          allowFeed: activeFeeds < MAX_CONCURRENT_FEED_FETCHES,
-          allowAi: !activeAi,
-          allowJev:
-            !activeJev &&
-            isRankingProviderConfigured() &&
-            jevExecutions < DEFAULT_JEV_JOBS_PER_RUN,
+        const jobId = allowFeed
+          ? control.targetedFeedJobIds.values().next().value
+          : undefined;
+        job = claimNextJob(now, {
+          allowFeed,
+          allowAi,
+          allowJev,
           ...(jobId ? { jobId } : {}),
         });
         if (job && jobId === job.id) {
@@ -1262,13 +1525,20 @@ async function runDueJobsInternal(
         continue;
       }
       result.processed += 1;
-      control.processed = result.processed;
-      if (job.type === JEV_PROCESS_JOB_TYPE) jevExecutions += 1;
       const isFeed = job.type === FEED_FETCH_JOB_TYPE;
       const isJev = job.type === JEV_PROCESS_JOB_TYPE;
-      if (isFeed) activeFeeds += 1;
-      else if (isJev) activeJev = true;
-      else activeAi = true;
+      if (isFeed) {
+        control.feedProcessed += 1;
+        activeFeeds += 1;
+      } else {
+        control.scoringProcessed += 1;
+        if (isJev) {
+          jevExecutions += 1;
+          activeJev = true;
+        } else {
+          activeAi = true;
+        }
+      }
       const work = processJob(job)
         .catch((error: unknown) => {
           workerFailure ??= { error };
@@ -1290,26 +1560,32 @@ async function runDueJobsInternal(
 }
 
 /**
- * Runs a bounded set of feed requests alongside one scoring job. The process-local promise prevents duplicate
- * workers from competing when several requests or poller ticks arrive at
- * once; the SQLite claim transaction protects separate processes/instances.
+ * Runs a bounded set of feed requests alongside scoring jobs. Separate feed and
+ * scoring budgets keep AI/Jev work from starving feeds, while the process-local
+ * promise prevents duplicate workers and SQLite claims protect across instances.
  */
 export function runDueJobs(
   options: RunJobsOptions = {},
 ): Promise<RunJobsResult> {
   const budget = Math.max(1, Math.floor(options.maxJobs ?? 16));
   if (activeRun && runControl) {
-    runControl.budget = Math.max(
-      runControl.budget,
-      runControl.processed + budget,
+    runControl.feedBudget = Math.max(
+      runControl.feedBudget,
+      runControl.feedProcessed + budget,
+    );
+    runControl.scoringBudget = Math.max(
+      runControl.scoringBudget,
+      runControl.scoringProcessed + budget,
     );
     if (options.jobId) runControl.targetedFeedJobIds.add(options.jobId);
     runControl.wake?.();
     return activeRun;
   }
   runControl = {
-    budget,
-    processed: 0,
+    feedBudget: budget,
+    scoringBudget: budget,
+    feedProcessed: 0,
+    scoringProcessed: 0,
     targetedFeedJobIds: new Set(options.jobId ? [options.jobId] : []),
   };
   activeRun = runDueJobsInternal(options, runControl).finally(() => {

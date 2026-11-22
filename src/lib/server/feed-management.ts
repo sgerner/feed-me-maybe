@@ -294,10 +294,11 @@ export function clearFeedArticles(feedId: string): {
       .prepare(
         `UPDATE articles
          SET hidden = 1, hidden_at = COALESCE(hidden_at, ?),
+             read = 1, read_at = COALESCE(read_at, ?),
              cleared_at = ?, updated_at = ?, state_version = state_version + 1
          WHERE feed_id = ? AND hidden = 0 AND saved = 0`,
       )
-      .run(now, now, now, feedId);
+      .run(now, now, now, now, feedId);
     db.prepare('UPDATE feeds SET updated_at = ? WHERE id = ?').run(now, feedId);
     return {
       cleared: result.changes,

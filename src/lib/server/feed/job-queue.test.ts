@@ -1364,4 +1364,279 @@ describe('feed job queue', () => {
     expect(aiMocks.processArticle).not.toHaveBeenCalledWith('paused-jq-art');
     expect(getJob(queuedAi.id)?.status).toBe('completed');
   });
+
+  it('separates feed budget from AI/Jev budget and prioritizes fresh feed fetches over retries', async () => {
+    const {
+      enqueueAiProcess,
+      enqueueFeedFetch,
+      FEED_FETCH_JOB_TYPE,
+      getJob,
+      runDueJobs,
+    } = await import('./job-queue');
+    const ingester = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 1_000_000;
+
+    const fetchedOrder: string[] = [];
+    const ingest = vi
+      .spyOn(ingester, 'ingestFeed')
+      .mockImplementation(async ({ feedId }) => {
+        fetchedOrder.push(feedId);
+        return { success: true, articlesFound: 0, articlesNew: 0 };
+      });
+
+    try {
+      for (let i = 1; i <= 5; i += 1) {
+        enqueueAiProcess(`ai-starve-${i}`, { now: now - 500 + i });
+      }
+      // Older retry job (attempts = 1) vs newer fresh job (attempts = 0)
+      db.prepare(
+        `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, scheduled_at, created_at)
+         VALUES ('retry-feed', ?, 'queued', ?, 1, 4, ?, ?)`,
+      ).run(
+        FEED_FETCH_JOB_TYPE,
+        JSON.stringify({ feedId: 'feed-retry' }),
+        now - 10_000,
+        now - 10_000,
+      );
+      const fresh = enqueueFeedFetch('feed-fresh', { now });
+
+      // Budget = 2 allows 2 feed jobs AND 2 scoring jobs without AI starving feeds.
+      await runDueJobs({ now, maxJobs: 2 });
+
+      expect(fetchedOrder).toEqual(['feed-fresh', 'feed-retry']);
+      expect(getJob(fresh.id)?.status).toBe('completed');
+      expect(getJob('retry-feed')?.status).toBe('completed');
+      expect(aiMocks.processArticle).toHaveBeenCalledTimes(2);
+    } finally {
+      ingest.mockRestore();
+    }
+  });
+
+  it('completes feed_fetch jobs for disabled feeds without ingesting', async () => {
+    const { enqueueFeedFetch, getJob, runDueJobs } =
+      await import('./job-queue');
+    const ingester = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 1_100_000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 0, ?, ?)',
+    ).run('feed-disabled-fetch', 'https://disabled.example/rss', now, now);
+
+    const ingest = vi.spyOn(ingester, 'ingestFeed').mockResolvedValue({
+      success: true,
+      articlesFound: 0,
+      articlesNew: 0,
+    });
+    try {
+      const job = enqueueFeedFetch('feed-disabled-fetch', { now });
+      await runDueJobs({ now, maxJobs: 1 });
+      expect(ingest).not.toHaveBeenCalled();
+      expect(getJob(job.id)?.status).toBe('completed');
+      expect(getJob(job.id)?.result).toMatchObject({ skipped: true });
+    } finally {
+      ingest.mockRestore();
+    }
+  });
+
+  it('reclaims interrupted processing jobs immediately on startup without waiting for lease expiry', async () => {
+    const { reclaimInterruptedProcessingJobs, getJob } =
+      await import('./job-queue');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 5_000_000;
+
+    db.prepare(
+      "INSERT INTO feeds (id, url, last_fetch_status, created_at, updated_at) VALUES (?, ?, 'fetching', ?, ?)",
+    ).run('feed-startup', 'https://startup.example/rss', now, now);
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, started_at, created_at)
+       VALUES ('startup-feed', 'feed_fetch', 'processing', ?, 1, 4, ?, ?),
+              ('startup-ai', 'ai_process', 'processing', ?, 1, 3, ?, ?),
+              ('startup-exhausted', 'jev_process', 'processing', ?, 4, 4, ?, ?)`,
+    ).run(
+      JSON.stringify({ feedId: 'feed-startup' }),
+      now - 500,
+      now - 500,
+      JSON.stringify({ articleId: 'art-startup' }),
+      now - 500,
+      now - 500,
+      JSON.stringify({ articleId: 'art-exhausted' }),
+      now - 500,
+      now - 500,
+    );
+    db.prepare(
+      "INSERT INTO feed_fetch_logs (id, feed_id, status, started_at, created_at) VALUES ('startup-log', 'feed-startup', 'fetching', ?, ?)",
+    ).run(now - 500, now - 500);
+
+    const recovered = reclaimInterruptedProcessingJobs(now);
+    expect(recovered).toEqual({
+      jobsRequeued: 2,
+      jobsFailed: 1,
+      fetchLogsRecovered: 1,
+    });
+    expect(getJob('startup-feed')).toMatchObject({
+      status: 'queued',
+      scheduledAt: now,
+      startedAt: null,
+    });
+    expect(getJob('startup-ai')).toMatchObject({
+      status: 'queued',
+      scheduledAt: now,
+      startedAt: null,
+    });
+    expect(getJob('startup-exhausted')).toMatchObject({
+      status: 'failed',
+      completedAt: now,
+      startedAt: null,
+    });
+    const log = db
+      .prepare('SELECT status FROM feed_fetch_logs WHERE id = ?')
+      .get('startup-log') as { status: string };
+    expect(log.status).toBe('error');
+    const feed = db
+      .prepare('SELECT error_count, last_fetch_status FROM feeds WHERE id = ?')
+      .get('feed-startup') as {
+      error_count: number;
+      last_fetch_status: string;
+    };
+    expect(feed.error_count).toBe(0);
+    expect(feed.last_fetch_status).toBe('never');
+  });
+
+  it('does not copy 30-day-old errors in recoverAbandonedJobs and records missing/exhausted crash errors', async () => {
+    const { FEED_FETCH_LEASE_MS, recoverAbandonedJobs } =
+      await import('./job-queue');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 50_000_000;
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+    const oneDayAgo = now - 24 * 60 * 60 * 1000;
+    const jobStart = now - FEED_FETCH_LEASE_MS - 1_000;
+
+    db.prepare(
+      "INSERT INTO feeds (id, url, last_fetch_status, error_count, last_error, created_at, updated_at) VALUES (?, ?, 'success', 0, '', ?, ?)",
+    ).run('feed-old-err', 'https://olderr.example/rss', thirtyDaysAgo, now);
+
+    db.prepare(
+      "INSERT INTO feed_fetch_logs (id, feed_id, status, error_message, started_at, completed_at, created_at) VALUES ('old-err', 'feed-old-err', 'error', '30-day-old TLS failure', ?, ?, ?), ('recent-ok', 'feed-old-err', 'success', NULL, ?, ?, ?)",
+    ).run(
+      thirtyDaysAgo,
+      thirtyDaysAgo + 100,
+      thirtyDaysAgo,
+      oneDayAgo,
+      oneDayAgo + 100,
+      oneDayAgo,
+    );
+
+    // Crashed before writing a fetch log row
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, started_at, created_at)
+       VALUES ('crashed-no-log', 'feed_fetch', 'processing', ?, 1, 4, ?, ?)`,
+    ).run(JSON.stringify({ feedId: 'feed-old-err' }), jobStart, jobStart);
+
+    recoverAbandonedJobs(now);
+
+    const feed = db
+      .prepare(
+        'SELECT error_count, last_fetch_status, last_error FROM feeds WHERE id = ?',
+      )
+      .get('feed-old-err') as {
+      error_count: number;
+      last_fetch_status: string;
+      last_error: string;
+    };
+    expect(feed.error_count).toBe(1);
+    expect(feed.last_fetch_status).toBe('error');
+    expect(feed.last_error).not.toContain('30-day-old TLS failure');
+    expect(feed.last_error).toContain('lease expired');
+  });
+
+  it('includes per-feed poll intervals and processing lease expirations in getNextQueuedJobAt', async () => {
+    const { FEED_FETCH_LEASE_MS, getNextQueuedJobAt } =
+      await import('./job-queue');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 60_000_000;
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, poll_interval_mins, last_fetch_at, created_at, updated_at) VALUES (?, ?, 1, 3, ?, ?, ?)',
+    ).run('feed-custom-poll', 'https://custompoll.example/rss', now, now, now);
+
+    expect(getNextQueuedJobAt(now)).toBe(now + 3 * 60_000);
+
+    const startedAt = now + 1_000;
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, started_at, created_at)
+       VALUES ('lease-check', 'feed_fetch', 'processing', ?, 1, 4, ?, ?)`,
+    ).run(JSON.stringify({ feedId: 'feed-other' }), startedAt, startedAt);
+
+    // Custom poll (3m) is earlier than lease (10m)
+    expect(getNextQueuedJobAt(now)).toBe(now + 3 * 60_000);
+
+    // When feed poll is 30m, 10m processing lease expiry is earlier
+    db.prepare('UPDATE feeds SET poll_interval_mins = 30 WHERE id = ?').run(
+      'feed-custom-poll',
+    );
+    expect(getNextQueuedJobAt(now)).toBe(startedAt + FEED_FETCH_LEASE_MS);
+  });
+
+  it('queues a successor job when force: true arrives during an in-flight processing fetch', async () => {
+    const { enqueueFeedFetch, getJob, runDueJobs } =
+      await import('./job-queue');
+    const ingester = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = 70_000_000;
+
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, started_at, created_at)
+       VALUES ('in-flight', 'feed_fetch', 'processing', ?, 1, 4, ?, ?)`,
+    ).run(JSON.stringify({ feedId: 'feed-inflight' }), now, now);
+
+    // Non-forced poll deduplicates onto the processing job
+    expect(enqueueFeedFetch('feed-inflight', { now: now + 100 }).id).toBe(
+      'in-flight',
+    );
+
+    // Forced refresh / URL edit creates a queued successor
+    const successor = enqueueFeedFetch('feed-inflight', {
+      force: true,
+      now: now + 200,
+    });
+    expect(successor.id).not.toBe('in-flight');
+    expect(successor.status).toBe('queued');
+
+    // A second forced call deduplicates onto the queued successor
+    const secondForce = enqueueFeedFetch('feed-inflight', {
+      force: true,
+      now: now + 300,
+    });
+    expect(secondForce.id).toBe(successor.id);
+
+    // While 'in-flight' is still processing, runDueJobs must NOT claim the successor
+    const ingest = vi.spyOn(ingester, 'ingestFeed').mockResolvedValue({
+      success: true,
+      articlesFound: 0,
+      articlesNew: 0,
+    });
+    try {
+      await runDueJobs({ now: now + 400, maxJobs: 2 });
+      expect(ingest).not.toHaveBeenCalled();
+      expect(getJob(successor.id)?.status).toBe('queued');
+
+      // Once 'in-flight' finishes, the successor runs cleanly
+      db.prepare(
+        "UPDATE jobs SET status = 'completed', started_at = NULL, completed_at = ? WHERE id = 'in-flight'",
+      ).run(now + 500);
+      await runDueJobs({ now: now + 600, maxJobs: 2 });
+      expect(ingest).toHaveBeenCalledTimes(1);
+      expect(getJob(successor.id)?.status).toBe('completed');
+    } finally {
+      ingest.mockRestore();
+    }
+  });
 });

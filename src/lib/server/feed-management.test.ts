@@ -99,9 +99,14 @@ describe('feed management', () => {
     expect(articles.c).toBe(1); // Saved article remains visible
     expect(totalArticles.c).toBe(2); // Articles remain in DB
     const cleared = db
-      .prepare('SELECT hidden, cleared_at FROM articles WHERE id = ?')
-      .get('article-clear') as { hidden: number; cleared_at: number | null };
+      .prepare('SELECT hidden, read, cleared_at FROM articles WHERE id = ?')
+      .get('article-clear') as {
+      hidden: number;
+      read: number;
+      cleared_at: number | null;
+    };
     expect(cleared.hidden).toBe(1);
+    expect(cleared.read).toBe(1);
     expect(cleared.cleared_at).toBeTruthy();
     const recovery = await import('./article-state');
     expect(
@@ -109,6 +114,7 @@ describe('feed management', () => {
         .listRecoveryArticles({ feedId: 'feed-clear' })
         .articles.map((article) => article.id),
     ).not.toContain('article-clear');
+    expect(recovery.getUnreadCounts().totalUnread).toBe(1); // Only saved unread article remains
     expect(interactions.c).toBe(1); // Interactions preserved
     expect(pref.c).toBe(1);
   });

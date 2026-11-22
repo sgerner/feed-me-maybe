@@ -13,6 +13,7 @@ import {
   getLatestFeedFetchLog,
 } from '#lib/server/feed-management.ts';
 import { recordAppError } from '#lib/server/logging.ts';
+import { readJsonObject } from '#lib/server/request-body.ts';
 
 export const GET: RequestHandler = async ({ params, locals, url }) => {
   if (!locals.sessionId) {
@@ -63,13 +64,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     return Response.json({ error: 'Feed not found' }, { status: 404 });
   }
 
-  let force = true;
-  try {
-    const body = (await request.json()) as { force?: unknown };
-    if (body?.force === false) force = false;
-  } catch {
-    // Older clients send no JSON body; keep their manual refresh behavior.
-  }
+  // Older clients send no JSON body; keep their manual refresh behavior.
+  const body = await readJsonObject(request);
+  const force = body?.force !== false;
   if (!force) {
     wakePoller();
     return Response.json(

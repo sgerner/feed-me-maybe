@@ -3,19 +3,16 @@ import { getDb } from '#lib/server/db/index.ts';
 import { scheduleNextPoll, wakePoller } from '#lib/server/poller.ts';
 import { enqueueFeedFetch, runDueJobs } from '#lib/server/feed/job-queue.ts';
 import { recordAppError } from '#lib/server/logging.ts';
+import { readJsonObject } from '#lib/server/request-body.ts';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let force = true;
-  try {
-    const body = (await request.json()) as { force?: unknown };
-    if (body?.force === false) force = false;
-  } catch {
-    // Older clients send no JSON body; keep their manual refresh behavior.
-  }
+  // Older clients send no JSON body; keep their manual refresh behavior.
+  const body = await readJsonObject(request);
+  const force = body?.force !== false;
   if (!force) {
     wakePoller();
     return Response.json({
