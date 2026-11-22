@@ -1,9 +1,19 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
+import {
+  isArticleOpenMode,
+  type ArticleOpenMode,
+} from '#lib/constants/article-open-modes.ts';
 import { getDb } from '#lib/server/db/index.ts';
+import { crawlAndSaveArticleFullText } from '#lib/server/feed/article-crawl.ts';
+import {
+  ARTICLE_CRAWL_JOB_TYPE,
+  settleArticleCrawlJob,
+} from '#lib/server/feed/job-queue.ts';
 import { hasExplicitHide } from '#lib/server/preferences.ts';
 import { recordInteraction } from '#lib/server/interactions.ts';
 import { fetchArchivedArticle, isGarbageContent } from '#lib/server/archive.ts';
+import { wakePoller } from '#lib/server/poller.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import { resolveStreamNeighbors } from '#lib/server/reader-neighbors.ts';
 
@@ -13,6 +23,60 @@ function stripHtmlText(value: unknown): string {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function resolveEffectiveOpenMode(
+  db: ReturnType<typeof getDb>,
+  requestedMode: string | null,
+  feedOpenMode: unknown,
+): ArticleOpenMode | 'archive' {
+  if (requestedMode === 'archive') return 'archive';
+  if (isArticleOpenMode(requestedMode)) return requestedMode;
+  if (isArticleOpenMode(feedOpenMode)) return feedOpenMode;
+  const globalRow = db
+    .prepare("SELECT value FROM app_settings WHERE key = 'article_open_mode'")
+    .get() as { value: string | null } | undefined;
+  return isArticleOpenMode(globalRow?.value) ? globalRow.value : 'app';
+}
+
+function shouldExtractImmediatelyInAppMode(
+  db: ReturnType<typeof getDb>,
+  article: Record<string, unknown>,
+  articleId: string,
+): boolean {
+  const existingJobs = db
+    .prepare(
+      `
+        SELECT status FROM jobs
+        WHERE type = ?
+          AND CASE WHEN json_valid(payload) = 1
+                   THEN json_extract(payload, '$.articleId') END = ?
+        ORDER BY created_at DESC
+      `,
+    )
+    .all(ARTICLE_CRAWL_JOB_TYPE, articleId) as Array<{ status: string }>;
+
+  if (existingJobs.some((job) => job.status === 'queued')) {
+    return true;
+  }
+  if (
+    existingJobs.some(
+      (job) =>
+        job.status === 'processing' ||
+        job.status === 'completed' ||
+        job.status === 'failed',
+    )
+  ) {
+    return false;
+  }
+
+  if (!article.feed_fetch_full_text) {
+    return false;
+  }
+
+  const contentLength = stripHtmlText(article.content).length;
+  const summaryLength = stripHtmlText(article.summary).length;
+  return contentLength <= summaryLength;
 }
 
 export const load: PageServerLoad = async ({ params, locals, url }) => {
@@ -25,7 +89,8 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     .prepare(
       `
     SELECT a.*, f.title as feed_title, f.url as feed_url, f.site_url as feed_site_url,
-           f.use_proxy as feed_use_proxy,
+           f.use_proxy as feed_use_proxy, f.open_mode as feed_open_mode,
+           f.fetch_full_text as feed_fetch_full_text, f.css_selector as feed_css_selector,
            am.summary as ai_summary, am.topics, am.content_type, am.explanation
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
@@ -40,6 +105,41 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
   }
 
   article.feed_site_url = safeFeedSiteUrl(article.feed_site_url);
+
+  const effectiveMode = resolveEffectiveOpenMode(
+    db,
+    url.searchParams.get('mode'),
+    article.feed_open_mode,
+  );
+  if (
+    effectiveMode === 'app' &&
+    shouldExtractImmediatelyInAppMode(db, article, params.id)
+  ) {
+    const outcome = await crawlAndSaveArticleFullText(params.id, {
+      interactive: true,
+    });
+    settleArticleCrawlJob(
+      params.id,
+      outcome.status === 'failed' ? 'failed' : 'completed',
+      {
+        feedId: String(article.feed_id || ''),
+        recordIfMissing: true,
+        result: {
+          upgraded: outcome.upgraded,
+          status: outcome.status,
+          source: 'app_open',
+        },
+        ...(outcome.status === 'failed' ? { errorMessage: outcome.error } : {}),
+      },
+    );
+    if (outcome.status === 'upgraded') {
+      article.content = outcome.content;
+      if (!article.image_url && outcome.imageUrl) {
+        article.image_url = outcome.imageUrl;
+      }
+    }
+    wakePoller();
+  }
 
   // Resolve stream-aware neighbors BEFORE recordInteraction mutates `read` or
   // `hidden` flags (e.g. marking an `/inbox` item read or `hide_on_open`).

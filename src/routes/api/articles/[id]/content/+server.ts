@@ -3,7 +3,10 @@ import { getDb } from '#lib/server/db/index.ts';
 import { fetchPublisherArticle } from '#lib/server/archive.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import { isAiProcessingConfigured } from '#lib/server/ai/runtime.ts';
-import { enqueueAiProcess } from '#lib/server/feed/job-queue.ts';
+import {
+  enqueueAiProcess,
+  settleArticleCrawlJob,
+} from '#lib/server/feed/job-queue.ts';
 import { refreshRankingAfterProfileMutation } from '#lib/server/ranking-freshness.ts';
 import { wakePoller } from '#lib/server/poller.ts';
 
@@ -15,18 +18,20 @@ export const POST: RequestHandler = async ({ locals, params }) => {
   const article = db
     .prepare(
       `
-    SELECT a.url, a.external_url, a.content, a.summary, f.use_proxy
+    SELECT a.feed_id, a.url, a.external_url, a.content, a.summary, f.use_proxy, f.css_selector
     FROM articles a JOIN feeds f ON f.id = a.feed_id
     WHERE a.id = ?
   `,
     )
     .get(params.id) as
     | {
+        feed_id: string;
         url: string;
         external_url: string | null;
         content: string | null;
         summary: string | null;
         use_proxy: number;
+        css_selector: string | null;
       }
     | undefined;
   if (!article)
@@ -35,6 +40,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
   const result = await fetchPublisherArticle(
     article.external_url || article.url,
     article.use_proxy ? getConfiguredProxyBaseUrl() : undefined,
+    article.css_selector || undefined,
   );
   if (!result?.content) {
     return Response.json(
@@ -94,6 +100,10 @@ export const POST: RequestHandler = async ({ locals, params }) => {
        SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
        WHERE article_id = ?`,
     ).run(params.id);
+    settleArticleCrawlJob(params.id, 'completed', {
+      feedId: article.feed_id,
+      result: { upgraded: true, source: 'manual' },
+    });
     refreshRankingAfterProfileMutation(params.id);
     if (isAiProcessingConfigured()) {
       enqueueAiProcess(params.id);

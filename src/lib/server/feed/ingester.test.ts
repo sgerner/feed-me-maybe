@@ -797,4 +797,86 @@ describe('feed ingester identity and duplicate handling', () => {
       sanitizeSpy.mockRestore();
     }
   });
+
+  it('queues durable article_crawl jobs only for visible articles on enabled full-text feeds', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { ingestFeed } = await import('./ingester');
+    const { applyPreferenceModelToArticle } =
+      await import('#lib/server/preferences.ts');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    vi.mocked(applyPreferenceModelToArticle).mockImplementation(
+      (articleId: string) => {
+        db.prepare(
+          "UPDATE articles SET hidden = 1 WHERE id = ? AND guid = 'crawl-hidden-1'",
+        ).run(articleId);
+      },
+    );
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, fetch_full_text, css_selector, created_at, updated_at) VALUES (?, ?, 1, 1, ?, ?, ?)',
+    ).run(
+      'feed-auto-crawl',
+      'https://example.com/truncated.xml',
+      '.entry-body',
+      now,
+      now,
+    );
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      success: true,
+      items: [
+        {
+          guid: 'crawl-vis-1',
+          url: 'https://example.com/posts/vis-1',
+          title: 'Visible Truncated Story',
+          summary: 'Short teaser from RSS feed.',
+          content: '<p>Short teaser from RSS feed.</p>',
+          categories: [],
+        },
+        {
+          guid: 'crawl-hidden-1',
+          url: 'https://example.com/posts/hid-1',
+          title: 'Filtered Story',
+          summary: 'Filtered teaser.',
+          content: '<p>Filtered teaser.</p>',
+          categories: ['sponsored'],
+        },
+      ],
+    });
+
+    try {
+      const res = await ingestFeed({ feedId: 'feed-auto-crawl' });
+      expect(res.success).toBe(true);
+      expect(res.articlesNew).toBe(2);
+
+      const crawlJobs = db
+        .prepare(
+          `SELECT status, json_extract(payload, '$.articleId') AS article_id,
+                  json_extract(payload, '$.feedId') AS feed_id
+           FROM jobs WHERE type = 'article_crawl'`,
+        )
+        .all() as Array<{
+        status: string;
+        article_id: string;
+        feed_id: string;
+      }>;
+
+      const visibleId = db
+        .prepare("SELECT id FROM articles WHERE guid = 'crawl-vis-1'")
+        .pluck()
+        .get() as string;
+      expect(crawlJobs).toEqual([
+        {
+          status: 'queued',
+          article_id: visibleId,
+          feed_id: 'feed-auto-crawl',
+        },
+      ]);
+    } finally {
+      vi.mocked(applyPreferenceModelToArticle).mockReset();
+    }
+  });
 });

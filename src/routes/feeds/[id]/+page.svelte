@@ -42,6 +42,8 @@
     open_mode?: string | null;
     poll_interval_mins?: number | null;
     use_proxy?: boolean | number | null;
+    fetch_full_text?: boolean | number | null;
+    css_selector?: string | null;
     source_type?: string | null;
     source_metadata?: string | null;
   };
@@ -86,6 +88,8 @@
   let openMode = $state('');
   let pollInterval = $state('');
   let useProxy = $state(false);
+  let fetchFullText = $state(false);
+  let cssSelector = $state('');
 
   let syncing = $state(false);
   let newArticlesAvailable = $state(false);
@@ -181,6 +185,8 @@
         ? ''
         : String(pageData.feed.poll_interval_mins);
     useProxy = Boolean(pageData.feed.use_proxy);
+    fetchFullText = Boolean(pageData.feed.fetch_full_text);
+    cssSelector = String(pageData.feed.css_selector ?? '');
   });
 
   onMount(() => {
@@ -241,6 +247,8 @@
         enabled,
         open_mode: openMode || null,
         use_proxy: useProxy,
+        fetch_full_text: fetchFullText,
+        css_selector: cssSelector.trim(),
       };
       if (title.trim() !== String(feed.title ?? '').trim()) {
         payload.title = title;
@@ -282,6 +290,8 @@
               ? ''
               : String(data.feed.poll_interval_mins);
           useProxy = Boolean(data.feed.use_proxy);
+          fetchFullText = Boolean(data.feed.fetch_full_text);
+          cssSelector = String(data.feed.css_selector ?? '');
         }
         await reconcileCachedFeed(
           String(pageStore.data.userId || 'admin'),
@@ -427,6 +437,13 @@
             class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
             style="background: color-mix(in oklch, var(--color-primary-500) 12%, transparent); color: var(--color-primary-300); border-radius: 2px;"
             >Proxy</span
+          >
+        {/if}
+        {#if feed.fetch_full_text}
+          <span
+            class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+            style="background: color-mix(in oklch, var(--color-success-500) 14%, transparent); color: var(--color-success-300); border-radius: 2px;"
+            >Full Text</span
           >
         {/if}
         {#if pageData.showHiddenContent}
@@ -660,6 +677,37 @@
             </p>
           {/if}
         </div>
+        <div class="flex flex-col gap-2 pt-5">
+          <label class="flex items-center gap-3">
+            <input
+              type="checkbox"
+              bind:checked={fetchFullText}
+              class="checkbox"
+            />
+            <span class="text-sm">Fetch full text automatically</span>
+          </label>
+          <p class="text-xs" style="color: var(--color-surface-300);">
+            Queue background publisher extraction for summary-only articles.
+          </p>
+        </div>
+        <label class="label md:col-span-2">
+          <span class="mb-1 block text-sm font-medium"
+            >CSS Selector Rules (optional)</span
+          >
+          <input
+            class="input glass-input font-mono text-sm"
+            type="text"
+            bind:value={cssSelector}
+            placeholder="e.g., article .post-body, [itemprop=&quot;articleBody&quot;]"
+          />
+          <span
+            class="mt-1 block text-xs"
+            style="color: var(--color-surface-300);"
+          >
+            Tried before Readability when extracting publisher pages. Leave
+            blank to use automatic Readability extraction.
+          </span>
+        </label>
       </div>
       <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
         <div class="flex flex-wrap items-center gap-4">

@@ -733,6 +733,25 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 13,
+    name: 'feed_full_text_crawl_and_css_rules',
+    apply: (db) => {
+      ensureColumn(
+        db,
+        'feeds',
+        'fetch_full_text',
+        'INTEGER NOT NULL DEFAULT 0',
+      );
+      ensureColumn(db, 'feeds', 'css_selector', "TEXT DEFAULT ''");
+      db.exec(`
+        DROP INDEX IF EXISTS idx_jobs_prunable_completed;
+        CREATE INDEX IF NOT EXISTS idx_jobs_prunable_completed
+          ON jobs (completed_at)
+          WHERE type IN ('feed_fetch', 'article_crawl', 'ai_process') AND status IN ('completed', 'failed');
+      `);
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {
@@ -784,6 +803,8 @@ export function initializeDatabase(): void {
   ensureColumn(db, 'feeds', 'custom_title', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'feeds', 'source_type', "TEXT DEFAULT 'rss'");
   ensureColumn(db, 'feeds', 'use_proxy', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'feeds', 'fetch_full_text', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'feeds', 'css_selector', "TEXT DEFAULT ''");
 
   db.prepare(
     "CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, feed_id TEXT NOT NULL REFERENCES feeds(id) ON DELETE CASCADE, guid TEXT DEFAULT '', url TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', author TEXT DEFAULT '', summary TEXT DEFAULT '', content TEXT DEFAULT '', image_url TEXT DEFAULT '', categories TEXT DEFAULT '', published_at INTEGER, fetched_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, thumbs_up INTEGER NOT NULL DEFAULT 0, thumbs_down INTEGER NOT NULL DEFAULT 0, heuristic_score REAL DEFAULT 0, combined_score REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",

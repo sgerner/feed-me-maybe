@@ -1,4 +1,5 @@
 import { DOMParser } from 'linkedom';
+import { validateCssSelector } from './archive';
 import { getDb } from './db';
 import { isRedditUrl, normalizeRedditUrl } from './sources/reddit';
 import { enqueueFeedFetch } from './feed/job-queue';
@@ -22,6 +23,8 @@ type OpmlExportFeedRow = {
   source_metadata: string | null;
   enabled: number | null;
   use_proxy: number | null;
+  fetch_full_text: number | null;
+  css_selector: string | null;
   open_mode: string | null;
   poll_interval_mins: number | null;
   custom_title: number | null;
@@ -42,6 +45,16 @@ function renderOutlineAttributes(feed: OpmlExportFeedRow): string {
   }
   if (feed.use_proxy !== undefined && feed.use_proxy !== null) {
     attrs.push(`fmmUseProxy="${Number(feed.use_proxy) ? 'true' : 'false'}"`);
+  }
+  if (feed.fetch_full_text !== undefined && feed.fetch_full_text !== null) {
+    const fullTextEnabled = Boolean(Number(feed.fetch_full_text));
+    attrs.push(`fmmFetchFullText="${fullTextEnabled ? 'true' : 'false'}"`);
+    if (fullTextEnabled) {
+      attrs.push('crawler="true"');
+    }
+  }
+  if (feed.css_selector && feed.css_selector.trim()) {
+    attrs.push(`fmmCssSelector="${escapeXml(feed.css_selector.trim())}"`);
   }
   if (feed.open_mode && isArticleOpenMode(feed.open_mode)) {
     attrs.push(`fmmOpenMode="${escapeXml(feed.open_mode)}"`);
@@ -65,8 +78,8 @@ export function exportOpml(): string {
   const feeds = db
     .prepare(
       `SELECT url, title, site_url, description, category, source_type,
-              source_metadata, enabled, use_proxy, open_mode,
-              poll_interval_mins, custom_title
+              source_metadata, enabled, use_proxy, fetch_full_text,
+              css_selector, open_mode, poll_interval_mins, custom_title
        FROM feeds
        ORDER BY category COLLATE NOCASE, title COLLATE NOCASE`,
     )
@@ -114,6 +127,10 @@ export interface OpmlOutline {
   type?: string;
   category?: string;
   fmmUseProxy?: string;
+  fmmFetchFullText?: string;
+  fmmCssSelector?: string;
+  crawler?: string;
+  scraperRules?: string;
   fmmOpenMode?: string;
   fmmEnabled?: string;
   fmmPollIntervalMins?: string;
@@ -145,6 +162,11 @@ export function parseOpml(xml: string): OpmlOutline[] {
       const category = getAttr(child, 'category') || inheritedCategory;
       if (xmlUrl) {
         const fmmUseProxy = getAttr(child, 'fmmUseProxy');
+        const fmmFetchFullText = getAttr(child, 'fmmFetchFullText');
+        const fmmCssSelector = getAttr(child, 'fmmCssSelector');
+        const crawler = getAttr(child, 'crawler');
+        const scraperRules =
+          getAttr(child, 'scraper_rules') ?? getAttr(child, 'scraperRules');
         const fmmOpenMode = getAttr(child, 'fmmOpenMode');
         const fmmEnabled = getAttr(child, 'fmmEnabled');
         const fmmPollIntervalMins = getAttr(child, 'fmmPollIntervalMins');
@@ -156,6 +178,10 @@ export function parseOpml(xml: string): OpmlOutline[] {
           type: getAttr(child, 'type'),
           category,
           ...(fmmUseProxy !== undefined ? { fmmUseProxy } : {}),
+          ...(fmmFetchFullText !== undefined ? { fmmFetchFullText } : {}),
+          ...(fmmCssSelector !== undefined ? { fmmCssSelector } : {}),
+          ...(crawler !== undefined ? { crawler } : {}),
+          ...(scraperRules !== undefined ? { scraperRules } : {}),
           ...(fmmOpenMode !== undefined ? { fmmOpenMode } : {}),
           ...(fmmEnabled !== undefined ? { fmmEnabled } : {}),
           ...(fmmPollIntervalMins !== undefined ? { fmmPollIntervalMins } : {}),
@@ -221,6 +247,19 @@ export function importOpml(xml: string): {
           const now = Date.now();
           const enabled = parseOpmlBoolean(outline.fmmEnabled, true);
           const useProxy = parseOpmlBoolean(outline.fmmUseProxy, false);
+          const fetchFullText =
+            outline.fmmFetchFullText !== undefined
+              ? parseOpmlBoolean(outline.fmmFetchFullText, false)
+              : parseOpmlBoolean(outline.crawler, false);
+          const rawCssSelector = outline.fmmCssSelector ?? outline.scraperRules;
+          const validatedCssSelector =
+            rawCssSelector !== undefined
+              ? validateCssSelector(rawCssSelector)
+              : null;
+          const cssSelector =
+            validatedCssSelector && validatedCssSelector.valid
+              ? validatedCssSelector.normalized
+              : '';
           const customTitle =
             parseOpmlBoolean(outline.fmmCustomTitle, false) &&
             Boolean(outline.text?.trim())
@@ -237,9 +276,9 @@ export function importOpml(xml: string): {
           db.prepare(
             `INSERT INTO feeds (
               id, url, title, site_url, category, source_type, source_metadata,
-              enabled, use_proxy, open_mode, custom_title, poll_interval_mins,
-              created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              enabled, use_proxy, fetch_full_text, css_selector, open_mode,
+              custom_title, poll_interval_mins, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             id,
             storedUrl,
@@ -252,6 +291,8 @@ export function importOpml(xml: string): {
               : '{}',
             enabled,
             useProxy,
+            fetchFullText,
+            cssSelector,
             openMode,
             customTitle,
             pollIntervalMins,

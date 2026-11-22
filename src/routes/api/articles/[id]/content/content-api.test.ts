@@ -172,6 +172,70 @@ describe('POST /api/articles/[id]/content', () => {
     expect(art.summary).toContain('substantial multi-sentence overview');
   });
 
+  it('passes configured feed css_selector to fetchPublisherArticle and settles queued article_crawl jobs', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { fetchPublisherArticle } = await import('#lib/server/archive.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, fetch_full_text, css_selector, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)',
+    ).run(
+      'feed-css-manual',
+      'https://example.com/css-rss',
+      'CSS Feed',
+      'article .story-body',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'art-css-manual',
+      'feed-css-manual',
+      'https://example.com/css-story',
+      'CSS Story',
+      'Short teaser',
+      '<p>Short teaser</p>',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('crawl-manual-1', 'article_crawl', 'queued', ?, 0, 2, ?)`,
+    ).run(
+      JSON.stringify({
+        articleId: 'art-css-manual',
+        feedId: 'feed-css-manual',
+      }),
+      now,
+    );
+
+    vi.mocked(fetchPublisherArticle).mockResolvedValueOnce({
+      title: 'CSS Story',
+      content:
+        '<p>Full body extracted using configured CSS selector rule from publisher page.</p>',
+      imageUrl: undefined,
+    });
+
+    const response = await POST({
+      locals: { sessionId: 'sess-1' },
+      params: { id: 'art-css-manual' },
+    } as Parameters<typeof POST>[0]);
+
+    expect(response.status).toBe(200);
+    expect(fetchPublisherArticle).toHaveBeenCalledWith(
+      'https://example.com/css-story',
+      undefined,
+      'article .story-body',
+    );
+    expect(
+      db.prepare("SELECT status FROM jobs WHERE id = 'crawl-manual-1'").get(),
+    ).toEqual({ status: 'completed' });
+  });
+
   it('restores stripped user-content- footnote IDs on full-text reload when plain-text length matches', async () => {
     const { getDb } = await import('#lib/server/db/index.ts');
     const { fetchPublisherArticle } = await import('#lib/server/archive.ts');

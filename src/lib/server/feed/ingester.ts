@@ -36,6 +36,7 @@ import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import { recordAppError } from '#lib/server/logging.ts';
 import {
   enqueueAiProcess,
+  enqueueArticleCrawl,
   enqueueJevProcess,
 } from '#lib/server/feed/job-queue.ts';
 import { normalizeFeedUrl } from '#lib/server/feed-management.ts';
@@ -110,6 +111,13 @@ function hasArticleColumn(column: string): boolean {
   const columns = getDb()
     .prepare('PRAGMA table_info(articles)')
     .all() as Array<{
+    name: string;
+  }>;
+  return columns.some((candidate) => candidate.name === column);
+}
+
+function hasFeedColumn(column: string): boolean {
+  const columns = getDb().prepare('PRAGMA table_info(feeds)').all() as Array<{
     name: string;
   }>;
   return columns.some((candidate) => candidate.name === column);
@@ -431,6 +439,17 @@ export function commitFetchedFeedResult(options: {
   const rankingArticleIds = new Set<string>();
   const queueAi = fetchResult.items.length > 0 && isAiProcessingConfigured();
   const supportsExternalUrl = hasArticleColumn('external_url');
+  const feedCrawlConfig = hasFeedColumn('fetch_full_text')
+    ? (db
+        .prepare('SELECT enabled, fetch_full_text FROM feeds WHERE id = ?')
+        .get(feedId) as
+        { enabled: number | null; fetch_full_text: number | null } | undefined)
+    : undefined;
+  const queueFullTextCrawl = Boolean(
+    fetchResult.items.length > 0 &&
+    feedCrawlConfig?.enabled &&
+    feedCrawlConfig?.fetch_full_text,
+  );
 
   const ingestTx = db.transaction(() => {
     const logId = options.logId ?? crypto.randomUUID();
@@ -824,6 +843,27 @@ export function commitFetchedFeedResult(options: {
       let existingVisible =
         !existing.hidden && !existing.rejected && !existing.thumbs_down;
 
+      if (queueFullTextCrawl && existingVisible && !existing.read) {
+        const hasPriorCrawl = db
+          .prepare(
+            `SELECT 1 FROM jobs
+             WHERE type = 'article_crawl'
+               AND CASE WHEN json_valid(payload) = 1
+                        THEN json_extract(payload, '$.articleId') END = ?
+             LIMIT 1`,
+          )
+          .get(existing.id);
+        if (!hasPriorCrawl) {
+          const currentRow = readExistingContent.get(existing.id) as
+            { content: string | null } | undefined;
+          const currentPlainLen = stripHtml(currentRow?.content || '').length;
+          const summaryPlainLen = stripHtml(existing.summary || '').length;
+          if (currentPlainLen <= summaryPlainLen) {
+            enqueueArticleCrawl(existing.id, { feedId });
+          }
+        }
+      }
+
       if (rankingInputChanged) {
         db.prepare(
           `UPDATE articles
@@ -980,6 +1020,9 @@ export function commitFetchedFeedResult(options: {
         !visibility?.hidden &&
         !visibility?.rejected &&
         !visibility?.thumbs_down;
+      if (isVisible && queueFullTextCrawl) {
+        enqueueArticleCrawl(articleId, { feedId });
+      }
       if (
         isVisible &&
         queueAi &&
