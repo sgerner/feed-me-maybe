@@ -6,14 +6,26 @@ import {
   SafeFetchError,
   fetchSafe,
   readResponseText,
+  validatePublicUrl,
 } from '#lib/server/network.ts';
 import {
   coerceText,
   normalizeTextArray,
   stripHtml,
 } from '#lib/server/normalization.ts';
+import { normalizeFeedSourceUrl } from '#lib/server/source-url.ts';
 
 type FeedParser = Parser<Record<string, unknown>, Record<string, unknown>>;
+
+export type FeedFormat = 'rss' | 'atom' | 'json';
+
+export interface DiscoveredFeedLinkResult {
+  url: string;
+  linkTitle?: string;
+  mimeType: string;
+  format: FeedFormat;
+  fetchResult: FetchResult;
+}
 
 export interface FetchResult {
   success: boolean;
@@ -22,6 +34,8 @@ export interface FetchResult {
   description?: string;
   link?: string;
   imageUrl?: string;
+  format?: FeedFormat;
+  discoveredFeeds?: DiscoveredFeedLinkResult[];
   items: FetchedItem[];
   error?: string;
   httpStatus?: number;
@@ -583,6 +597,49 @@ function parseJsonFeed(source: string) {
   };
 }
 
+const MAX_DISCOVERY_CANDIDATES = 12;
+const MAX_CONCURRENT_DISCOVERY_FETCHES = 4;
+
+const DISCOVERY_LINK_MIME_TYPES = new Set([
+  'application/rss+xml',
+  'application/atom+xml',
+  'application/feed+json',
+  'application/json',
+  'application/rdf+xml',
+  'application/xml',
+  'text/xml',
+]);
+
+function inferFeedFormatFromMimeType(mimeType: string): FeedFormat {
+  if (mimeType === 'application/atom+xml' || mimeType === 'text/atom') {
+    return 'atom';
+  }
+  if (mimeType === 'application/feed+json' || mimeType === 'application/json') {
+    return 'json';
+  }
+  return 'rss';
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    }),
+  );
+  return results;
+}
+
 export async function fetchFeed(
   url: string,
   options: {
@@ -616,7 +673,11 @@ export async function fetchFeed(
       };
     }
 
-    const deadline = options.deadline ?? AbortSignal.timeout(15000);
+    const overallDeadline =
+      options.deadline ?? AbortSignal.timeout(options.discover ? 30000 : 15000);
+    const requestDeadline = options.discover
+      ? AbortSignal.any([overallDeadline, AbortSignal.timeout(15000)])
+      : overallDeadline;
     const headers: Record<string, string> = {
       'User-Agent': 'FeedMeMaybe/1.0 RSS Reader',
       Accept:
@@ -637,7 +698,7 @@ export async function fetchFeed(
       parsedUrl.href,
       {
         headers,
-        signal: deadline,
+        signal: requestDeadline,
       },
       {
         proxyBaseUrl: options.proxyBaseUrl,
@@ -696,7 +757,15 @@ export async function fetchFeed(
           document.querySelector('head base[href]')?.getAttribute('href'),
           finalUrl,
         ) || finalUrl;
-      const candidates = new Set<string>();
+      const seenNormalizedUrls = new Set<string>();
+      const normalizedFinalUrl = normalizeFeedSourceUrl(finalUrl);
+      const candidates: Array<{
+        url: string;
+        linkTitle?: string;
+        mimeType: string;
+      }> = [];
+      let sawAdvertisedLink = false;
+
       for (const link of document.querySelectorAll('link')) {
         const attrs = Object.fromEntries(
           Array.from(link.attributes, ({ name, value }) => [
@@ -706,45 +775,108 @@ export async function fetchFeed(
         );
         const rel = (attrs.rel || '').toLowerCase().split(/\s+/);
         const type = (attrs.type || '').toLowerCase().split(';')[0].trim();
-        if (
-          !rel.includes('alternate') ||
-          ![
-            'application/rss+xml',
-            'application/atom+xml',
-            'application/feed+json',
-            'application/json',
-          ].includes(type)
-        )
+        if (!rel.includes('alternate') || !DISCOVERY_LINK_MIME_TYPES.has(type))
           continue;
         const candidate = safeHttpUrl(attrs.href, base);
-        if (candidate && candidate !== finalUrl) candidates.add(candidate);
-        if (candidates.size === 3) break;
-      }
-      for (const candidate of candidates) {
-        if (deadline.aborted) break;
-        const result = await fetchFeed(candidate, {
-          deadline,
-          proxyBaseUrl: options.proxyBaseUrl,
+        if (!candidate) continue;
+        const normalizedCandidate = normalizeFeedSourceUrl(candidate);
+        if (normalizedCandidate === normalizedFinalUrl) continue;
+        sawAdvertisedLink = true;
+        try {
+          validatePublicUrl(candidate);
+        } catch {
+          continue;
+        }
+        if (seenNormalizedUrls.has(normalizedCandidate)) continue;
+        seenNormalizedUrls.add(normalizedCandidate);
+        const linkTitle = attrs.title?.trim() || undefined;
+        candidates.push({
+          url: candidate,
+          linkTitle,
+          mimeType: type,
         });
-        if (result.success) return result;
+        if (candidates.length >= MAX_DISCOVERY_CANDIDATES) break;
+      }
+
+      if (candidates.length === 0) {
+        return {
+          success: false,
+          items: [],
+          error: sawAdvertisedLink
+            ? 'The website advertised feeds, but none returned a readable feed.'
+            : 'No feed was advertised by this website. Enter the feed URL directly.',
+        };
+      }
+
+      const settledCandidates = await mapWithConcurrency(
+        candidates,
+        MAX_CONCURRENT_DISCOVERY_FETCHES,
+        async (candidate): Promise<DiscoveredFeedLinkResult | null> => {
+          if (overallDeadline.aborted) return null;
+          const candidateDeadline = AbortSignal.any([
+            overallDeadline,
+            AbortSignal.timeout(15000),
+          ]);
+          const candidateResult = await fetchFeed(candidate.url, {
+            deadline: candidateDeadline,
+            proxyBaseUrl: options.proxyBaseUrl,
+          });
+          if (!candidateResult.success || !candidateResult.subscriptionUrl) {
+            return null;
+          }
+          return {
+            url: candidateResult.subscriptionUrl,
+            linkTitle: candidate.linkTitle,
+            mimeType: candidate.mimeType,
+            format:
+              candidateResult.format ??
+              inferFeedFormatFromMimeType(candidate.mimeType),
+            fetchResult: candidateResult,
+          };
+        },
+      );
+
+      const validCandidates = settledCandidates.filter(
+        (entry): entry is DiscoveredFeedLinkResult => entry !== null,
+      );
+      if (validCandidates.length > 0) {
+        return {
+          ...validCandidates[0].fetchResult,
+          discoveredFeeds: validCandidates,
+        };
       }
       return {
         success: false,
         items: [],
         error:
-          candidates.size > 0
-            ? 'The website advertised feeds, but none returned a readable feed.'
-            : 'No feed was advertised by this website. Enter the feed URL directly.',
+          'The website advertised feeds, but none returned a readable feed.',
       };
     }
     const isAtom =
       /^(?:\s|\uFEFF)*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\b(?:\[[\s\S]*?\]|[^>])*>)*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\b(?:\[[\s\S]*?\]|[^>])*>|\s)*<(?:[\w.-]+:)?feed[\s>]/i.test(
         xml,
       );
-    const result = xml.trimStart().startsWith('{')
-      ? parseJsonFeed(xml)
-      : ((isAtom ? parseAtom(xml, finalUrl) : null) ??
-        (await parseRssXml(xml)));
+    let format: FeedFormat = 'rss';
+    let result: {
+      title?: string;
+      description?: string;
+      link?: string;
+      image?: { url?: string };
+      items?: Array<Record<string, unknown>>;
+    };
+    if (xml.trimStart().startsWith('{')) {
+      result = parseJsonFeed(xml);
+      format = 'json';
+    } else {
+      const atomResult = isAtom ? parseAtom(xml, finalUrl) : null;
+      if (atomResult) {
+        result = atomResult;
+        format = 'atom';
+      } else {
+        result = await parseRssXml(xml);
+        format = 'rss';
+      }
+    }
 
     const newEtag = response.headers.get('etag') || undefined;
     const newLastModified = response.headers.get('last-modified') || undefined;
@@ -844,6 +976,7 @@ export async function fetchFeed(
       description: result.description || undefined,
       link: safeHttpUrl(result.link, finalUrl) || undefined,
       imageUrl: safeHttpUrl(result.image?.url, finalUrl) || undefined,
+      format,
       items,
       etag: newEtag,
       lastModified: newLastModified,
