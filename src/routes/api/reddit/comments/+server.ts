@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import { readJsonObject } from '#lib/server/request-body.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import {
   MAX_JSON_RESPONSE_BYTES,
@@ -16,10 +17,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { url?: string; useProxy?: boolean };
-  try {
-    body = await request.json();
-  } catch {
+  const body = await readJsonObject(request);
+  if (!body) {
     return Response.json({ error: 'Invalid body' }, { status: 400 });
   }
 

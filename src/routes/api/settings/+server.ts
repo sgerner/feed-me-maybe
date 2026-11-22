@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import { readJsonObject } from '#lib/server/request-body.ts';
 import { applySettingsMutation } from '#lib/server/settings.ts';
 import { initializeDatabase } from '#lib/server/db/migrate.ts';
 
@@ -7,10 +8,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
+  const body = await readJsonObject(request);
+  if (!body) {
     return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
