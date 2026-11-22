@@ -1,27 +1,46 @@
 import type { RequestHandler } from './$types';
 import { readJsonObject } from '#lib/server/request-body.ts';
+import type { SearchSort } from '#lib/server/search.ts';
 import {
   createSavedSearch,
   deleteSavedSearch,
   listSavedSearches,
   SavedSearchError,
+  type SavedSearchInput,
   updateSavedSearch,
 } from '#lib/server/saved-searches.ts';
 
-type SavedSearchInput = {
-  name: string;
-  query?: string;
-  description?: string;
-  pinned?: boolean;
-};
+function parseSortField(value: unknown): SearchSort | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'recent' || value === 'relevance') return value;
+  throw new SavedSearchError('sort must be recent or relevance');
+}
+
+function parseOptionalString(
+  value: unknown,
+  field: string,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  throw new SavedSearchError(`${field} must be a string`);
+}
+
+function parseOptionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  throw new SavedSearchError(`${field} must be a boolean`);
+}
 
 function inputFromBody(body: Record<string, unknown>): SavedSearchInput {
   return {
-    name: typeof body.name === 'string' ? body.name : '',
-    query: typeof body.query === 'string' ? body.query : '',
-    description:
-      typeof body.description === 'string' ? body.description : undefined,
-    pinned: typeof body.pinned === 'boolean' ? body.pinned : undefined,
+    name: parseOptionalString(body.name, 'name') ?? '',
+    query: parseOptionalString(body.query, 'query') ?? '',
+    description: parseOptionalString(body.description, 'description'),
+    sort: parseSortField(body.sort),
+    pinned: parseOptionalBoolean(body.pinned, 'pinned'),
   };
 }
 
@@ -46,7 +65,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       {
         error: error instanceof Error ? error.message : 'Invalid saved search',
       },
-      { status: 400 },
+      { status: error instanceof SavedSearchError ? error.status : 400 },
     );
   }
 };
@@ -63,11 +82,11 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
       return Response.json({ error: 'id is required' }, { status: 400 });
     }
     const search = updateSavedSearch(body.id, {
-      name: typeof body.name === 'string' ? body.name : undefined,
-      query: typeof body.query === 'string' ? body.query : undefined,
-      description:
-        typeof body.description === 'string' ? body.description : undefined,
-      pinned: typeof body.pinned === 'boolean' ? body.pinned : undefined,
+      name: parseOptionalString(body.name, 'name'),
+      query: parseOptionalString(body.query, 'query'),
+      description: parseOptionalString(body.description, 'description'),
+      sort: parseSortField(body.sort),
+      pinned: parseOptionalBoolean(body.pinned, 'pinned'),
     });
     return Response.json({ search });
   } catch (error: unknown) {
@@ -75,7 +94,7 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
       error instanceof Error ? error.message : 'Invalid saved search';
     return Response.json(
       { error: message },
-      { status: message.includes('not found') ? 404 : 400 },
+      { status: error instanceof SavedSearchError ? error.status : 400 },
     );
   }
 };
