@@ -1,4 +1,8 @@
 import type { RequestHandler } from './$types';
+import {
+  ArticleStateError,
+  listRecoverySearchArticles,
+} from '#lib/server/article-state.ts';
 import { searchArticles, SearchQueryError } from '#lib/server/search.ts';
 
 export const GET: RequestHandler = async ({ locals, url }) => {
@@ -21,13 +25,22 @@ export const GET: RequestHandler = async ({ locals, url }) => {
       { status: 400 },
     );
   }
+  const cursor = url.searchParams.get('cursor') || undefined;
 
   try {
-    const query = kind === 'all' ? '' : `is:${kind}`;
-    return Response.json({ kind, ...searchArticles({ query, limit }) });
+    if (kind === 'all') {
+      return Response.json({
+        kind,
+        ...listRecoverySearchArticles({ limit, cursor, kind: 'all' }),
+      });
+    }
+    return Response.json({
+      kind,
+      ...searchArticles({ query: `is:${kind}`, limit, cursor }),
+    });
   } catch (caught) {
     const message =
-      caught instanceof SearchQueryError
+      caught instanceof SearchQueryError || caught instanceof ArticleStateError
         ? caught.message
         : 'Failed to load recovery articles';
     return Response.json({ error: message }, { status: 400 });

@@ -50,18 +50,20 @@ function buildAutoHiddenWhereClause(alias: string): string {
       FROM user_interactions ui
       WHERE ui.article_id = ${alias}.id
         AND ui.interaction_type = 'hide'
-        AND json_extract(ui.metadata, '$.auto') = 1
-        AND json_extract(ui.metadata, '$.reason') = 'preference_model'
+        AND json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.auto') = 1
+        AND json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.reason') = 'preference_model'
+        AND COALESCE(json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.undone_at'), 0) = 0
     )
     AND NOT EXISTS (
       SELECT 1
       FROM user_interactions ui
       WHERE ui.article_id = ${alias}.id
         AND ui.interaction_type = 'hide'
+        AND COALESCE(json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.undone_at'), 0) = 0
         AND (
-          json_extract(ui.metadata, '$.auto') IS NULL
-          OR json_extract(ui.metadata, '$.reason') IS NULL
-          OR json_extract(ui.metadata, '$.reason') != 'preference_model'
+          json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.auto') IS NULL
+          OR json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.reason') IS NULL
+          OR json_extract(CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END, '$.reason') != 'preference_model'
         )
     )
   `;

@@ -41,8 +41,8 @@
     {
       key: 'm',
       description: reader
-        ? 'Mark this article as read'
-        : 'Mark focused article as read',
+        ? 'Toggle read / unread for this article'
+        : 'Toggle read / unread for focused article',
     },
     ...(reader
       ? []

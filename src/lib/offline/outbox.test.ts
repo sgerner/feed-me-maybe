@@ -140,6 +140,7 @@ describe('offline mutation outbox', () => {
     const item = mutation(1, 'article-1', 'thumbs_down', {
       id: 'mutation-stable',
       idempotencyKey: 'idempotency-stable',
+      queuedAt: 12345,
       visibleArticleIds: ['article-1', 'article-2'],
     });
     const request = buildInteractionRequest(item);
@@ -150,12 +151,14 @@ describe('offline mutation outbox', () => {
       headers: {
         'X-Offline-Mutation-Id': 'mutation-stable',
         'X-Offline-Idempotency-Key': 'idempotency-stable',
+        'X-Offline-Queued-At': '12345',
       },
     });
     expect(request.body).toBe(
       JSON.stringify({
         articleId: 'article-1',
         type: 'thumbs_down',
+        queuedAt: 12345,
         visibleArticleIds: ['article-1', 'article-2'],
       }),
     );
@@ -163,16 +166,41 @@ describe('offline mutation outbox', () => {
 
   it('replays a reader restore through the versioned interaction contract', () => {
     const request = buildInteractionRequest(
-      mutation(1, 'article-1', 'restore'),
+      mutation(1, 'article-1', 'restore', { queuedAt: 67890 }),
     );
 
     expect(request.body).toBe(
-      JSON.stringify({ articleId: 'article-1', type: 'restore' }),
+      JSON.stringify({
+        articleId: 'article-1',
+        type: 'restore',
+        queuedAt: 67890,
+      }),
     );
     expect(request.headers).toMatchObject({
       'X-Offline-Protocol': 'v1',
       'X-Offline-Idempotency-Key': 'idempotency-1',
+      'X-Offline-Queued-At': '67890',
     });
+  });
+
+  it('coalesces hide/restore/thumbs_down and thumbs_up/unthumbs_up/boost sequences cleanly', () => {
+    const coalesced = coalesceMutations([
+      mutation(1, 'article-1', 'hide'),
+      mutation(2, 'article-1', 'restore'),
+      mutation(3, 'article-2', 'thumbs_down'),
+      mutation(4, 'article-2', 'restore'),
+      mutation(5, 'article-3', 'thumbs_up'),
+      mutation(6, 'article-3', 'unthumbs_up'),
+      mutation(7, 'article-4', 'thumbs_up'),
+      mutation(8, 'article-4', 'boost'),
+    ]);
+
+    expect(coalesced.map((item) => `${item.articleId}:${item.type}`)).toEqual([
+      'article-1:restore',
+      'article-2:restore',
+      'article-3:unthumbs_up',
+      'article-4:boost',
+    ]);
   });
 
   it('retains the HTTP status for blocked and conflict actions', async () => {

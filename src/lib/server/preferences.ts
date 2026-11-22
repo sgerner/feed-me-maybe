@@ -450,6 +450,16 @@ function getDecayMultiplier(lastReinforced: number, now = Date.now()): number {
   return Math.pow(0.5, ageDays / DECAY_HALF_LIFE_DAYS);
 }
 
+function getUnclampedDecayedStrength(
+  strength: number,
+  lastReinforced: number,
+): number {
+  if (!lastReinforced || !Number.isFinite(lastReinforced)) {
+    return Math.max(0, strength);
+  }
+  return Math.max(0, strength * getDecayMultiplier(lastReinforced));
+}
+
 export function getDecayedStrength(
   strength: number,
   lastReinforced: number,
@@ -483,18 +493,18 @@ function upsertPreference(
     | undefined;
 
   if (existing) {
-    const decayed = getDecayedStrength(
+    const decayed = getUnclampedDecayedStrength(
       existing.strength || 0,
       existing.last_reinforced,
     );
-    const strength = Math.max(0, Math.min(1, decayed + delta));
+    const strength = Math.max(0, decayed + delta);
     db.prepare(
       'UPDATE user_preference_memory SET strength = ?, evidence_count = ?, last_reinforced = ? WHERE id = ?',
     ).run(strength, (existing.evidence_count || 0) + 1, now, existing.id);
     return { preferenceId: existing.id, delta: strength - decayed };
   }
 
-  const strength = Math.max(0.02, Math.min(1, delta));
+  const strength = Math.max(0.02, delta);
   const preferenceId = crypto.randomUUID();
   db.prepare(
     'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -586,9 +596,10 @@ export function updatePreferenceMemoryFromInteraction(
 export function reversePreferenceMemoryDeltas(
   value: unknown,
   interactionTimestamp: number,
-): void {
-  if (!Array.isArray(value)) return;
+): string[] {
+  if (!Array.isArray(value)) return [];
 
+  const reversedFeatureKeys: string[] = [];
   const db = getDb();
   const now = Date.now();
   const ageDays = Math.max(
@@ -637,8 +648,9 @@ export function reversePreferenceMemoryDeltas(
       | undefined;
     if (!existing) continue;
 
+    reversedFeatureKeys.push(`${delta.type}|${delta.label}`);
     const remainingEvidence = Math.max(0, existing.evidence_count - 1);
-    const currentStrength = getDecayedStrength(
+    const currentStrength = getUnclampedDecayedStrength(
       existing.strength || 0,
       existing.last_reinforced,
     );
@@ -646,12 +658,18 @@ export function reversePreferenceMemoryDeltas(
       0,
       currentStrength - delta.delta * decayFactor,
     );
-    if (remainingEvidence === 0 || remainingStrength === 0) {
+    if (remainingEvidence === 0) {
       remove.run(existing.id);
     } else {
-      update.run(remainingStrength, remainingEvidence, now, existing.id);
+      update.run(
+        Math.max(0.02, remainingStrength),
+        remainingEvidence,
+        now,
+        existing.id,
+      );
     }
   }
+  return [...new Set(reversedFeatureKeys)];
 }
 
 export function getPreferenceStateForArticle(
@@ -758,22 +776,82 @@ function shouldAutoHideFromPreferenceState(
   );
 }
 
+export function isArticleExemptFromAutoHide(articleId: string): boolean {
+  const db = getDb();
+  const article = db
+    .prepare(
+      'SELECT saved, hidden, rejected, thumbs_up, thumbs_down FROM articles WHERE id = ?',
+    )
+    .get(articleId) as
+    | {
+        saved: number;
+        hidden: number;
+        rejected: number;
+        thumbs_up: number;
+        thumbs_down: number;
+      }
+    | undefined;
+  if (
+    !article ||
+    article.saved ||
+    article.hidden ||
+    article.rejected ||
+    article.thumbs_up ||
+    article.thumbs_down
+  ) {
+    return true;
+  }
+
+  const restoredInteraction = db
+    .prepare(
+      `SELECT 1 FROM user_interactions
+       WHERE article_id = ?
+         AND interaction_type IN ('restore', 'unhide', 'unreject', 'boost', 'thumbs_up')
+         AND COALESCE(json_extract(
+           CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+           '$.undone_at'
+         ), 0) = 0
+       LIMIT 1`,
+    )
+    .get(articleId);
+  if (restoredInteraction) return true;
+
+  const restoredHistory = db
+    .prepare(
+      `SELECT 1 FROM article_state_history
+       WHERE article_id = ?
+         AND action IN ('restore', 'unhide', 'unreject', 'boost', 'thumbs_up')
+         AND undone_at IS NULL
+       LIMIT 1`,
+    )
+    .get(articleId);
+  return Boolean(restoredHistory);
+}
+
 export function applyPreferenceModelToArticle(articleId: string): void {
   const db = getDb();
   updateHeuristicScore(articleId);
+  if (isArticleExemptFromAutoHide(articleId)) return;
   const prefState = getPreferenceStateForArticle(articleId);
 
   if (shouldAutoHideFromPreferenceState(prefState)) {
-    db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(articleId);
-    db.prepare(
-      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
-    ).run(
-      crypto.randomUUID(),
-      articleId,
-      'hide',
-      Date.now(),
-      '{"auto":true,"reason":"preference_model"}',
-    );
+    const now = Date.now();
+    const updated = db
+      .prepare(
+        'UPDATE articles SET hidden = 1, hidden_at = COALESCE(hidden_at, ?), state_version = state_version + 1, updated_at = ? WHERE id = ? AND hidden = 0',
+      )
+      .run(now, now, articleId);
+    if (updated.changes > 0) {
+      db.prepare(
+        'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+      ).run(
+        crypto.randomUUID(),
+        articleId,
+        'hide',
+        now,
+        '{"auto":true,"reason":"preference_model"}',
+      );
+    }
   }
 }
 
@@ -818,7 +896,7 @@ export function reconcileAutoHiddenArticles(): number {
 
   const now = Date.now();
   const unhideArticle = db.prepare(
-    'UPDATE articles SET hidden = 0 WHERE id = ?',
+    'UPDATE articles SET hidden = 0, hidden_at = NULL, state_version = state_version + 1, updated_at = ? WHERE id = ?',
   );
   const markAutoHideUndone = db.prepare(
     `UPDATE user_interactions
@@ -854,7 +932,7 @@ export function reconcileAutoHiddenArticles(): number {
     if (hasExplicitHide(id)) continue;
     const prefState = getPreferenceStateForArticle(id);
     if (shouldAutoHideFromPreferenceState(prefState)) continue;
-    unhideArticle.run(id);
+    unhideArticle.run(now, id);
     markAutoHideUndone.run(now, id);
     unhidden += 1;
   }
@@ -869,11 +947,11 @@ export function hasExplicitHide(articleId: string): boolean {
       SELECT interaction_type
       FROM user_interactions
       WHERE article_id = ?
-        AND interaction_type IN ('hide', 'unhide', 'restore')
-        AND (interaction_type != 'hide' OR json_extract(
+        AND interaction_type IN ('hide', 'unhide', 'restore', 'boost')
+        AND (interaction_type != 'hide' OR COALESCE(json_extract(
           CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
           '$.auto'
-        ) IS NULL)
+        ), 0) = 0)
         AND COALESCE(json_extract(
           CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
           '$.undone_at'

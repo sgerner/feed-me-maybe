@@ -1,21 +1,22 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
   import { onMount } from 'svelte';
-  import { goto, invalidate } from '$app/navigation';
+  import { goto } from '$app/navigation';
   import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
   import { formatContent, renderContent } from '#lib/utils/format.ts';
   import { extractArticleImages } from '#lib/utils/article-images.ts';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
-    applyMutationToCachedArticle,
-    cacheArticles,
-    enqueueOfflineMutation,
-    type OfflineMutationType,
-  } from '#lib/offline/index.ts';
+    executeArticleTriage,
+    shareArticleLink,
+    type TriageAction,
+  } from '#lib/client/triage.ts';
+  import { cacheArticles } from '#lib/offline/index.ts';
   import { page } from '$app/state';
   import RedditComments from '#lib/components/RedditComments.svelte';
-  type InteractionType = 'thumbs_up' | 'thumbs_down' | 'save' | 'hide';
+  type InteractionType =
+    'thumbs_up' | 'thumbs_down' | 'save' | 'hide' | 'read' | 'unread';
   type ArticleData = {
     id: string;
     url: string;
@@ -130,22 +131,6 @@
       : article.url,
   );
 
-  function offlineMutationType(type: string): OfflineMutationType | null {
-    switch (type) {
-      case 'read':
-      case 'unread':
-      case 'save':
-      case 'unsave':
-      case 'hide':
-      case 'unhide':
-      case 'restore':
-      case 'thumbs_down':
-        return type;
-      default:
-        return null;
-    }
-  }
-
   function offlineScope(): string {
     return String(page.data.userId || 'admin');
   }
@@ -255,17 +240,7 @@
   }
 
   async function shareArticle() {
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: article.title, url: article.url });
-      } else {
-        await navigator.clipboard.writeText(article.url);
-        addToast('Article link copied', 'success');
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
-      addToast('Could not share this article', 'error');
-    }
+    await shareArticleLink(article, 'Article link copied');
   }
 
   function speakArticle() {
@@ -459,7 +434,7 @@
       }
       if (key === 'h' || key === 's' || key === 'm') {
         event.preventDefault();
-        if (key === 'm') void markRead();
+        if (key === 'm') void toggleRead();
         else void interact(key === 'h' ? 'hide' : 'save');
       }
       return;
@@ -517,7 +492,12 @@
     if (pendingAction) return;
 
     const visibleArticleIds =
-      type === 'thumbs_up' || type === 'thumbs_down' ? [article.id] : undefined;
+      type === 'thumbs_up' ||
+      type === 'thumbs_down' ||
+      type === 'save' ||
+      type === 'hide'
+        ? [article.id]
+        : undefined;
 
     // Optimistic UI updates
     const prevLiked = liked;
@@ -525,6 +505,7 @@
     const prevSaved = saved;
     const prevHidden = hidden;
     const prevExplicitlyHidden = explicitlyHidden;
+    const prevRead = read;
     pendingAction = type;
 
     const restoring = type === 'hide' && (explicitlyHidden || disliked);
@@ -551,61 +532,41 @@
     }
 
     try {
-      const actualType =
+      const actualType: TriageAction =
         type === 'save' && prevSaved
           ? 'unsave'
-          : type === 'hide' && restoring
-            ? restoringRejection
-              ? 'restore'
-              : 'unhide'
-            : type;
+          : type === 'thumbs_up' && prevLiked
+            ? 'unthumbs_up'
+            : type === 'hide' && restoring
+              ? restoringRejection
+                ? 'restore'
+                : 'unhide'
+              : type;
 
-      const offline = navigator.onLine === false;
-      if (offline) {
-        const queuedType = offlineMutationType(
-          restoring ? (restoringRejection ? 'restore' : 'unhide') : actualType,
-        );
-        if (!queuedType) throw new Error('This action needs a connection');
-        await enqueueOfflineMutation(offlineScope(), {
-          articleId: article.id,
-          type: queuedType,
-          ...(actualType === 'thumbs_down' && visibleArticleIds
-            ? { visibleArticleIds }
-            : {}),
-        });
-        addToast('Action queued — will sync when you’re online', 'info');
-      } else {
-        const action = restoring
-          ? restoringRejection
-            ? 'restore'
-            : 'unhide'
-          : actualType === 'thumbs_down'
-            ? 'reject'
-            : actualType;
-        const res = await fetchWithCsrf('/api/article-state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            articleId: article.id,
-            action,
-            visibleArticleIds,
-          }),
-        });
-        if (!res.ok) throw new Error();
-        const result = (await res.json()) as {
-          operationId: string;
-          changes: Array<{
-            changed: boolean;
-            after?: {
-              read: boolean;
-              saved: boolean;
-              hidden: boolean;
-              thumbsUp: boolean;
-              thumbsDown: boolean;
-            };
-          }>;
-        };
-        const after = result.changes[0]?.after;
+      const result = await executeArticleTriage({
+        articleId: article.id,
+        action: actualType,
+        scope: offlineScope(),
+        visibleArticleIds,
+        onUndo: () => {
+          liked = prevLiked;
+          disliked = prevDisliked;
+          saved = prevSaved;
+          hidden = prevHidden;
+          explicitlyHidden = prevExplicitlyHidden;
+          read = prevRead;
+          void cacheReaderState({
+            read: prevRead,
+            saved: prevSaved,
+            hidden: prevHidden,
+            thumbsUp: prevLiked,
+            thumbsDown: prevDisliked,
+          });
+        },
+      });
+
+      if (result.mode === 'online') {
+        const after = result.after;
         const state = after
           ? {
               read: after.read,
@@ -615,7 +576,7 @@
               thumbsDown: after.thumbsDown,
             }
           : {
-              read: article.read === true,
+              read,
               saved,
               hidden,
               thumbsUp: liked,
@@ -628,17 +589,9 @@
           liked = state.thumbsUp;
           disliked = state.thumbsDown;
         }
-        if (action === 'hide') explicitlyHidden = true;
-        else if (action === 'restore' || action === 'unhide') {
+        if (actualType === 'hide') explicitlyHidden = true;
+        else if (actualType === 'restore' || actualType === 'unhide') {
           explicitlyHidden = false;
-        }
-        const cacheType = offlineMutationType(actualType);
-        if (cacheType) {
-          void applyMutationToCachedArticle(
-            offlineScope(),
-            article.id,
-            cacheType,
-          ).catch(() => undefined);
         }
         if (
           actualType === 'thumbs_up' ||
@@ -646,63 +599,6 @@
         ) {
           void cacheReaderState(state);
         }
-        void invalidate('app:reader-counts');
-        const labels: Record<string, string> = {
-          hide: 'Hidden',
-          restore: 'Restored',
-          save: 'Saved',
-          unsave: 'Removed from Saved',
-          thumbs_up: 'Liked',
-          reject: 'Disliked and hidden',
-        };
-        addToast(
-          labels[action] || type,
-          'success',
-          3000,
-          result.changes.some((change) => change.changed)
-            ? {
-                label: 'Undo',
-                run: async () => {
-                  try {
-                    const undo = await fetchWithCsrf(
-                      '/api/article-state/undo',
-                      {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          operationId: result.operationId,
-                        }),
-                      },
-                    );
-                    if (!undo.ok) throw new Error();
-                    const outcome = (await undo.json()) as {
-                      restoredArticleIds: string[];
-                    };
-                    if (!outcome.restoredArticleIds.includes(article.id)) {
-                      addToast('Article changed since this action', 'warning');
-                      return;
-                    }
-                    liked = prevLiked;
-                    disliked = prevDisliked;
-                    saved = prevSaved;
-                    hidden = prevHidden;
-                    explicitlyHidden = prevExplicitlyHidden;
-                    void cacheReaderState({
-                      read: article.read === true,
-                      saved: prevSaved,
-                      hidden: prevHidden,
-                      thumbsUp: prevLiked,
-                      thumbsDown: prevDisliked,
-                    });
-                    void invalidate('app:reader-counts');
-                    addToast('Action undone', 'success');
-                  } catch {
-                    addToast('Could not undo this action', 'error');
-                  }
-                },
-              }
-            : undefined,
-        );
       }
     } catch {
       // Revert on failure
@@ -711,6 +607,7 @@
       saved = prevSaved;
       hidden = prevHidden;
       explicitlyHidden = prevExplicitlyHidden;
+      read = prevRead;
       addToast('Action failed', 'error');
     } finally {
       pendingAction = null;
@@ -721,31 +618,41 @@
     return `/articles/${encodeURIComponent(id)}?mode=${encodeURIComponent(mode)}`;
   }
 
-  async function markRead() {
+  async function toggleRead() {
+    if (pendingAction) return;
+    const prevRead = read;
+    const nextAction: TriageAction = prevRead ? 'unread' : 'read';
+    pendingAction = nextAction;
+    read = !prevRead;
     try {
-      if (!navigator.onLine) {
-        await enqueueOfflineMutation(offlineScope(), {
-          articleId: article.id,
-          type: 'read',
-        });
-      } else {
-        const response = await fetchWithCsrf('/api/article-state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ articleId: article.id, action: 'read' }),
-        });
-        if (!response.ok) throw new Error();
-        read = true;
-        void applyMutationToCachedArticle(
-          offlineScope(),
-          article.id,
-          'read',
-        ).catch(() => undefined);
-        void invalidate('app:reader-counts');
+      const result = await executeArticleTriage({
+        articleId: article.id,
+        action: nextAction,
+        scope: offlineScope(),
+        onUndo: () => {
+          read = prevRead;
+          void cacheReaderState({
+            read: prevRead,
+            saved,
+            hidden,
+            thumbsUp: liked,
+            thumbsDown: disliked,
+          });
+        },
+      });
+      if (result.mode === 'online' && result.after) {
+        read = result.after.read;
       }
-      addToast('Marked as read', 'success');
     } catch {
-      addToast('Could not mark article as read', 'error');
+      read = prevRead;
+      addToast(
+        prevRead
+          ? 'Could not mark article as unread'
+          : 'Could not mark article as read',
+        'error',
+      );
+    } finally {
+      pendingAction = null;
     }
   }
 
@@ -1281,6 +1188,34 @@
       <span class="ml-1.5">{saved ? 'Saved' : 'Save'}</span>
     </button>
 
+    <button
+      type="button"
+      class="action-btn min-h-11 px-3 rounded-full !inline-flex {!read
+        ? '!text-primary-300 !bg-primary-500/10 !border-primary-500/30'
+        : ''}"
+      disabled={Boolean(pendingAction)}
+      onclick={() => void toggleRead()}
+      aria-label={read ? 'Mark as unread' : 'Mark as read'}
+      aria-pressed={!read}
+      title={read ? 'Mark as unread (m)' : 'Mark as read (m)'}
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
+      >
+      <span class="ml-1.5 hidden sm:inline"
+        >{read ? 'Mark as unread' : 'Mark as read'}</span
+      >
+    </button>
+
     {#if isReaderMode}
       <button
         type="button"
@@ -1350,9 +1285,9 @@
               : ''}"
             disabled={Boolean(pendingAction) || reactionsLocked}
             onclick={() => interact('thumbs_up')}
-            aria-label="Like article"
+            aria-label={liked ? 'Remove like' : 'Like article'}
             aria-pressed={liked}
-            title="Like"
+            title={liked ? 'Remove like' : 'Like'}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"

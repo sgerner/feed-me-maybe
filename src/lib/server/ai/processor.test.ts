@@ -132,4 +132,71 @@ describe('article enrichment', () => {
     ).toBe(0);
     vi.mocked(isAiProcessingConfigured).mockReturnValue(true);
   });
+
+  it('does not re-auto-hide restored, thumbs-upped, or saved articles and bumps state_version on auto-hide', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
+    const { getConfiguredAiClient } = await import('./runtime');
+    const { processArticle } = await import('./processor');
+    db = new Database(':memory:');
+    vi.mocked(getDb).mockReturnValue(db);
+    initializeDatabase();
+    const now = Date.now();
+
+    vi.mocked(getConfiguredAiClient).mockResolvedValue({
+      analyzeArticle: async () => ({
+        summary: 'Obituary coverage',
+        topics: ['obituary'],
+        contentType: 'obituary',
+        relevanceScore: 0.1,
+      }),
+    } as never);
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-guard', 'https://example.com/guard', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, content, hidden, saved, thumbs_up, state_version, fetched_at, created_at, updated_at)
+       VALUES
+         ('restored-item', 'feed-guard', 'https://example.com/r', 'Restored', 'Obituary body text', 0, 0, 0, 2, ?, ?, ?),
+         ('liked-item', 'feed-guard', 'https://example.com/l', 'Liked', 'Obituary body text', 0, 0, 1, 1, ?, ?, ?),
+         ('fresh-item', 'feed-guard', 'https://example.com/f', 'Fresh', 'Obituary body text', 0, 0, 0, 0, ?, ?, ?)`,
+    ).run(now, now, now, now, now, now, now, now, now);
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('i-restore', 'restored-item', 'restore', now, '{}');
+    db.prepare(
+      'INSERT INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'neg-obit',
+      'negative_filter:obituary',
+      'negative_filter',
+      'negative',
+      1.0,
+      4,
+      now,
+      '',
+      now,
+    );
+
+    await processArticle('restored-item');
+    await processArticle('liked-item');
+    await processArticle('fresh-item');
+
+    expect(
+      db
+        .prepare('SELECT hidden, state_version FROM articles WHERE id = ?')
+        .get('restored-item'),
+    ).toEqual({ hidden: 0, state_version: 2 });
+    expect(
+      db
+        .prepare('SELECT hidden, state_version FROM articles WHERE id = ?')
+        .get('liked-item'),
+    ).toEqual({ hidden: 0, state_version: 1 });
+    expect(
+      db
+        .prepare('SELECT hidden, state_version FROM articles WHERE id = ?')
+        .get('fresh-item'),
+    ).toEqual({ hidden: 1, state_version: 1 });
+  });
 });

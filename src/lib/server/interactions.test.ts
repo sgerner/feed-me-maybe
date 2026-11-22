@@ -306,4 +306,73 @@ describe('interaction side effects', () => {
       { label: 'author:like_author', polarity: 'positive', evidence_count: 1 },
     ]);
   });
+
+  it('guards repeat boost, supports unthumbs_up, bumps state_version, and reflects hide_on_open in article load', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { recordInteraction } = await import('./interactions');
+    const { load } = await import('../../routes/articles/[id]/+page.server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ).run('hide_on_open', 'true', now);
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-load', 'https://example.com/load.xml', 'Load Feed', now, now);
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, state_version, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
+    ).run(
+      'article-load-1',
+      'feed-load',
+      'https://example.com/load-1',
+      'Load Article',
+      'Load Author',
+      now,
+      now,
+      now,
+    );
+
+    const loaded = (await load({
+      params: { id: 'article-load-1' },
+      locals: { sessionId: 'sess' },
+      url: new URL('http://localhost/articles/article-load-1'),
+    } as never)) as {
+      article: { hidden: number; read: number; state_version: number };
+    };
+    expect(loaded.article.read).toBe(1);
+    expect(loaded.article.hidden).toBe(1);
+    expect(loaded.article.state_version).toBeGreaterThan(0);
+
+    recordInteraction('article-load-1', 'boost');
+    recordInteraction('article-load-1', 'boost');
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM user_interactions WHERE article_id = 'article-load-1' AND interaction_type = 'boost'",
+        )
+        .get(),
+    ).toEqual({ c: 1 });
+    expect(
+      db
+        .prepare(
+          "SELECT evidence_count FROM user_preference_memory WHERE label = 'author:load_author'",
+        )
+        .get(),
+    ).toEqual({ evidence_count: 2 });
+
+    recordInteraction('article-load-1', 'unthumbs_up');
+    expect(
+      db
+        .prepare('SELECT thumbs_up FROM articles WHERE id = ?')
+        .get('article-load-1'),
+    ).toEqual({ thumbs_up: 0 });
+    expect(
+      db
+        .prepare(
+          "SELECT evidence_count FROM user_preference_memory WHERE label = 'author:load_author'",
+        )
+        .get(),
+    ).toEqual({ evidence_count: 1 });
+  });
 });

@@ -30,21 +30,21 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     throw error(404, 'Article not found');
   }
 
-  article.explicitly_hidden = hasExplicitHide(params.id);
   article.feed_site_url = safeFeedSiteUrl(article.feed_site_url);
 
   if (!article.hidden && !article.rejected && !article.thumbs_down) {
     recordInteraction(params.id, 'open');
-    // Opening can auto-hide an article when Hide on Open is enabled. Reflect
-    // that state in the same response so the reader locks reaction controls
-    // and offers Restore immediately instead of rendering stale flags.
-    const readerState = db
-      .prepare(
-        'SELECT read, read_at, saved, saved_at, hidden, hidden_at, thumbs_up, thumbs_down, rejected, rejected_at FROM articles WHERE id = ?',
-      )
-      .get(params.id);
-    if (readerState) Object.assign(article, readerState);
   }
+
+  // Read state and explicit-hide flag after `open` so hidden, state_version,
+  // and read flags reflect any hide-on-open / open updates immediately.
+  const readerState = db
+    .prepare(
+      'SELECT read, read_at, saved, saved_at, hidden, hidden_at, thumbs_up, thumbs_down, rejected, rejected_at, state_version, updated_at FROM articles WHERE id = ?',
+    )
+    .get(params.id);
+  if (readerState) Object.assign(article, readerState);
+  article.explicitly_hidden = hasExplicitHide(params.id);
 
   if (url.searchParams.get('mode') === 'archive') {
     const archived = await fetchArchivedArticle(

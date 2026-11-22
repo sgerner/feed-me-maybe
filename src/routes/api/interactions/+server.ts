@@ -75,6 +75,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     'hide',
     'save',
     'thumbs_up',
+    'unthumbs_up',
     'thumbs_down',
     'boost',
     'unhide',
@@ -97,6 +98,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
   const articleId = rawArticleId.trim();
   const visibleArticleIds = readVisibleArticleIds(body.visibleArticleIds);
+  const rawQueuedAt =
+    typeof body.queuedAt === 'number'
+      ? body.queuedAt
+      : Number(request.headers.get('x-offline-queued-at') || NaN);
+  const queuedAt =
+    Number.isFinite(rawQueuedAt) && rawQueuedAt > 0 ? rawQueuedAt : undefined;
 
   // The service worker replays mutations through this compatibility endpoint
   // so older clients and the installed PWA share one queue contract. Route
@@ -109,7 +116,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       unsave: 'unsave',
       hide: 'hide',
       unhide: 'unhide',
+      thumbs_up: 'thumbs_up',
+      unthumbs_up: 'unthumbs_up',
       thumbs_down: 'reject',
+      boost: 'boost',
       restore: 'restore',
     };
     const action = actions[type as InteractionType];
@@ -124,7 +134,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         articleIds: [articleId],
         action,
         idempotencyKey: `offline:${offlineKey}`,
-        ...(type === 'thumbs_down' ? { visibleArticleIds } : {}),
+        ...(queuedAt !== undefined ? { queuedAt } : {}),
+        ...(type === 'thumbs_down' || type === 'thumbs_up' || type === 'boost'
+          ? visibleArticleIds.length
+            ? { visibleArticleIds }
+            : {}
+          : {}),
       });
       return Response.json({ success: true, ...result });
     } catch (caught) {
