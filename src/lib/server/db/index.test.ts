@@ -96,7 +96,7 @@ describe('Database initialization', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .pluck()
         .all();
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
       const articleIndexes = db
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'articles'",

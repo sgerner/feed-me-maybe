@@ -410,6 +410,62 @@ function toSearchArticle(row: Record<string, unknown>): SearchArticle {
   };
 }
 
+export type SearchMatchCounts = {
+  unreadCount: number;
+  totalCount: number;
+};
+
+export function resolveSearchSort(
+  parsed: ParsedSearchQuery,
+  requestedSort?: SearchSort,
+): SearchSort {
+  if (
+    requestedSort !== undefined &&
+    requestedSort !== 'recent' &&
+    requestedSort !== 'relevance'
+  ) {
+    throw new SearchQueryError('sort must be recent or relevance');
+  }
+  const parts = buildQueryParts(parsed);
+  if (!parts.hasPositiveFts) {
+    return 'recent';
+  }
+  return requestedSort ?? 'relevance';
+}
+
+export function countSearchMatches(rawQuery: string): SearchMatchCounts {
+  const parsed = parseSearchQuery(rawQuery);
+  const parts = buildQueryParts(parsed);
+  const unreadConditions: string[] = ['a.read = 0'];
+
+  if (!parsed.filters.feed) {
+    unreadConditions.push('f.enabled = 1');
+  }
+  if (!parsed.filters.hidden && !parsed.filters.rejected) {
+    unreadConditions.push('a.hidden = 0');
+  }
+  if (!parsed.filters.rejected) {
+    unreadConditions.push(
+      'COALESCE(a.rejected, 0) = 0 AND COALESCE(a.thumbs_down, 0) = 0',
+    );
+  }
+
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COUNT(CASE WHEN ${unreadConditions.join(' AND ')} THEN 1 END) AS unread
+       ${parts.from}
+       WHERE ${parts.where}`,
+    )
+    .get(...parts.params) as { total: number; unread: number } | undefined;
+
+  return {
+    unreadCount: Number(row?.unread ?? 0),
+    totalCount: Number(row?.total ?? 0),
+  };
+}
+
 export function searchArticles(
   options: {
     query?: string;

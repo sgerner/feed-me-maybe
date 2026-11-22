@@ -4,6 +4,11 @@ import {
   normalizeTextArray,
   parseJsonTextArray,
 } from '#lib/server/normalization.ts';
+import {
+  parseSearchQuery,
+  resolveSearchSort,
+  type SearchSort,
+} from '#lib/server/search.ts';
 
 type Database = ReturnType<typeof getDb>;
 
@@ -618,6 +623,45 @@ const migrations: Migration[] = [
           ON articles(COALESCE(saved_at, updated_at, fetched_at) DESC, id DESC)
           WHERE saved = 1;
       `);
+    },
+  },
+  {
+    version: 11,
+    name: 'saved_searches_sort_mode',
+    apply: (db) => {
+      ensureColumn(
+        db,
+        'saved_searches',
+        'sort',
+        "TEXT NOT NULL DEFAULT 'relevance'",
+      );
+
+      const rows = db
+        .prepare('SELECT id, query, sort FROM saved_searches')
+        .all() as Array<{ id: string; query: string; sort: string | null }>;
+      const updateSort = db.prepare(
+        'UPDATE saved_searches SET sort = ? WHERE id = ?',
+      );
+      for (const row of rows) {
+        const candidateSort: SearchSort | undefined =
+          row.sort === 'recent' || row.sort === 'relevance'
+            ? row.sort
+            : undefined;
+        let normalizedSort: SearchSort = 'recent';
+        if (row.query.trim()) {
+          try {
+            normalizedSort = resolveSearchSort(
+              parseSearchQuery(row.query),
+              candidateSort,
+            );
+          } catch {
+            normalizedSort = 'recent';
+          }
+        }
+        if (row.sort !== normalizedSort) {
+          updateSort.run(normalizedSort, row.id);
+        }
+      }
     },
   },
 ];
