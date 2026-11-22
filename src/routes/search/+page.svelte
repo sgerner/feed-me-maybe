@@ -61,6 +61,7 @@
   let query = $state('');
   let activeFilter = $state<(typeof FILTERS)[number]['value']>('all');
   let sort = $state<SearchSort>('relevance');
+  let preferredSort = $state<SearchSort>('relevance');
   let articles = $state<Article[]>([]);
   let total = $state(0);
   let nextCursor = $state<string | null>(null);
@@ -238,9 +239,10 @@
     const searchText = query.trim();
     const searchFilter = activeFilter;
     const searchQuery = buildSearchQuery();
+    const requestedSort = preferredSort;
     const params = new SvelteURLSearchParams();
     if (searchQuery) params.set('q', searchQuery);
-    if (sort === 'recent') params.set('sort', 'recent');
+    params.set('sort', requestedSort);
 
     let httpErrorMessage: string | null = null;
     try {
@@ -262,6 +264,10 @@
 
       const payload = (await response.json()) as SearchResponse;
       if (sequence !== searchSequence) return;
+      sort =
+        payload.sort === 'recent' || payload.sort === 'relevance'
+          ? payload.sort
+          : requestedSort;
       articles = (payload.articles || []).map((article) =>
         toListArticle(article as unknown as Record<string, unknown>),
       );
@@ -310,6 +316,7 @@
         articles = filtered.map((article) =>
           toListArticle(article as unknown as Record<string, unknown>),
         );
+        sort = term ? requestedSort : 'recent';
         total = articles.length;
         nextCursor = null;
         searched = true;
@@ -345,8 +352,8 @@
       const params = new SvelteURLSearchParams({
         q: buildSearchQuery(),
         cursor,
+        sort,
       });
-      if (sort === 'recent') params.set('sort', 'recent');
       const signal =
         typeof AbortSignal !== 'undefined' && 'any' in AbortSignal
           ? AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
@@ -359,6 +366,9 @@
       }
       const payload = (await response.json()) as SearchResponse;
       if (sequence !== searchSequence) return;
+      if (payload.sort === 'recent' || payload.sort === 'relevance') {
+        sort = payload.sort;
+      }
       articles = [
         ...articles,
         ...(payload.articles || []).map((article) =>
@@ -552,6 +562,7 @@
   }
 
   function applySort(nextSort: SearchSort) {
+    preferredSort = nextSort;
     sort = nextSort;
     if (searched || buildSearchQuery()) {
       void runSearch();
@@ -583,6 +594,7 @@
       loadingMore = false;
       query = '';
       activeFilter = 'all';
+      preferredSort = urlSort;
       sort = urlSort;
       articles = [];
       total = 0;
@@ -601,13 +613,14 @@
     if (
       nextQuery === query &&
       nextFilter === activeFilter &&
-      urlSort === sort &&
+      urlSort === preferredSort &&
       searched
     ) {
       return;
     }
     query = nextQuery;
     activeFilter = nextFilter;
+    preferredSort = urlSort;
     sort = urlSort;
     showFilters = nextFilter !== 'all' || showFilters;
     void runSearch(false);

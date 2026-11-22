@@ -250,6 +250,13 @@ describe('personal search engine', () => {
       version: 1,
       name: 'article_state_search_foundation',
     });
+    const migration11 = getDb()
+      .prepare('SELECT version, name FROM schema_migrations WHERE version = 11')
+      .get() as { version: number; name: string };
+    expect(migration11).toEqual({
+      version: 11,
+      name: 'strip_html_fts_index_and_triggers',
+    });
     expect(
       (
         getDb()
@@ -257,6 +264,168 @@ describe('personal search engine', () => {
           .get() as { count: number }
       ).count,
     ).toBe(4);
+  });
+
+  it('returns matched-only body snippets, strips HTML attributes, preserves title-only Markdown fallbacks, and falls back to recent sort without positive FTS terms', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
+    const { formatContent } = await import('#lib/utils/format.ts');
+    const { searchArticles, SearchQueryError } = await import('./search');
+    const db = getDb();
+
+    // 1. Body-only match + HTML attribute/script stripping
+    db.prepare(
+      `INSERT INTO articles
+        (id, feed_id, url, title, author, summary, content, categories,
+         published_at, fetched_at, read, saved, hidden, thumbs_down,
+         heuristic_score, combined_score, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'article-body-only',
+      'feed-science',
+      'https://example.com/body-only',
+      'Weekly laboratory digest',
+      'Niels Bohr',
+      '<p class="decoyattr" data-topic="decoyattr">General overview without the target keyword.</p>',
+      '<article data-attr="decoyattr"><p>Deep inside the body we examine <a href="https://example.com/decoyattr">superconducting</a> resonators &amp; cryogenics.</p><script>const decoyscript = true;</script></article>',
+      '["physics"]',
+      now - 500,
+      now - 500,
+      0,
+      0,
+      0,
+      0,
+      75,
+      75,
+      now,
+      now,
+    );
+
+    expect(
+      searchArticles({ query: 'decoyattr', sort: 'relevance' }).articles,
+    ).toHaveLength(0);
+    expect(
+      searchArticles({ query: 'decoyscript', sort: 'relevance' }).articles,
+    ).toHaveLength(0);
+
+    const bodyMatch = searchArticles({
+      query: 'superconducting',
+      sort: 'relevance',
+    });
+    expect(bodyMatch.sort).toBe('relevance');
+    expect(bodyMatch.articles.map((a) => a.id)).toEqual(['article-body-only']);
+    expect(bodyMatch.articles[0]?.titleHighlight).toBeNull();
+    expect(bodyMatch.articles[0]?.summaryHighlight).toBeNull();
+    expect(bodyMatch.articles[0]?.contentHighlight).toContain(
+      '<mark>superconducting</mark>',
+    );
+    expect(bodyMatch.articles[0]?.contentHighlight).toContain('&amp;');
+    expect(bodyMatch.articles[0]?.contentHighlight).not.toMatch(
+      /<article|<p|<a|decoyattr/i,
+    );
+
+    // Verify migration 11 backfill cleans pre-existing raw HTML in article_search
+    const bodyRowid = (
+      db
+        .prepare('SELECT rowid FROM articles WHERE id = ?')
+        .get('article-body-only') as { rowid: number }
+    ).rowid;
+    db.prepare('DELETE FROM article_search WHERE rowid = ?').run(bodyRowid);
+    db.prepare(
+      `INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+       VALUES (?, 'article-body-only', 'Weekly laboratory digest', 'Niels Bohr', '<p class="legacyattr">Overview</p>', '<div data-legacy="legacyattr">Plain body</div>', 'Science Feed', 'science')`,
+    ).run(bodyRowid);
+    expect(
+      searchArticles({ query: 'legacyattr', sort: 'relevance' }).articles,
+    ).toHaveLength(1);
+
+    db.prepare('DELETE FROM schema_migrations WHERE version = 11').run();
+    initializeDatabase();
+    expect(
+      searchArticles({ query: 'legacyattr', sort: 'relevance' }).articles,
+    ).toHaveLength(0);
+
+    // 2. Title-only match keeps summaryHighlight and contentHighlight null for Markdown fallback + escapes HTML in titleHighlight
+    const markdownSummary =
+      '**Bold** summary with `inline code` and no title keyword.';
+    db.prepare(
+      `INSERT INTO articles
+        (id, feed_id, url, title, author, summary, content, categories,
+         published_at, fetched_at, read, saved, hidden, thumbs_down,
+         heuristic_score, combined_score, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'article-title-markdown',
+      'feed-science',
+      'https://example.com/title-md',
+      'Photonic <chip> architecture',
+      'Emmy Noether',
+      markdownSummary,
+      'Detailed optical waveguide notes.',
+      '["hardware"]',
+      now - 250,
+      now - 250,
+      0,
+      0,
+      0,
+      0,
+      85,
+      85,
+      now,
+      now,
+    );
+
+    const titleOnly = searchArticles({ query: 'Photonic', sort: 'relevance' });
+    expect(titleOnly.articles.map((a) => a.id)).toEqual([
+      'article-title-markdown',
+    ]);
+    expect(titleOnly.articles[0]?.titleHighlight).toBe(
+      '<mark>Photonic</mark> &lt;chip&gt; architecture',
+    );
+    expect(titleOnly.articles[0]?.summaryHighlight).toBeNull();
+    expect(titleOnly.articles[0]?.contentHighlight).toBeNull();
+    expect(formatContent(titleOnly.articles[0]?.summary)).toContain(
+      '<strong>Bold</strong>',
+    );
+
+    // 3. Filter-only, empty, and standalone negation queries fall back to recent sort without throwing on sort=relevance
+    const filterOnly = searchArticles({
+      query: 'is:unread',
+      sort: 'relevance',
+      limit: 2,
+    });
+    expect(filterOnly.sort).toBe('recent');
+    expect(filterOnly.articles.map((a) => a.id)).toEqual([
+      'article-title-markdown',
+      'article-body-only',
+    ]);
+    expect(filterOnly.nextCursor).toBeTruthy();
+
+    const filterOnlyNextPage = searchArticles({
+      query: 'is:unread',
+      sort: 'relevance',
+      cursor: filterOnly.nextCursor!,
+    });
+    expect(filterOnlyNextPage.sort).toBe('recent');
+    expect(filterOnlyNextPage.articles.map((a) => a.id)).toEqual([
+      'article-quantum',
+    ]);
+
+    const emptyQueryRelevance = searchArticles({
+      query: '',
+      sort: 'relevance',
+    });
+    expect(emptyQueryRelevance.sort).toBe('recent');
+
+    const negationRelevance = searchArticles({
+      query: '-quantum',
+      sort: 'relevance',
+    });
+    expect(negationRelevance.sort).toBe('recent');
+
+    expect(() =>
+      searchArticles({ query: 'quantum', sort: 'invalid' as never }),
+    ).toThrow(SearchQueryError);
   });
 
   it('excludes paused feeds from default searches while allowing explicit feed or state filters', async () => {

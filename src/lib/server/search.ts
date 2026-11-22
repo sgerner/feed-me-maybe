@@ -174,6 +174,33 @@ function extractStandaloneNegation(ftsText: string): string | null {
   return phrases.length ? phrases.join(' OR ') : null;
 }
 
+export type NormalizedFtsSearchQuery = {
+  ftsQuery: string;
+  standaloneNegation: string | null;
+  emptyMatch: boolean;
+};
+
+export function normalizeFtsSearchQuery(
+  rawQuery: string,
+): NormalizedFtsSearchQuery | null {
+  const query = rawQuery.trim();
+  if (!query) return null;
+  if (query.length > MAX_SEARCH_LENGTH) {
+    throw new SearchQueryError(
+      `Search queries are limited to ${MAX_SEARCH_LENGTH} characters`,
+    );
+  }
+  const ftsQuery = makeFtsQuery(tokenize(query));
+  if (!ftsQuery) {
+    return { ftsQuery: '', standaloneNegation: null, emptyMatch: true };
+  }
+  return {
+    ftsQuery,
+    standaloneNegation: extractStandaloneNegation(ftsQuery),
+    emptyMatch: false,
+  };
+}
+
 export function parseSearchQuery(rawQuery: string): ParsedSearchQuery {
   const query = rawQuery.trim();
   if (query.length > MAX_SEARCH_LENGTH) {
@@ -371,6 +398,34 @@ const BASE_ARTICLE_COLUMNS = `
   f.open_mode AS feed_open_mode
 `;
 
+const HIGHLIGHT_START = '\uFDD0';
+const HIGHLIGHT_END = '\uFDD1';
+const HIGHLIGHT_PAIR_PATTERN = /\uFDD0([^\uFDD0\uFDD1]*)\uFDD1/g;
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatHighlight(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    !value.includes(HIGHLIGHT_START) ||
+    !value.includes(HIGHLIGHT_END)
+  ) {
+    return null;
+  }
+  const formatted = escapeHtml(value)
+    .replace(HIGHLIGHT_PAIR_PATTERN, '<mark>$1</mark>')
+    .replaceAll(HIGHLIGHT_START, '')
+    .replaceAll(HIGHLIGHT_END, '');
+  return formatted.includes('<mark>') ? formatted : null;
+}
+
 function toSearchArticle(row: Record<string, unknown>): SearchArticle {
   return {
     id: String(row.id),
@@ -401,12 +456,12 @@ function toSearchArticle(row: Record<string, unknown>): SearchArticle {
     feedCategory: (row.feed_category as string | null) ?? null,
     feedOpenMode: (row.feed_open_mode as string | null) ?? null,
     relevance: (row.relevance as number | null) ?? null,
-    titleHighlight: (row.title_highlight as string | null) ?? null,
-    authorHighlight: (row.author_highlight as string | null) ?? null,
-    summaryHighlight: (row.summary_highlight as string | null) ?? null,
-    contentHighlight: (row.content_highlight as string | null) ?? null,
-    feedTitleHighlight: (row.feed_title_highlight as string | null) ?? null,
-    categoryHighlight: (row.category_highlight as string | null) ?? null,
+    titleHighlight: formatHighlight(row.title_highlight),
+    authorHighlight: formatHighlight(row.author_highlight),
+    summaryHighlight: formatHighlight(row.summary_highlight),
+    contentHighlight: formatHighlight(row.content_highlight),
+    feedTitleHighlight: formatHighlight(row.feed_title_highlight),
+    categoryHighlight: formatHighlight(row.category_highlight),
   };
 }
 
@@ -421,13 +476,16 @@ export function searchArticles(
   const rawQuery = options.query || '';
   const parsed = parseSearchQuery(rawQuery);
   const parts = buildQueryParts(parsed);
-  const sort = options.sort || (parts.hasPositiveFts ? 'relevance' : 'recent');
-  if (sort !== 'recent' && sort !== 'relevance') {
+  if (
+    options.sort !== undefined &&
+    options.sort !== 'recent' &&
+    options.sort !== 'relevance'
+  ) {
     throw new SearchQueryError('sort must be recent or relevance');
   }
-  if (sort === 'relevance' && !parsed.text) {
-    throw new SearchQueryError('relevance sorting requires a text query');
-  }
+  const sort: SearchSort = parts.hasPositiveFts
+    ? options.sort || 'relevance'
+    : 'recent';
   const limit = limitValue(options.limit);
   const expression = dateExpression();
   const cursorParts: string[] = [];
@@ -481,12 +539,12 @@ export function searchArticles(
              LIMIT ?
            )
            SELECT ${BASE_ARTICLE_COLUMNS},
-                  highlight(article_search, 1, '<mark>', '</mark>') AS title_highlight,
-                  highlight(article_search, 2, '<mark>', '</mark>') AS author_highlight,
-                  highlight(article_search, 3, '<mark>', '</mark>') AS summary_highlight,
-                  snippet(article_search, 4, '<mark>', '</mark>', '…', 32) AS content_highlight,
-                  highlight(article_search, 5, '<mark>', '</mark>') AS feed_title_highlight,
-                  highlight(article_search, 6, '<mark>', '</mark>') AS category_highlight,
+                  highlight(article_search, 1, '${HIGHLIGHT_START}', '${HIGHLIGHT_END}') AS title_highlight,
+                  highlight(article_search, 2, '${HIGHLIGHT_START}', '${HIGHLIGHT_END}') AS author_highlight,
+                  snippet(article_search, 3, '${HIGHLIGHT_START}', '${HIGHLIGHT_END}', '…', 32) AS summary_highlight,
+                  snippet(article_search, 4, '${HIGHLIGHT_START}', '${HIGHLIGHT_END}', '…', 32) AS content_highlight,
+                  highlight(article_search, 5, '${HIGHLIGHT_START}', '${HIGHLIGHT_END}') AS feed_title_highlight,
+                  highlight(article_search, 6, '${HIGHLIGHT_START}', '${HIGHLIGHT_END}') AS category_highlight,
                   m.relevance AS relevance
            FROM matched m
            JOIN articles a ON a.rowid = m.article_rowid

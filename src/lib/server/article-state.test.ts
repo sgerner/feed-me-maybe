@@ -623,4 +623,502 @@ describe('article state foundation', () => {
     };
     expect(altRecovery.articles.map((a) => a.id)).toEqual(['state-b']);
   });
+
+  it('surfaces preference_model, manual, and rejected items on page one while excluding 50+ hide_on_open reads and cleared items', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applyArticleState, listRecoveryArticles, undoArticleState } =
+      await import('./article-state');
+    const { recordInteraction } = await import('./interactions');
+    const { clearFeedArticles } = await import('./feed-management');
+    const { GET: getStateRecovery } =
+      await import('../../routes/api/article-state/recovery/+server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('hide_on_open', 'true', ?)",
+    ).run(now);
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run(
+      'feed-cleared-only',
+      'https://example.com/cleared.xml',
+      'Cleared Feed',
+      now,
+      now,
+    );
+
+    const insertArticle = db.prepare(
+      `INSERT INTO articles
+        (id, feed_id, url, title, hidden, hidden_at, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    // Seed a preference_model false positive older than the hide_on_open flood
+    insertArticle.run(
+      'pref-false-positive',
+      'feed-state',
+      'https://example.com/pref-fp',
+      'Preference Model False Positive',
+      1,
+      now - 100_000,
+      now - 100_000,
+      now - 100_000,
+      now - 100_000,
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'i-pref-fp',
+      'pref-false-positive',
+      'hide',
+      now - 100_000,
+      '{"auto":true,"reason":"preference_model"}',
+    );
+
+    // Manual hide on state-a and reject on state-b
+    applyArticleState({ articleIds: ['state-a'], action: 'hide' });
+    applyArticleState({ articleIds: ['state-b'], action: 'reject' });
+
+    // Cleared feed article must be excluded from recovery items, counts, and feed options
+    insertArticle.run(
+      'cleared-story',
+      'feed-cleared-only',
+      'https://example.com/cleared-story',
+      'Cleared Story',
+      0,
+      null,
+      now - 50_000,
+      now - 50_000,
+      now - 50_000,
+    );
+    clearFeedArticles('feed-cleared-only');
+
+    // Flood with 55 recent hide_on_open reads
+    for (let i = 0; i < 55; i += 1) {
+      const id = `opened-${i.toString().padStart(2, '0')}`;
+      insertArticle.run(
+        id,
+        'feed-state',
+        `https://example.com/${id}`,
+        `Opened Story ${i}`,
+        0,
+        null,
+        now + i * 10,
+        now + i * 10,
+        now + i * 10,
+      );
+      recordInteraction(id, 'open');
+    }
+
+    const defaultRes = await getStateRecovery({
+      url: new URL('http://localhost/api/article-state/recovery?limit=50'),
+      locals: { sessionId: 'sess' },
+    } as never);
+    expect(defaultRes.status).toBe(200);
+    const defaultPayload = (await defaultRes.json()) as ReturnType<
+      typeof listRecoveryArticles
+    >;
+
+    expect(defaultPayload.articles.map((item) => item.id)).toEqual(
+      expect.arrayContaining(['pref-false-positive', 'state-a', 'state-b']),
+    );
+    expect(defaultPayload.articles).toHaveLength(3);
+    expect(defaultPayload.nextCursor).toBeNull();
+
+    const byId = new Map(
+      defaultPayload.articles.map((item) => [item.id, item.hideReason]),
+    );
+    expect(byId.get('pref-false-positive')).toBe('preference_model');
+    expect(byId.get('state-a')).toBe('manual_hide');
+    expect(byId.get('state-b')).toBe('rejected');
+
+    expect(defaultPayload.reasonCounts).toEqual({
+      actionable: 3,
+      all: 58,
+      preference_model: 1,
+      manual_hide: 1,
+      rejected: 1,
+      hide_on_open: 55,
+    });
+    expect(defaultPayload.feeds.map((f) => f.id)).toEqual(['feed-state']);
+
+    // Explicit hide over an earlier auto-hide classifies as manual_hide, and reverts on undo
+    const explicitOverAuto = applyArticleState({
+      articleIds: ['pref-false-positive'],
+      action: 'hide',
+    });
+    const afterExplicit = listRecoveryArticles({ reason: 'actionable' });
+    expect(
+      afterExplicit.articles.find((a) => a.id === 'pref-false-positive')
+        ?.hideReason,
+    ).toBe('manual_hide');
+    expect(afterExplicit.reasonCounts).toMatchObject({
+      preference_model: 0,
+      manual_hide: 2,
+    });
+
+    undoArticleState({ operationId: explicitOverAuto.operationId });
+    const afterUndoExplicit = listRecoveryArticles({ reason: 'actionable' });
+    expect(
+      afterUndoExplicit.articles.find((a) => a.id === 'pref-false-positive')
+        ?.hideReason,
+    ).toBe('preference_model');
+
+    // Open-hidden filter paginates all 55 hide_on_open articles cleanly
+    const openPage1 = listRecoveryArticles({
+      reason: 'hide_on_open',
+      limit: 50,
+    });
+    expect(openPage1.articles).toHaveLength(50);
+    expect(
+      openPage1.articles.every((item) => item.hideReason === 'hide_on_open'),
+    ).toBe(true);
+    expect(openPage1.nextCursor).toBeTruthy();
+
+    const openPage2 = listRecoveryArticles({
+      reason: 'hide_on_open',
+      limit: 50,
+      cursor: openPage1.nextCursor!,
+    });
+    expect(openPage2.articles).toHaveLength(5);
+    expect(openPage2.nextCursor).toBeNull();
+  });
+
+  it('filters recovery by paused feeds and normalized FTS5 search queries with cursor pagination', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { GET: getStateRecovery } =
+      await import('../../routes/api/article-state/recovery/+server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'feed-paused',
+      'https://example.com/paused.xml',
+      'Paused Science Journal',
+      'astrophysics',
+      0,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'feed-empty',
+      'https://example.com/empty.xml',
+      'Empty Feed',
+      'general',
+      1,
+      now,
+      now,
+    );
+
+    const insertDetailed = db.prepare(
+      `INSERT INTO articles
+        (id, feed_id, url, title, author, summary, content, categories,
+         hidden, hidden_at, rejected, thumbs_down, rejected_at,
+         fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    insertDetailed.run(
+      'rec-title',
+      'feed-paused',
+      'https://example.com/r1',
+      'Supernova neutrino detection',
+      'Dr. Vera Rubin',
+      'Brief overview.',
+      'Body text one.',
+      '["cosmos"]',
+      1,
+      now - 1000,
+      0,
+      0,
+      null,
+      now - 1000,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'i-rec-title',
+      'rec-title',
+      'hide',
+      now - 1000,
+      '{"auto":true,"reason":"preference_model"}',
+    );
+
+    insertDetailed.run(
+      'rec-author-content',
+      'feed-paused',
+      'https://example.com/r2',
+      'Telescope calibration report',
+      'Subrahmanyan Chandrasekhar',
+      ' Summary mentions magnetosphere.',
+      'Deep content discussing Node.js telemetry and neutrino bursts.',
+      '["instrumentation"]',
+      1,
+      now - 2000,
+      1,
+      1,
+      now - 2000,
+      now - 2000,
+      now,
+      now,
+    );
+
+    insertDetailed.run(
+      'rec-open',
+      'feed-state',
+      'https://example.com/r3',
+      'Routine opened neutrino note',
+      'Staff Writer',
+      'Summary text.',
+      'Content text.',
+      '["daily"]',
+      1,
+      now - 3000,
+      0,
+      0,
+      null,
+      now - 3000,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'i-rec-open',
+      'rec-open',
+      'hide',
+      now - 3000,
+      '{"auto":true,"reason":"hide_on_open"}',
+    );
+
+    // Paused feed with recovery items appears in feeds list; empty feed does not
+    const baseRes = await getStateRecovery({
+      url: new URL('http://localhost/api/article-state/recovery'),
+      locals: { sessionId: 'sess' },
+    } as never);
+    const basePayload = (await baseRes.json()) as {
+      feeds: Array<{
+        id: string;
+        title: string;
+        enabled: boolean;
+        count: number;
+      }>;
+    };
+    const pausedOption = basePayload.feeds.find((f) => f.id === 'feed-paused');
+    expect(pausedOption).toEqual({
+      id: 'feed-paused',
+      title: 'Paused Science Journal',
+      enabled: false,
+      count: 2,
+    });
+    expect(
+      basePayload.feeds.find((f) => f.id === 'feed-empty'),
+    ).toBeUndefined();
+
+    // Search across title/content with cursor pagination and reason=all
+    const searchPage1Res = await getStateRecovery({
+      url: new URL(
+        'http://localhost/api/article-state/recovery?reason=all&q=neutrino&limit=1',
+      ),
+      locals: { sessionId: 'sess' },
+    } as never);
+    const searchPage1 = (await searchPage1Res.json()) as {
+      articles: Array<{ id: string }>;
+      nextCursor: string | null;
+      reasonCounts: Record<string, number>;
+    };
+    expect(searchPage1.articles.map((a) => a.id)).toEqual(['rec-title']);
+    expect(searchPage1.reasonCounts).toEqual({
+      actionable: 2,
+      all: 3,
+      preference_model: 1,
+      manual_hide: 0,
+      rejected: 1,
+      hide_on_open: 1,
+    });
+    expect(searchPage1.nextCursor).toBeTruthy();
+
+    const searchPage2Res = await getStateRecovery({
+      url: new URL(
+        `http://localhost/api/article-state/recovery?reason=all&q=neutrino&limit=5&cursor=${encodeURIComponent(searchPage1.nextCursor!)}`,
+      ),
+      locals: { sessionId: 'sess' },
+    } as never);
+    const searchPage2 = (await searchPage2Res.json()) as {
+      articles: Array<{ id: string }>;
+      nextCursor: string | null;
+    };
+    expect(searchPage2.articles.map((a) => a.id)).toEqual([
+      'rec-author-content',
+      'rec-open',
+    ]);
+    expect(searchPage2.nextCursor).toBeNull();
+
+    // Search matches author, summary, feed_title, and category
+    for (const [query, expectedIds] of [
+      ['Chandrasekhar', ['rec-author-content']],
+      ['magnetosphere', ['rec-author-content']],
+      ['"Paused Science Journal"', ['rec-title', 'rec-author-content']],
+      ['astrophysics', ['rec-title', 'rec-author-content']],
+      ['instrumentation', ['rec-author-content']],
+      ['Node.js -calibration', []],
+      ['-calibration', ['rec-title']],
+      ['???', []],
+    ] as const) {
+      const res = await getStateRecovery({
+        url: new URL(
+          `http://localhost/api/article-state/recovery?feedId=feed-paused&q=${encodeURIComponent(query)}`,
+        ),
+        locals: { sessionId: 'sess' },
+      } as never);
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { articles: Array<{ id: string }> };
+      expect(data.articles.map((a) => a.id)).toEqual(expectedIds);
+    }
+
+    // Invalid reason returns 400
+    const badReason = await getStateRecovery({
+      url: new URL('http://localhost/api/article-state/recovery?reason=bogus'),
+      locals: { sessionId: 'sess' },
+    } as never);
+    expect(badReason.status).toBe(400);
+  });
+
+  it('atomically restores 500 articles in one batch and reverts the entire batch on undo', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { listRecoveryArticles } = await import('./article-state');
+    const { POST: postArticleState } =
+      await import('../../routes/api/article-state/+server');
+    const { POST: postUndoState } =
+      await import('../../routes/api/article-state/undo/+server');
+    const db = getDb();
+    const now = Date.now();
+
+    const insertArticle = db.prepare(
+      `INSERT INTO articles
+        (id, feed_id, url, title, hidden, hidden_at, rejected, thumbs_down, rejected_at,
+         fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertInteraction = db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    );
+
+    const batchIds: string[] = [];
+    db.transaction(() => {
+      for (let i = 0; i < 500; i += 1) {
+        const id = `bulk-${i.toString().padStart(3, '0')}`;
+        batchIds.push(id);
+        const ts = now - i * 10;
+        const bucket = i % 4;
+        const isRejected = bucket === 2 ? 1 : 0;
+        insertArticle.run(
+          id,
+          'feed-state',
+          `https://example.com/${id}`,
+          `Bulk Recovery ${i}`,
+          1,
+          ts,
+          isRejected,
+          isRejected,
+          isRejected ? ts : null,
+          ts,
+          now,
+          now,
+        );
+        if (bucket === 0) {
+          insertInteraction.run(
+            `i-${id}`,
+            id,
+            'hide',
+            ts,
+            '{"auto":true,"reason":"preference_model"}',
+          );
+        } else if (bucket === 1) {
+          insertInteraction.run(`i-${id}`, id, 'hide', ts, '{}');
+        } else if (bucket === 2) {
+          insertInteraction.run(`i-${id}`, id, 'thumbs_down', ts, '{}');
+        } else {
+          insertInteraction.run(
+            `i-${id}`,
+            id,
+            'hide',
+            ts,
+            '{"auto":true,"reason":"hide_on_open"}',
+          );
+        }
+      }
+    })();
+
+    const beforeCounts = listRecoveryArticles({ reason: 'all' }).reasonCounts;
+    expect(beforeCounts).toEqual({
+      actionable: 375,
+      all: 500,
+      preference_model: 125,
+      manual_hide: 125,
+      rejected: 125,
+      hide_on_open: 125,
+    });
+
+    // Rejects > 500 articles
+    const tooManyRes = await postArticleState({
+      request: new Request('http://localhost/api/article-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          articleIds: [...batchIds, 'extra-501'],
+          action: 'restore',
+        }),
+      }),
+      locals: { sessionId: 'sess' },
+    } as never);
+    expect(tooManyRes.status).toBe(400);
+
+    // Restores 500 articles atomically
+    const restoreRes = await postArticleState({
+      request: new Request('http://localhost/api/article-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          articleIds: batchIds,
+          action: 'restore',
+        }),
+      }),
+      locals: { sessionId: 'sess' },
+    } as never);
+    expect(restoreRes.status).toBe(200);
+    const restoreData = (await restoreRes.json()) as {
+      operationId: string;
+      changes: Array<{ changed: boolean }>;
+    };
+    expect(restoreData.changes).toHaveLength(500);
+    expect(listRecoveryArticles({ reason: 'all' }).reasonCounts.all).toBe(0);
+
+    // Single undo reverts all 500 articles and preserves their hideReasons
+    const undoRes = await postUndoState({
+      request: new Request('http://localhost/api/article-state/undo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operationId: restoreData.operationId }),
+      }),
+      locals: { sessionId: 'sess' },
+    } as never);
+    expect(undoRes.status).toBe(200);
+    const undoData = (await undoRes.json()) as {
+      restoredArticleIds: string[];
+      conflicts: string[];
+    };
+    expect(undoData.restoredArticleIds).toHaveLength(500);
+    expect(undoData.conflicts).toEqual([]);
+    expect(listRecoveryArticles({ reason: 'all' }).reasonCounts).toEqual(
+      beforeCounts,
+    );
+  });
 });
