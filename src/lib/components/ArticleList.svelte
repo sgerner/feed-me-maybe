@@ -215,8 +215,6 @@
     emptyCtaLabel ?? (totalFeedsCount === 0 ? 'Add feed' : 'Manage feeds'),
   );
 
-  const LIVE_UPDATES_PAUSED_KEY = 'feed-me-maybe:live-updates-paused';
-
   function offlineScope(): string {
     return String(pageStore.data.userId || 'admin');
   }
@@ -393,7 +391,6 @@
   let hasMore = $state(false);
   let pendingLiveArticleIds = new SvelteSet<string>();
   let queuedLiveArticles = $state<Article[]>([]);
-  let liveUpdatesPaused = $state(false);
   let liveArticleFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let fetchingLiveArticles = false;
   let liveArticleRequestController: AbortController | null = null;
@@ -1107,7 +1104,6 @@
   function scheduleLiveArticleFetch(delay = 300): void {
     if (
       !liveUpdates ||
-      liveUpdatesPaused ||
       liveUpdatesDisposed ||
       liveArticleFetchTimer ||
       fetchingLiveArticles ||
@@ -1119,21 +1115,6 @@
       liveArticleFetchTimer = null;
       void fetchLiveArticles();
     }, delay);
-  }
-
-  function toggleLiveUpdatesPaused(): void {
-    liveUpdatesPaused = !liveUpdatesPaused;
-    try {
-      localStorage.setItem(
-        LIVE_UPDATES_PAUSED_KEY,
-        liveUpdatesPaused ? 'true' : 'false',
-      );
-    } catch {
-      // Storage may be unavailable in private modes.
-    }
-    if (!liveUpdatesPaused && pendingLiveArticleIds.size > 0) {
-      scheduleLiveArticleFetch(50);
-    }
   }
 
   function showQueuedLiveArticles(): void {
@@ -1171,7 +1152,6 @@
   async function fetchLiveArticles(): Promise<void> {
     if (
       !liveUpdates ||
-      liveUpdatesPaused ||
       liveUpdatesDisposed ||
       fetchingLiveArticles ||
       pendingLiveArticleIds.size === 0
@@ -1228,11 +1208,7 @@
       if (liveArticleRequestController === controller) {
         liveArticleRequestController = null;
       }
-      if (
-        !liveUpdatesDisposed &&
-        !liveUpdatesPaused &&
-        pendingLiveArticleIds.size > 0
-      ) {
+      if (!liveUpdatesDisposed && pendingLiveArticleIds.size > 0) {
         scheduleLiveArticleFetch(nextBatchDelay);
       }
     }
@@ -1267,12 +1243,6 @@
 
   onMount(() => {
     liveUpdatesDisposed = false;
-    try {
-      liveUpdatesPaused =
-        localStorage.getItem(LIVE_UPDATES_PAUSED_KEY) === 'true';
-    } catch {
-      liveUpdatesPaused = false;
-    }
     if (liveUpdates) {
       window.addEventListener('feed-me-maybe:new-articles', handleNewArticles);
     }
@@ -1502,8 +1472,13 @@
   const SWIPE_LONG_LEFT_THRESHOLD = 140;
 
   function handlePointerDown(e: PointerEvent, articleId: string) {
-    if (!e.isPrimary) return;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    if (
+      !e.isPrimary ||
+      (e.target instanceof Element &&
+        e.target.closest('button, summary, [data-article-overflow]'))
+    ) {
+      return;
+    }
     touchStartX = e.clientX;
     touchStartY = e.clientY;
     activeSwipeId = articleId;
@@ -1526,6 +1501,11 @@
 
       if (Math.abs(dx) > Math.abs(dy) * SWIPE_DIRECTION_RATIO) {
         swipeDirection = 'horizontal';
+        try {
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore if pointer already ended.
+        }
       } else {
         swipeDirection = 'vertical';
         activeSwipeId = null;
@@ -1592,30 +1572,16 @@
   }
 </script>
 
-{#if liveUpdates}
-  <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-    <div class="flex flex-wrap items-center gap-2">
-      {#if queuedLiveArticles.length > 0}
-        <button
-          type="button"
-          class="btn preset-filled-primary-500 px-3 py-1.5 text-xs font-semibold"
-          onclick={showQueuedLiveArticles}
-        >
-          Show {queuedLiveArticles.length} new {queuedLiveArticles.length === 1
-            ? 'article'
-            : 'articles'}
-        </button>
-      {/if}
-    </div>
+{#if liveUpdates && queuedLiveArticles.length > 0}
+  <div class="mb-2 flex justify-center md:mb-4">
     <button
       type="button"
-      class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {liveUpdatesPaused
-        ? 'border-warning-400/50 bg-warning-500/15 text-warning-200'
-        : 'border-white/15 bg-white/5 text-surface-200 hover:border-white/30'}"
-      aria-pressed={liveUpdatesPaused}
-      onclick={toggleLiveUpdatesPaused}
+      class="btn preset-filled-primary-500 px-3 py-1.5 text-xs font-semibold"
+      onclick={showQueuedLiveArticles}
     >
-      {liveUpdatesPaused ? 'Resume live updates' : 'Pause live updates'}
+      Show {queuedLiveArticles.length} new {queuedLiveArticles.length === 1
+        ? 'article'
+        : 'articles'}
     </button>
   </div>
 {/if}
@@ -1700,7 +1666,7 @@
     {/if}
   </div>
 {:else}
-  <div class="grid grid-cols-1 gap-3 md:gap-4 xl:grid-cols-2">
+  <div class="article-feed-grid">
     {#each articles as article, i (article.id)}
       {@const isPending = Boolean(pendingArticleIds[article.id])}
       {@const swipeOffset =
@@ -1710,7 +1676,7 @@
       {@const formattedSummary =
         highlightedSummary ||
         (article.summary ? getFormattedSummary(article) : '')}
-      <div class="relative rounded-sm">
+      <div class="relative overflow-x-clip md:rounded-sm">
         <!-- Swipe Action Indicators -->
         {#if swipeOffset !== 0}
           <div
@@ -1769,79 +1735,70 @@
           </div>
         {/if}
 
-        <div
+        <article
           id="article-{article.id}"
           use:trackArticleVisibility={article.id}
-          class="glass-card glass-card-hover article-card group relative flex min-h-[180px] flex-col overflow-visible p-0 md:min-h-[280px]"
+          class="glass-card glass-card-hover article-card group relative flex min-h-[172px] flex-col overflow-visible p-0 md:min-h-[260px]"
           style="touch-action: pan-y; --swipe-offset: {swipeOffset}px;"
           class:article-swiping={activeSwipeId === article.id}
+          onpointerdown={(e) => handlePointerDown(e, article.id)}
+          onpointermove={(e) => handlePointerMove(e, article.id)}
+          onpointerup={(e) => handlePointerUp(e, article.id)}
+          onpointercancel={(e) => handlePointerCancel(e, article.id)}
         >
-          <a
-            href={articleHref(article)}
-            target={articleMode(article) === 'tab' ? '_blank' : undefined}
-            rel={articleMode(article) === 'tab'
-              ? 'noopener noreferrer'
-              : undefined}
-            class="article-card-link relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-sm no-underline"
-            onfocus={() => (focusedIndex = i)}
-            aria-labelledby="article-title-{article.id}"
-            style="touch-action: pan-y;"
-            onkeydown={(event) => {
-              if (
-                event.key !== ' ' ||
-                !canTriggerSingleKeyShortcut(event, {
-                  enabled: singleKeyShortcutsEnabled,
-                })
-              ) {
-                return;
-              }
-              event.preventDefault();
-              void openArticle(article);
-            }}
-            onpointerdown={(e) => handlePointerDown(e, article.id)}
-            onpointermove={(e) => handlePointerMove(e, article.id)}
-            onpointerup={(e) => handlePointerUp(e, article.id)}
-            onpointercancel={(e) => handlePointerCancel(e, article.id)}
-            onauxclick={(e) => {
-              if (e.button === 1 && articleMode(article) !== 'tab') {
-                writeReaderQueue();
-              }
-            }}
-            onclick={(e) => handleArticleLinkClick(e, article)}
-          >
-            {#if article.image_url}
-              <div class="absolute inset-0 z-0 bg-surface-950">
-                <img
-                  src={article.image_url}
-                  alt=""
-                  class="article-card-image h-full w-full object-cover opacity-80"
-                  loading={i < 2 ? 'eager' : 'lazy'}
-                  decoding="async"
-                  fetchpriority={i < 2 ? 'high' : 'low'}
-                />
-                <div
-                  class="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/40 to-transparent opacity-90"
-                ></div>
-              </div>
-            {/if}
+          {#if article.image_url}
+            <div
+              class="article-card-media pointer-events-none absolute inset-0 z-0 overflow-hidden bg-surface-950 md:rounded-[2px]"
+            >
+              <img
+                src={article.image_url}
+                alt=""
+                class="article-card-image h-full w-full object-cover opacity-85"
+                loading={i < 2 ? 'eager' : 'lazy'}
+                decoding="async"
+                fetchpriority={i < 2 ? 'high' : 'low'}
+              />
+              <div class="article-card-scrim absolute inset-0"></div>
+            </div>
+          {/if}
 
-            <div class="relative z-10 flex flex-1 flex-col p-3 md:p-6">
-              <div
-                class="mb-3 flex flex-wrap items-center gap-2 text-xs"
-                style="color: var(--color-surface-300);"
+          <div
+            class="relative z-10 flex flex-1 flex-col px-4 pt-3.5 pb-2 md:p-5 md:pb-3.5"
+          >
+            <div
+              class="mb-2 flex flex-wrap items-center gap-2 text-xs"
+              style="color: var(--color-surface-200); text-shadow: 0 1px 3px rgb(0 0 0 / 75%);"
+            >
+              <span
+                class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
+                style="background: var(--color-primary-500); border-radius: 2px;"
               >
-                <span
-                  class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
-                  style="background: var(--color-primary-500); border-radius: 2px;"
+                {#if article.feed_title_highlight}
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                  {@html sanitizeHtml(article.feed_title_highlight)}
+                {:else}
+                  {article.feed_title || 'Unknown'}
+                {/if}
+              </span>
+              <span class="flex items-center gap-1">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  ><circle cx="12" cy="12" r="10" /><polyline
+                    points="12 6 12 12 16 14"
+                  /></svg
                 >
-                  {#if article.feed_title_highlight}
-                    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                    {@html sanitizeHtml(article.feed_title_highlight)}
-                  {:else}
-                    {article.feed_title || 'Unknown'}
-                  {/if}
-                </span>
-                <span class="flex items-center gap-1">
+                {timeAgo(articleDate)}
+              </span>
+              {#if !isBoostReview && article.read}
+                <span
+                  class="inline-flex items-center gap-1 text-[11px] font-medium text-surface-300"
+                >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
                     width="12"
@@ -1850,18 +1807,46 @@
                     fill="none"
                     stroke="currentColor"
                     stroke-width="2"
-                    ><circle cx="12" cy="12" r="10" /><polyline
-                      points="12 6 12 12 16 14"
-                    /></svg
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
                   >
-                  {timeAgo(articleDate)}
+                  Read
                 </span>
-              </div>
+              {/if}
+            </div>
 
-              <h2
-                id="article-title-{article.id}"
-                class="article-card-title text-xl font-bold leading-tight transition-colors"
-                style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
+            <h2
+              id="article-title-{article.id}"
+              class="text-lg font-bold leading-snug md:text-xl"
+              style="color: var(--color-surface-50); text-shadow: 0 1px 4px rgb(0 0 0 / 65%);"
+            >
+              <a
+                href={articleHref(article)}
+                target={articleMode(article) === 'tab' ? '_blank' : undefined}
+                rel={articleMode(article) === 'tab'
+                  ? 'noopener noreferrer'
+                  : undefined}
+                class="article-card-link article-card-title no-underline transition-colors focus-visible:outline-none after:absolute after:inset-0 after:z-10"
+                onfocus={() => (focusedIndex = i)}
+                onkeydown={(event) => {
+                  if (
+                    event.key !== ' ' ||
+                    !canTriggerSingleKeyShortcut(event, {
+                      enabled: singleKeyShortcutsEnabled,
+                    })
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  void openArticle(article);
+                }}
+                onauxclick={(e) => {
+                  if (e.button === 1 && articleMode(article) !== 'tab') {
+                    writeReaderQueue();
+                  }
+                }}
+                onclick={(e) => handleArticleLinkClick(e, article)}
               >
                 {#if article.title_highlight}
                   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -1869,64 +1854,27 @@
                 {:else}
                   {article.title}
                 {/if}
-              </h2>
+              </a>
+            </h2>
 
-              {#if formattedSummary}
-                <div
-                  class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
-                  style="color: var(--color-surface-300);"
-                >
-                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                  {@html formattedSummary}
-                </div>
-              {/if}
-            </div>
-          </a>
+            {#if formattedSummary}
+              <div
+                class="mt-1.5 line-clamp-2 text-sm leading-snug prose prose-sm max-w-none"
+                style="color: var(--color-surface-200); text-shadow: 0 1px 3px rgb(0 0 0 / 65%);"
+              >
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                {@html formattedSummary}
+              </div>
+            {/if}
 
-          <div
-            class="relative z-20 flex flex-wrap items-center gap-1.5 p-3 pt-0 md:px-6 md:pb-6"
-          >
-            <div class="w-full">
-              <div class="flex flex-wrap items-center gap-1.5">
-                {#if !isBoostReview}
-                  <button
-                    type="button"
-                    class="action-btn min-h-11 !inline-flex !bg-surface-900/50 lg:backdrop-blur-sm"
-                    disabled={isPending}
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onpointerup={(e) => e.stopPropagation()}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      interact(article.id, 'hide');
-                    }}
-                    aria-label="Hide {article.title}"
-                    title="Hide article (h)"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                      ><path d="M3 6h18" /><path
-                        d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
-                      /><path d="M8 6V4a2 2 0 0 1 2-2h4c1 0 2 1 2 2v2" /></svg
-                    >
-                    Hide
-                  </button>
-                {/if}
+            <div
+              class="pointer-events-none relative z-20 mt-auto flex items-center justify-end gap-0.5 pt-2 md:gap-1 md:pt-4"
+            >
+              {#if isBoostReview}
                 <button
                   type="button"
-                  class="action-btn min-h-11 {isBoostReview
-                    ? ''
-                    : '!inline-flex'} !bg-surface-900/50 lg:backdrop-blur-sm {article.saved
-                    ? '!text-secondary-400 !bg-secondary-500/10 !border-secondary-500/30'
-                    : ''}"
+                  class="card-action-btn pointer-events-auto mr-auto"
+                  class:card-action-btn-saved={Boolean(article.saved)}
                   disabled={isPending}
                   aria-pressed={Boolean(article.saved)}
                   aria-label="{savedOnly || article.saved
@@ -1946,10 +1894,10 @@
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    width="13"
-                    height="13"
+                    width="15"
+                    height="15"
                     viewBox="0 0 24 24"
-                    fill="none"
+                    fill={article.saved ? 'currentColor' : 'none'}
                     stroke="currentColor"
                     stroke-width="2"
                     aria-hidden="true"
@@ -1957,295 +1905,297 @@
                       d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
                     /></svg
                   >
-                  {savedOnly || article.saved ? 'Unsave' : 'Save'}
+                  <span>{savedOnly || article.saved ? 'Unsave' : 'Save'}</span>
                 </button>
-                {#if !isBoostReview && article.read}
-                  <span
-                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-xs text-surface-300"
+                <button
+                  type="button"
+                  class="pointer-events-auto ml-auto inline-flex items-center gap-2 rounded-sm border px-4 py-2 text-sm font-semibold text-white transition hover:border-primary-400/60 hover:bg-primary-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/60 {article.thumbs_up
+                    ? 'border-primary-500/40 bg-primary-500/20 shadow-[0_0_0_1px_rgba(59,130,246,0.2)]'
+                    : 'border-primary-500/20 bg-primary-500/10'}"
+                  disabled={isPending}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'boost');
+                  }}
+                  aria-pressed={Boolean(article.thumbs_up)}
+                  aria-label="Keep and boost {article.title}"
+                  title="Restore to feeds and strongly boost relevance"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill={article.thumbs_up ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z"
+                    />
+                  </svg>
+                  Keep &amp; boost
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="card-action-btn card-action-desktop pointer-events-auto"
+                  disabled={isPending}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'hide');
+                  }}
+                  aria-label="Hide {article.title}"
+                  title="Hide article (h)"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                    ><path d="M3 6h18" /><path
+                      d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                    /><path d="M8 6V4a2 2 0 0 1 2-2h4c1 0 2 1 2 2v2" /></svg
+                  >
+                  <span>Hide</span>
+                </button>
+                <button
+                  type="button"
+                  class="card-action-btn pointer-events-auto md:mr-auto"
+                  class:card-action-btn-saved={Boolean(article.saved)}
+                  disabled={isPending}
+                  aria-pressed={Boolean(article.saved)}
+                  aria-label="{savedOnly || article.saved
+                    ? 'Unsave'
+                    : 'Save'} {article.title}"
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'save');
+                  }}
+                  title={savedOnly
+                    ? 'Remove from Saved (s)'
+                    : article.saved
+                      ? 'Remove from Saved (s)'
+                      : 'Save (s)'}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill={article.saved ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                    ><path
+                      d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
+                    /></svg
+                  >
+                  <span class="hidden md:inline"
+                    >{savedOnly || article.saved ? 'Unsave' : 'Save'}</span
+                  >
+                </button>
+                <button
+                  type="button"
+                  class="card-action-btn pointer-events-auto"
+                  class:card-action-btn-liked={Boolean(article.thumbs_up)}
+                  disabled={isPending}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'thumbs_up');
+                  }}
+                  aria-pressed={Boolean(article.thumbs_up)}
+                  aria-label="Like {article.title}"
+                  title="Like article"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill={article.thumbs_up ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path d="M7 10v12" />
+                    <path
+                      d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="card-action-btn pointer-events-auto"
+                  class:card-action-btn-disliked={Boolean(article.thumbs_down)}
+                  disabled={isPending}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onpointerup={(e) => e.stopPropagation()}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    interact(article.id, 'thumbs_down');
+                  }}
+                  aria-pressed={Boolean(article.thumbs_down)}
+                  aria-label="Dislike and hide {article.title}"
+                  title="Dislike and hide article"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill={article.thumbs_down ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path d="M17 14V2" />
+                    <path
+                      d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
+                    />
+                  </svg>
+                </button>
+                <details
+                  class="pointer-events-auto relative"
+                  data-article-overflow
+                >
+                  <summary
+                    class="card-action-btn list-none"
+                    aria-label="More actions for {article.title}"
+                    title="More actions"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
-                      width="14"
-                      height="14"
+                      width="16"
+                      height="16"
                       viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
-                    >
-                    Read
-                  </span>
-                {/if}
-                {#if isBoostReview}
-                  <button
-                    type="button"
-                    class="ml-auto inline-flex items-center gap-2 rounded-sm border px-4 py-2 text-sm font-semibold text-white transition hover:border-primary-400/60 hover:bg-primary-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/60 {article.thumbs_up
-                      ? 'border-primary-500/40 bg-primary-500/20 shadow-[0_0_0_1px_rgba(59,130,246,0.2)]'
-                      : 'border-primary-500/20 bg-primary-500/10'}"
-                    disabled={isPending}
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onpointerup={(e) => e.stopPropagation()}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      interact(article.id, 'boost');
-                    }}
-                    aria-pressed={Boolean(article.thumbs_up)}
-                    aria-label="Keep and boost {article.title}"
-                    title="Restore to feeds and strongly boost relevance"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill={article.thumbs_up ? 'currentColor' : 'none'}
-                      stroke="currentColor"
-                      stroke-width="2"
+                      fill="currentColor"
                       aria-hidden="true"
                     >
-                      <path
-                        d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z"
-                      />
+                      <circle cx="5" cy="12" r="1.5" />
+                      <circle cx="12" cy="12" r="1.5" />
+                      <circle cx="19" cy="12" r="1.5" />
                     </svg>
-                    Keep &amp; boost
-                  </button>
-                {:else}
-                  <details class="relative ml-auto" data-article-overflow>
-                    <summary
-                      class="action-btn flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center !bg-surface-900/50 lg:backdrop-blur-sm"
-                      aria-label="More actions for {article.title}"
-                      title="More actions"
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="18"
-                        height="18"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <circle cx="5" cy="12" r="1.5" />
-                        <circle cx="12" cy="12" r="1.5" />
-                        <circle cx="19" cy="12" r="1.5" />
-                      </svg>
-                    </summary>
-                    <div
-                      class="absolute bottom-full right-0 z-40 mb-2 flex min-w-52 flex-col gap-1 rounded-sm border p-2 shadow-2xl backdrop-blur-xl"
-                      role="group"
-                      aria-label="Article actions"
-                      style="background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
-                    >
-                      <button
-                        type="button"
-                        class="article-menu-item"
-                        aria-label="Share {article.title}"
-                        onclick={(e) => {
-                          (e.currentTarget as HTMLElement)
-                            .closest('details')
-                            ?.removeAttribute('open');
-                          void shareArticle(article);
-                        }}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          aria-hidden="true"
-                          ><circle cx="18" cy="5" r="3" /><circle
-                            cx="6"
-                            cy="12"
-                            r="3"
-                          /><circle cx="18" cy="19" r="3" /><path
-                            d="m8.6 13.5 6.8 4"
-                          /><path d="m15.4 6.5-6.8 4" /></svg
-                        >
-                        Share
-                      </button>
-                      <button
-                        type="button"
-                        class="article-menu-item"
-                        aria-label={article.read
-                          ? `Mark ${article.title} as unread`
-                          : `Mark ${article.title} as read`}
-                        title={article.read
-                          ? 'Mark as unread (m)'
-                          : 'Mark as read (m)'}
-                        disabled={isPending}
-                        onclick={(e) => {
-                          (e.currentTarget as HTMLElement)
-                            .closest('details')
-                            ?.removeAttribute('open');
-                          interact(
-                            article.id,
-                            article.read ? 'unread' : 'read',
-                          );
-                        }}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
-                        >
-                        {article.read ? 'Mark as unread' : 'Mark as read'}
-                      </button>
-                      <div
-                        class="article-menu-reaction-divider my-1 h-px bg-surface-100/10"
-                        aria-hidden="true"
-                      ></div>
-                      <button
-                        type="button"
-                        class="article-menu-item article-menu-reaction {article.thumbs_up
-                          ? 'text-primary-300'
-                          : ''}"
-                        aria-label="Like {article.title}"
-                        disabled={isPending}
-                        aria-pressed={Boolean(article.thumbs_up)}
-                        onclick={(e) => {
-                          (e.currentTarget as HTMLElement)
-                            .closest('details')
-                            ?.removeAttribute('open');
-                          interact(article.id, 'thumbs_up');
-                        }}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill={article.thumbs_up ? 'currentColor' : 'none'}
-                          stroke="currentColor"
-                          stroke-width="2"
-                          aria-hidden="true"
-                        >
-                          <path d="M7 10v12" />
-                          <path
-                            d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
-                          />
-                        </svg>
-                        Like
-                      </button>
-                      <button
-                        type="button"
-                        class="article-menu-item article-menu-reaction {article.thumbs_down
-                          ? 'text-error-300'
-                          : ''}"
-                        aria-label="Dislike and hide {article.title}"
-                        disabled={isPending}
-                        aria-pressed={Boolean(article.thumbs_down)}
-                        onclick={(e) => {
-                          (e.currentTarget as HTMLElement)
-                            .closest('details')
-                            ?.removeAttribute('open');
-                          interact(article.id, 'thumbs_down');
-                        }}
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill={article.thumbs_down ? 'currentColor' : 'none'}
-                          stroke="currentColor"
-                          stroke-width="2"
-                          aria-hidden="true"
-                        >
-                          <path d="M17 14V2" />
-                          <path
-                            d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
-                          />
-                        </svg>
-                        Dislike and hide
-                      </button>
-                    </div>
-                  </details>
+                  </summary>
                   <div
-                    class="article-reactions ml-0 flex-wrap items-center gap-1 sm:ml-2"
+                    class="absolute bottom-full right-0 z-40 mb-1.5 flex min-w-48 flex-col gap-1 rounded-sm border p-1.5 shadow-2xl backdrop-blur-xl"
+                    role="group"
+                    aria-label="Article actions"
+                    style="background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
                   >
                     <button
                       type="button"
-                      class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_up
-                        ? '!text-primary-400 !bg-primary-500/10 !border-primary-500/30'
-                        : ''}"
+                      class="article-menu-item md:hidden"
+                      aria-label="Hide {article.title}"
                       disabled={isPending}
-                      onpointerdown={(e) => e.stopPropagation()}
-                      onpointerup={(e) => e.stopPropagation()}
                       onclick={(e) => {
-                        e.stopPropagation();
-                        interact(article.id, 'thumbs_up');
+                        (e.currentTarget as HTMLElement)
+                          .closest('details')
+                          ?.removeAttribute('open');
+                        interact(article.id, 'hide');
                       }}
-                      aria-pressed={Boolean(article.thumbs_up)}
-                      aria-label="Like {article.title}"
-                      title="Like article"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        width="13"
-                        height="13"
+                        width="16"
+                        height="16"
                         viewBox="0 0 24 24"
-                        fill={article.thumbs_up ? 'currentColor' : 'none'}
+                        fill="none"
                         stroke="currentColor"
                         stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
                         aria-hidden="true"
+                        ><path d="M3 6h18" /><path
+                          d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                        /><path d="M8 6V4a2 2 0 0 1 2-2h4c1 0 2 1 2 2v2" /></svg
                       >
-                        <path d="M7 10v12" />
-                        <path
-                          d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"
-                        />
-                      </svg>
+                      Hide
                     </button>
                     <button
                       type="button"
-                      class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_down
-                        ? '!text-error-400 !bg-error-500/10 !border-error-500/30'
-                        : ''}"
-                      disabled={isPending}
-                      onpointerdown={(e) => e.stopPropagation()}
-                      onpointerup={(e) => e.stopPropagation()}
+                      class="article-menu-item"
+                      aria-label="Share {article.title}"
                       onclick={(e) => {
-                        e.stopPropagation();
-                        interact(article.id, 'thumbs_down');
+                        (e.currentTarget as HTMLElement)
+                          .closest('details')
+                          ?.removeAttribute('open');
+                        void shareArticle(article);
                       }}
-                      aria-pressed={Boolean(article.thumbs_down)}
-                      aria-label="Dislike and hide {article.title}"
-                      title="Dislike and hide article"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
-                        width="13"
-                        height="13"
+                        width="16"
+                        height="16"
                         viewBox="0 0 24 24"
-                        fill={article.thumbs_down ? 'currentColor' : 'none'}
+                        fill="none"
                         stroke="currentColor"
                         stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
                         aria-hidden="true"
+                        ><circle cx="18" cy="5" r="3" /><circle
+                          cx="6"
+                          cy="12"
+                          r="3"
+                        /><circle cx="18" cy="19" r="3" /><path
+                          d="m8.6 13.5 6.8 4"
+                        /><path d="m15.4 6.5-6.8 4" /></svg
                       >
-                        <path d="M17 14V2" />
-                        <path
-                          d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"
-                        />
-                      </svg>
+                      Share
+                    </button>
+                    <button
+                      type="button"
+                      class="article-menu-item"
+                      aria-label={article.read
+                        ? `Mark ${article.title} as unread`
+                        : `Mark ${article.title} as read`}
+                      title={article.read
+                        ? 'Mark as unread (m)'
+                        : 'Mark as read (m)'}
+                      disabled={isPending}
+                      onclick={(e) => {
+                        (e.currentTarget as HTMLElement)
+                          .closest('details')
+                          ?.removeAttribute('open');
+                        interact(article.id, article.read ? 'unread' : 'read');
+                      }}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
+                      >
+                      {article.read ? 'Mark as unread' : 'Mark as read'}
                     </button>
                   </div>
-                {/if}
-              </div>
+                </details>
+              {/if}
             </div>
           </div>
-        </div>
+        </article>
       </div>
     {/each}
   </div>
@@ -2345,10 +2295,6 @@
     touch-action: manipulation;
   }
 
-  .article-reactions {
-    display: flex;
-  }
-
   .article-menu-item {
     display: flex;
     min-height: 2.75rem;
@@ -2375,16 +2321,6 @@
   .article-menu-item:disabled {
     cursor: not-allowed;
     opacity: 0.5;
-  }
-
-  @media (max-width: 767px) {
-    .article-menu-reaction {
-      display: none;
-    }
-
-    .article-menu-reaction-divider {
-      display: none;
-    }
   }
 
   [data-article-overflow] > summary::-webkit-details-marker {

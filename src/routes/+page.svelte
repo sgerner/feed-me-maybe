@@ -82,24 +82,19 @@
 {#if !pageData.category}<h1 class="sr-only">All Articles</h1>{/if}
 
 <PullToRefresh onSync={handleSync} {syncing} mobileOnly>
-  <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+  <div
+    class="-mx-3 -mt-2 mb-0 flex flex-wrap items-center justify-between gap-2 border-b px-3 md:mx-0 md:mt-0 md:mb-5 md:px-0"
+    style="border-color: color-mix(in oklch, var(--color-surface-100) 8%, transparent);"
+  >
     {#if pageData.category}
-      <h1 class="section-title mb-0">{pageData.category}</h1>
-    {:else}
-      <div></div>
+      <h1 class="section-title py-1.5">{pageData.category}</h1>
     {/if}
-    <div
-      class="flex flex-wrap items-center gap-1.5"
-      role="group"
-      aria-label="Sort articles"
-    >
+    <div class="feed-sort-tabs" role="group" aria-label="Sort articles">
       {#each SORT_OPTIONS as option (option.value)}
         <button
           type="button"
-          class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {currentSort ===
-          option.value
-            ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
-            : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+          class="feed-sort-tab"
+          class:feed-sort-tab-active={currentSort === option.value}
           aria-pressed={currentSort === option.value}
           onclick={() => setSort(option.value)}>{option.label}</button
         >

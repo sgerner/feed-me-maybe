@@ -904,18 +904,12 @@
         >
       {/each}
     </div>
-    <div
-      class="flex flex-wrap items-center gap-1.5"
-      role="group"
-      aria-label="Sort search results"
-    >
+    <div class="feed-sort-tabs" role="group" aria-label="Sort search results">
       {#each SORT_OPTIONS as option (option.value)}
         <button
           type="button"
-          class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {sort ===
-          option.value
-            ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
-            : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+          class="feed-sort-tab"
+          class:feed-sort-tab-active={sort === option.value}
           aria-pressed={sort === option.value}
           onclick={() => applySort(option.value)}>{option.label}</button
         >
