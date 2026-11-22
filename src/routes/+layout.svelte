@@ -10,10 +10,9 @@
     pauseToast,
     removeToast,
     resumeToast,
-    setToastSuppressed,
   } from '#lib/stores/toast.svelte.ts';
   import { fade, fly } from 'svelte/transition';
-  import { afterNavigate, refreshAll } from '$app/navigation';
+  import { afterNavigate, invalidate, refreshAll } from '$app/navigation';
   import PWABanner from '#lib/components/PWABanner.svelte';
   import BrandMark from '#lib/components/BrandMark.svelte';
   import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
@@ -69,6 +68,8 @@
   });
   let stopOfflineSync: (() => void) | null = null;
   let { children, data } = $props();
+  const sessionId = $derived(data.sessionId);
+  const userId = $derived(String(data.userId || 'admin'));
 
   let cachedReader = $state<HTMLDialogElement>();
   let cachedArticle = $state<OfflineArticle | null>(null);
@@ -134,8 +135,12 @@
     return () => document.removeEventListener('keydown', handleSidebarKeydown);
   });
 
-  afterNavigate(({ to }) => {
-    setToastSuppressed(to?.url.pathname.startsWith('/articles/') ?? false);
+  afterNavigate(() => {
+    showAddFeedModal = false;
+    showShortcuts = false;
+    if (cachedReader?.open) {
+      cachedReader.close();
+    }
     if (!sidebarOpen || !isMobileViewport) {
       sidebarOpen = false;
       return;
@@ -145,18 +150,22 @@
   });
 
   setContext('openCachedArticle', async (article: OfflineArticle) => {
-    if (!data.sessionId || !cachedReader) return;
+    if (!sessionId || !cachedReader) return;
     cachedArticle = article;
-    cachedReader.showModal();
-    const scope = String(data.userId || 'admin');
+    await tick();
+    if (!cachedReader.open) {
+      cachedReader.showModal();
+    }
+    const scope = userId;
     const cached = await getCachedArticles(scope).catch(() => []);
-    if (
-      cachedReader?.open &&
-      cachedArticle?.id === article.id &&
-      data.sessionId
-    ) {
-      cachedArticle =
-        cached.find((entry) => entry.id === article.id) ?? article;
+    if (cachedReader?.open && cachedArticle?.id === article.id && sessionId) {
+      const matched = cached.find((entry) => entry.id === article.id);
+      if (matched) {
+        cachedArticle = {
+          ...matched,
+          read: Boolean(article.read || matched.read),
+        };
+      }
     }
   });
 
@@ -167,15 +176,21 @@
     if (!article || cachedActionPending) return;
     cachedActionPending = true;
     try {
-      await enqueueOfflineMutation(String(data.userId || 'admin'), {
+      await enqueueOfflineMutation(userId, {
         articleId: article.id,
         type,
       });
       if (cachedArticle?.id === article.id) {
-        cachedArticle = applyMutationToArticle(cachedArticle, type);
+        const updated = applyMutationToArticle(cachedArticle, type);
+        cachedArticle = updated;
+        window.dispatchEvent(
+          new CustomEvent('feed-me-maybe:offline-article-updated', {
+            detail: updated,
+          }),
+        );
       }
       addToast('Action queued for sync', 'info');
-      void refreshOfflineStatus(String(data.userId || 'admin'));
+      void refreshOfflineStatus(userId);
     } catch {
       addToast('Could not queue the article action', 'error');
     } finally {
@@ -237,7 +252,7 @@
       await syncFeeds();
     } finally {
       syncing = false;
-      void refreshOfflineStatus(String(data.userId || 'admin'));
+      void refreshOfflineStatus(userId);
     }
   }
 
@@ -246,7 +261,7 @@
       return;
     }
 
-    const scope = String(data.userId || 'admin');
+    const scope = userId;
     syncing = true;
     offlineState = 'syncing';
     try {
@@ -275,7 +290,7 @@
 
   // Trigger sync on open and visibility change
   $effect(() => {
-    if (!data.sessionId) return;
+    if (!sessionId) return;
 
     // Let the shell paint before starting the background refresh. This keeps
     // startup responsive and avoids waking the radio when the app is hidden.
@@ -350,9 +365,9 @@
   // It sleeps while offline/hidden and wakes on an explicit online event or
   // Background Sync, keeping the PWA responsive and battery-conscious.
   $effect(() => {
-    if (typeof window === 'undefined' || !data.sessionId) return;
+    if (typeof window === 'undefined' || !sessionId) return;
 
-    const scope = String(data.userId || 'admin');
+    const scope = userId;
     let disposed = false;
     void activateOfflineUser(scope)
       .then(() => {
@@ -389,9 +404,9 @@
   // Keep the shell's small status indicator in sync with the existing local
   // outbox and browser connection without adding a network request.
   $effect(() => {
-    if (typeof window === 'undefined' || !data.sessionId) return;
+    if (typeof window === 'undefined' || !sessionId) return;
 
-    const scope = String(data.userId || 'admin');
+    const scope = userId;
     const refresh = () => void refreshOfflineStatus(scope);
     const handleOffline = () => {
       offlineState = 'offline';
@@ -478,7 +493,8 @@
       if (
         !getSingleKeyShortcutsEnabled() ||
         showAddFeedModal ||
-        showShortcuts
+        showShortcuts ||
+        document.querySelector('dialog[open], [aria-modal="true"]')
       ) {
         return;
       }
@@ -583,7 +599,7 @@
 
   // Real-time updates via SSE
   $effect(() => {
-    if (!data.sessionId) return;
+    if (!sessionId) return;
 
     type NetworkInformation = { saveData?: boolean };
     type NavigatorWithConnection = Navigator & {
@@ -653,6 +669,7 @@
                 typeof id === 'string' && id.length > 0 && id.length <= 128,
             );
             if (ids.length > 0) {
+              void invalidate('app:reader-counts');
               window.dispatchEvent(
                 new CustomEvent('feed-me-maybe:new-articles', {
                   detail: { ids },
@@ -709,7 +726,7 @@
 <div class="grain-overlay" aria-hidden="true"></div>
 <div class="vignette" aria-hidden="true"></div>
 
-{#if data.sessionId}
+{#if sessionId}
   <div class="relative z-10 flex h-dvh flex-col">
     <div class="flex flex-1 overflow-hidden">
       <!-- Sidebar overlay (mobile) -->
@@ -743,24 +760,42 @@
         aria-modal={isMobileViewport && sidebarOpen ? 'true' : undefined}
         aria-label="Application navigation"
       >
-        <div class="hidden p-2 md:block">
+        <div class="flex items-center justify-between p-2">
           <a
             href="/"
             data-sveltekit-preload-data
-            class="inline-flex items-center gap-2 no-underline"
+            class="hidden items-center gap-2 no-underline md:inline-flex"
           >
             <BrandMark size={32} class="shrink-0" />
             <span class="gradient-text text-lg font-bold tracking-tight">
               Feed Me <span class="italic">Maybe</span>
             </span>
           </a>
+          {#if isMobileViewport && sidebarOpen}
+            <button
+              type="button"
+              class="btn-icon ml-auto md:hidden"
+              onclick={() => closeSidebar(true)}
+              aria-label="Close navigation"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
+              >
+            </button>
+          {/if}
         </div>
 
         <div
-          class="flex h-[calc(100%-5rem)] flex-col justify-between p-3 md:h-[calc(100%-4rem)]"
+          class="flex h-[calc(100%-3.5rem)] min-h-0 flex-col justify-between overflow-y-auto p-3 md:h-[calc(100%-4rem)]"
         >
           <nav
-            class="flex flex-col gap-1 overflow-y-auto"
+            class="flex shrink-0 flex-col gap-1"
             aria-label="Primary navigation"
           >
             {#each navItems as item (item.href)}
@@ -1306,6 +1341,7 @@
         {/if}
         <div
           class="mt-4 flex flex-wrap gap-2"
+          role="group"
           aria-label="Offline article actions"
         >
           <button
@@ -1343,9 +1379,81 @@
           </button>
         </div>
       {/if}
+      {#if cachedArticle && toasts.length > 0}
+        <div
+          class="app-toasts fixed right-5 bottom-5 z-50 flex max-h-[40dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto"
+          aria-live="polite"
+          aria-atomic="false"
+        >
+          {#each toasts as toast (toast.id)}
+            {@render toastCard(toast)}
+          {/each}
+        </div>
+      {/if}
     </dialog>
 
-    {#if !page.url.pathname.startsWith('/articles/')}
+    {#snippet toastCard(toast: (typeof toasts)[number])}
+      <div
+        in:fly={{ y: 12, duration: 280, delay: 60 }}
+        out:fade={{ duration: 120 }}
+        class="toast-glass flex items-center gap-2 rounded-[2px] px-3 py-2 text-sm font-medium text-white shadow-xl transition-all duration-300"
+        role={toast.type === 'error' ? 'alert' : 'status'}
+        class:toast-success={toast.type === 'success'}
+        class:toast-error={toast.type === 'error'}
+        class:toast-info={toast.type === 'info'}
+        class:toast-warning={toast.type === 'warning'}
+        onmouseenter={() => pauseToast(toast.id, 'hover')}
+        onmouseleave={() => resumeToast(toast.id, 'hover')}
+        onfocusin={() => pauseToast(toast.id, 'focus')}
+        onfocusout={(event) => {
+          const nextTarget = event.relatedTarget as Node | null;
+          if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+            resumeToast(toast.id, 'focus');
+          }
+        }}
+      >
+        <span class="min-w-0 flex-1">{toast.message}</span>
+        {#if toast.action}
+          <button
+            type="button"
+            class="shrink-0 underline decoration-primary-300 underline-offset-2 hover:text-primary-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-300"
+            onclick={async (event) => {
+              const button = event.currentTarget;
+              await toast.action?.run();
+              if (document.activeElement === button) {
+                document.getElementById('main-content')?.focus();
+              }
+              removeToast(toast.id);
+            }}>{toast.action.label}</button
+          >
+        {/if}
+        <button
+          type="button"
+          class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
+          aria-label="Dismiss notification"
+          onclick={(event) => {
+            if (document.activeElement === event.currentTarget) {
+              document.getElementById('main-content')?.focus();
+            }
+            removeToast(toast.id);
+          }}
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            class="h-3.5 w-3.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          >
+            <path d="m4 4 8 8M12 4l-8 8" />
+          </svg>
+        </button>
+      </div>
+    {/snippet}
+
+    {#if !cachedArticle}
       <!-- Toast container -->
       <div
         class="app-toasts fixed right-5 bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))] z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5"
@@ -1353,64 +1461,7 @@
         aria-atomic="false"
       >
         {#each toasts as toast (toast.id)}
-          <div
-            in:fly={{ y: 12, duration: 280, delay: 60 }}
-            out:fade={{ duration: 120 }}
-            class="toast-glass flex items-center gap-2 rounded-[2px] px-3 py-2 text-sm font-medium text-white shadow-xl transition-all duration-300"
-            role={toast.type === 'error' ? 'alert' : 'status'}
-            class:toast-success={toast.type === 'success'}
-            class:toast-error={toast.type === 'error'}
-            class:toast-info={toast.type === 'info'}
-            class:toast-warning={toast.type === 'warning'}
-            onmouseenter={() => pauseToast(toast.id, 'hover')}
-            onmouseleave={() => resumeToast(toast.id, 'hover')}
-            onfocusin={() => pauseToast(toast.id, 'focus')}
-            onfocusout={(event) => {
-              const nextTarget = event.relatedTarget as Node | null;
-              if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
-                resumeToast(toast.id, 'focus');
-              }
-            }}
-          >
-            <span class="min-w-0 flex-1">{toast.message}</span>
-            {#if toast.action}
-              <button
-                type="button"
-                class="shrink-0 underline decoration-primary-300 underline-offset-2 hover:text-primary-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-300"
-                onclick={async (event) => {
-                  const button = event.currentTarget;
-                  await toast.action?.run();
-                  if (document.activeElement === button) {
-                    document.getElementById('main-content')?.focus();
-                  }
-                  removeToast(toast.id);
-                }}>{toast.action.label}</button
-              >
-            {/if}
-            <button
-              type="button"
-              class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/75 transition hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
-              aria-label="Dismiss notification"
-              onclick={(event) => {
-                if (document.activeElement === event.currentTarget) {
-                  document.getElementById('main-content')?.focus();
-                }
-                removeToast(toast.id);
-              }}
-            >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 16 16"
-                class="h-3.5 w-3.5"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-              >
-                <path d="m4 4 8 8M12 4l-8 8" />
-              </svg>
-            </button>
-          </div>
+          {@render toastCard(toast)}
         {/each}
       </div>
     {/if}
@@ -1426,7 +1477,7 @@
       >
         <div
           bind:this={addFeedDialogEl}
-          class="glass-card w-full max-w-md p-6 shadow-2xl"
+          class="glass-card max-h-[90dvh] w-full max-w-md overflow-y-auto p-6 shadow-2xl"
           transition:fly={{ y: 20, duration: 300 }}
           role="dialog"
           aria-modal="true"

@@ -7,7 +7,6 @@
 export const OFFLINE_DB_NAME = 'feed-me-maybe-offline';
 export const OFFLINE_DB_VERSION = 1;
 export const OFFLINE_CACHE_VERSION = 'v1';
-export const OFFLINE_SYNC_TAG = 'feed-me-maybe-outbox-v1';
 
 export const DEFAULT_OFFLINE_LIMITS = {
   articles: 150,
@@ -41,6 +40,7 @@ export interface OfflineArticle {
   id: string;
   url: string;
   title: string;
+  author?: string | null;
   summary?: string | null;
   content?: string | null;
   image_url?: string | null;
@@ -51,11 +51,16 @@ export interface OfflineArticle {
   feed_url?: string | null;
   feed_site_url?: string | null;
   feed_open_mode?: string | null;
+  feed_enabled?: boolean | number | null;
+  cleared_at?: number | null;
   read?: boolean | null;
   saved?: boolean | null;
   hidden?: boolean | null;
   thumbs_up?: boolean | null;
   thumbs_down?: boolean | null;
+  heuristic_score?: number | null;
+  combined_score?: number | null;
+  offline_rank_score?: number | null;
 }
 
 export interface CachedArticle extends OfflineArticle {
@@ -129,11 +134,6 @@ export interface OfflineReplayResult {
   nextAttemptAt: number | null;
   lastError: string | null;
 }
-
-export type OfflineWorkerMessage =
-  | { type: 'FEED_ME_MAYBE_REPLAY_OUTBOX'; scope: string }
-  | { type: 'FEED_ME_MAYBE_CLEAR_PRIVATE_DATA' }
-  | { type: 'FEED_ME_MAYBE_GET_STATUS'; requestId: string };
 
 export const OUTBOX_PROCESSING_LEASE_MS = 2 * 60 * 1000;
 export const OUTBOX_RETRY_BASE_MS = 1_000;

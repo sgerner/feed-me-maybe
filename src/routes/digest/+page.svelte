@@ -1,7 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { getContext, onMount } from 'svelte';
+  import { page as pageStore } from '$app/state';
   import { syncFeeds } from '#lib/feeds.ts';
-  import { cacheDigest, getCachedDigests } from '#lib/offline/index.ts';
+  import {
+    cacheDigest,
+    getCachedArticles,
+    getCachedDigests,
+    type OfflineArticle,
+  } from '#lib/offline/index.ts';
   import type { OfflineJsonValue } from '#lib/offline/index.ts';
   import { formatContent } from '#lib/utils/format.ts';
   import { addToast } from '#lib/stores/toast.svelte.ts';
@@ -32,6 +38,60 @@
   } | null>(null);
   let requestId = 0;
   let abortController: AbortController | null = null;
+  let usingCachedFallback = $state(false);
+  const openCachedArticle = getContext<
+    ((article: OfflineArticle) => Promise<void>) | undefined
+  >('openCachedArticle');
+
+  function offlineScope(): string {
+    return String(pageStore.data.userId || 'admin');
+  }
+
+  async function openDigestArticle(
+    event: MouseEvent,
+    article: {
+      id: string;
+      url: string;
+      title: string;
+      feed_title?: string | null;
+      published_at?: number | null;
+      fetched_at?: number | null;
+      read?: boolean | number;
+      saved?: boolean | number;
+      hidden?: boolean | number;
+    },
+  ) {
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    if (
+      (usingCachedFallback || navigator.onLine === false) &&
+      openCachedArticle
+    ) {
+      event.preventDefault();
+      const cached = await getCachedArticles(offlineScope()).catch(() => []);
+      const found = cached.find((item) => item.id === article.id);
+      await openCachedArticle(
+        found ?? {
+          id: article.id,
+          url: article.url,
+          title: article.title,
+          feed_title: article.feed_title ?? null,
+          published_at: article.published_at ?? null,
+          fetched_at: article.fetched_at ?? null,
+          read: isTrue(article.read),
+          saved: isTrue(article.saved),
+          hidden: isTrue(article.hidden),
+        },
+      );
+    }
+  }
 
   function renderDigestMarkdown(text: string | null | undefined): string {
     if (!text) return '';
@@ -193,9 +253,16 @@
       if (options.sync) await syncFeeds({ silent: true });
       const params = new URLSearchParams({ days: String(selectedDays) });
       if (options.force) params.set('refresh', '1');
+      const signal =
+        typeof AbortSignal !== 'undefined' && 'any' in AbortSignal
+          ? AbortSignal.any([
+              abortController.signal,
+              AbortSignal.timeout(15_000),
+            ])
+          : abortController.signal;
       const res = await fetch(`/api/digest?${params.toString()}`, {
         headers: { Accept: 'application/json' },
-        signal: abortController.signal,
+        signal,
       });
       if (!res.ok)
         throw new Error(
@@ -203,6 +270,7 @@
         );
       const data = briefingFromLegacy((await res.json()) as WeeklyDigest);
       if (currentRequest !== requestId) return;
+      usingCachedFallback = false;
       digest = data;
       selectedDays = data.windowDays || selectedDays;
       hasLoaded = true;
@@ -219,30 +287,30 @@
       } else {
         statusAnnouncement = `AI briefing ready. ${data.totalArticles} eligible stories from ${data.totalFeeds} feeds.`;
       }
-      void cacheDigest('admin', {
+      void cacheDigest(offlineScope(), {
         id: `briefing-${data.windowDays || selectedDays}-${data.generatedAt}`,
         generatedAt: data.generatedAt,
         payload: JSON.parse(JSON.stringify(data)) as OfflineJsonValue,
       }).catch(() => undefined);
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (abortController?.signal.aborted) return;
       if (currentRequest !== requestId) return;
-      if (navigator.onLine === false) {
-        const cached = await getCachedDigests('admin', 8);
-        const cachedBriefing = cached.find((item) => {
+      const cached = await getCachedDigests(offlineScope(), 8).catch(() => []);
+      const cachedBriefing =
+        cached.find((item) => {
           const payload = item.payload as Partial<WeeklyDigest>;
           return payload.windowDays === selectedDays;
-        });
-        if (cachedBriefing) {
-          digest = briefingFromLegacy(
-            cachedBriefing.payload as unknown as WeeklyDigest,
-          );
-          selectedDays = digest.windowDays || selectedDays;
-          hasLoaded = true;
-          errorMessage = '';
-          statusAnnouncement = `Loaded cached briefing. ${digest.totalArticles} eligible stories.`;
-          return;
-        }
+        }) ?? cached[0];
+      if (cachedBriefing) {
+        digest = briefingFromLegacy(
+          cachedBriefing.payload as unknown as WeeklyDigest,
+        );
+        selectedDays = digest.windowDays || selectedDays;
+        usingCachedFallback = true;
+        hasLoaded = true;
+        errorMessage = '';
+        statusAnnouncement = `Loaded cached briefing. ${digest.totalArticles} eligible stories.`;
+        return;
       }
       errorMessage = formatError(err);
       statusAnnouncement = '';
@@ -533,7 +601,7 @@
       <div
         class="grid gap-8 lg:grid-cols-[minmax(0,1.55fr)_minmax(18rem,0.75fr)]"
       >
-        <section aria-labelledby="start-here">
+        <section class="min-w-0" aria-labelledby="start-here">
           <div class="mb-4 flex items-end justify-between gap-4">
             <div>
               <div
@@ -595,6 +663,8 @@
                       </div>
                       <a
                         href="/articles/{story.article.id}?mode=app"
+                        onclick={(e) =>
+                          void openDigestArticle(e, story.article)}
                         class="block min-h-7 py-0.5 text-base font-semibold leading-snug text-surface-50 underline decoration-transparent underline-offset-4 transition group-hover:decoration-primary-300/50 md:text-lg"
                         >{story.article.title}</a
                       >{#if story.reason}<div
@@ -668,6 +738,7 @@
                   <div class="mt-2 space-y-1.5">
                     {#each theme.articles.slice(0, 3) as article (article.id)}<a
                         href="/articles/{article.id}?mode=app"
+                        onclick={(e) => void openDigestArticle(e, article)}
                         class="flex min-h-7 items-center truncate py-1.5 text-xs text-primary-300 hover:text-primary-200"
                         >{article.title}</a
                       >{/each}
@@ -827,6 +898,7 @@
                 <div class="min-w-0 flex-1">
                   <a
                     href="/articles/{article.id}?mode=app"
+                    onclick={(e) => void openDigestArticle(e, article)}
                     class="line-clamp-2 min-h-6 py-0.5 text-sm font-medium text-surface-100 hover:text-primary-200"
                     >{article.title}</a
                   >

@@ -7,7 +7,9 @@
   import { ARTICLE_OPEN_MODES } from '#lib/constants/article-open-modes.ts';
   import { fly, fade } from 'svelte/transition';
   import { goto, refreshAll } from '$app/navigation';
+  import { page as pageStore } from '$app/state';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
+  import { reconcileCachedFeed } from '#lib/offline/index.ts';
 
   type FeedArticle = {
     id: string;
@@ -158,9 +160,13 @@
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(pageData.articles);
+  let lastLoadedArticles: FeedArticle[] | null = null;
 
   $effect(() => {
-    articles = loadedArticles;
+    if (loadedArticles !== lastLoadedArticles) {
+      lastLoadedArticles = loadedArticles;
+      articles = loadedArticles;
+    }
   });
 
   $effect(() => {
@@ -277,6 +283,16 @@
               : String(data.feed.poll_interval_mins);
           useProxy = Boolean(data.feed.use_proxy);
         }
+        await reconcileCachedFeed(
+          String(pageStore.data.userId || 'admin'),
+          pageData.feedId,
+          {
+            type: 'update',
+            enabled,
+            title,
+            openMode: openMode || null,
+          },
+        ).catch(() => undefined);
         await refreshAll();
         setTimeout(() => {
           saveSuccess = false;
@@ -308,6 +324,11 @@
         method: 'DELETE',
       });
       if (res.ok) {
+        await reconcileCachedFeed(
+          String(pageStore.data.userId || 'admin'),
+          pageData.feedId,
+          { type: 'delete' },
+        ).catch(() => undefined);
         addToast('Feed deleted', 'success');
         await goto('/');
         await refreshAll();
@@ -336,6 +357,11 @@
         method: 'POST',
       });
       if (res.ok) {
+        await reconcileCachedFeed(
+          String(pageStore.data.userId || 'admin'),
+          pageData.feedId,
+          { type: 'clear' },
+        ).catch(() => undefined);
         addToast('Feed items cleared', 'success');
         await refreshAll();
       } else {
@@ -626,8 +652,8 @@
           {/if}
         </div>
       </div>
-      <div class="mt-6 flex items-center justify-between">
-        <div class="flex items-center gap-4">
+      <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-4">
           <button
             class="btn preset-filled-primary-500"
             onclick={saveSettings}
@@ -643,7 +669,7 @@
             >
           {/if}
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <button
             class="btn action-btn"
             style="border-color: color-mix(in oklch, var(--color-warning-500) 20%, transparent); background: color-mix(in oklch, var(--color-warning-500) 10%, transparent); color: var(--color-warning-300);"
@@ -734,6 +760,7 @@
       bind:articles
       totalPages={pageData.totalPages}
       feedId={pageData.feedId}
+      liveUpdates={!pageData.showHiddenContent}
       {loadMoreSearchParams}
       showInfiniteScroll={!pageData.showHiddenContent}
       feedbackMode={pageData.showHiddenContent ? 'boost' : 'standard'}

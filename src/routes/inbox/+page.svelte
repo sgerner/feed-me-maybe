@@ -2,7 +2,9 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/state';
+  import PullToRefresh from '#lib/components/PullToRefresh.svelte';
   import ArticleList from '#lib/components/ArticleList.svelte';
+  import { syncFeeds } from '#lib/feeds.ts';
   import { getCachedArticles } from '#lib/offline/index.ts';
 
   type ArticleSort = 'ranked' | 'newest' | 'oldest';
@@ -43,8 +45,17 @@
   } = $props();
   let articles = $state<Article[]>([]);
   let liveUnreadArticleIds = $state<string[]>([]);
-  let unreadCount = $derived(data.totalArticles + liveUnreadArticleIds.length);
+  let snapshotCountDelta = $state(0);
+  let baseUnreadCount = $state(0);
+  let syncing = $state(false);
+  let unreadCount = $derived(
+    Math.max(
+      0,
+      baseUnreadCount + snapshotCountDelta + liveUnreadArticleIds.length,
+    ),
+  );
   let unreadSnapshotAt = $state(0);
+  let lastLoadedArticles: Article[] | null = null;
   const currentSort = $derived<ArticleSort>(data.sort || 'ranked');
   const loadMoreSearchParams = $derived.by(() => {
     const params: Record<string, string> = {
@@ -71,10 +82,14 @@
   const loadedArticles = $derived(data.articles);
 
   $effect(() => {
+    if (loadedArticles === lastLoadedArticles) return;
+    lastLoadedArticles = loadedArticles;
     if (data.snapshotAt !== unreadSnapshotAt) {
       unreadSnapshotAt = data.snapshotAt;
       liveUnreadArticleIds = [];
+      snapshotCountDelta = 0;
     }
+    baseUnreadCount = data.totalArticles;
     articles = loadedArticles;
   });
 
@@ -93,17 +108,35 @@
       : liveUnreadArticleIds.filter((id) => id !== articleId);
   }
 
+  function applySnapshotCountDelta(delta: number): void {
+    snapshotCountDelta += delta;
+  }
+
+  async function handleSync() {
+    if (syncing) return;
+    syncing = true;
+    try {
+      await syncFeeds();
+    } finally {
+      syncing = false;
+    }
+  }
+
   onMount(() => {
     if (navigator.onLine !== false || articles.length > 0) return;
-    void getCachedArticles('admin', { limit: 150 })
+    void getCachedArticles(String(pageStore.data.userId || 'admin'), {
+      limit: 150,
+    })
       .then((cached) => {
         if (articles.length === 0) {
-          articles = cached.filter(
+          const unread = cached.filter(
             (article) =>
               article.read !== true &&
               article.hidden !== true &&
               article.thumbs_down !== true,
           );
+          articles = unread;
+          baseUnreadCount = unread.length;
         }
       })
       .catch(() => undefined);
@@ -115,7 +148,7 @@
   <meta name="description" content="Your calm unread reading queue." />
 </svelte:head>
 
-<div class="mx-auto max-w-7xl">
+<PullToRefresh onSync={handleSync} {syncing} mobileOnly>
   <div
     class="mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
   >
@@ -159,6 +192,7 @@
       liveUpdates
       onLiveArticlesAdded={addLiveUnreadArticles}
       onLiveArticleVisibilityChanged={updateLiveUnreadVisibility}
+      onSnapshotCountDelta={applySnapshotCountDelta}
       {loadMoreSearchParams}
       emptyTitle="No unread stories"
       emptyMessage="You are all caught up."
@@ -166,4 +200,4 @@
       emptyCtaLabel="Browse all stories"
     />
   {/key}
-</div>
+</PullToRefresh>

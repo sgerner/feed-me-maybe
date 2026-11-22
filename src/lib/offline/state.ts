@@ -3,11 +3,17 @@ import type { OfflineArticle, OfflineMutationType } from './types';
 export type OfflineVisibilityFilter = 'visible' | 'hidden' | 'rejected';
 
 export function matchesOfflineVisibility(
-  article: Pick<OfflineArticle, 'hidden' | 'thumbs_down'>,
+  article: Pick<
+    OfflineArticle,
+    'hidden' | 'thumbs_down' | 'feed_enabled' | 'cleared_at' | 'saved'
+  >,
   filter: OfflineVisibilityFilter = 'visible',
 ): boolean {
+  if (article.cleared_at != null && article.saved !== true) return false;
   if (filter === 'hidden') return article.hidden === true;
   if (filter === 'rejected') return article.thumbs_down === true;
+  if (article.feed_enabled === false || article.feed_enabled === 0)
+    return false;
   return article.hidden !== true && article.thumbs_down !== true;
 }
 

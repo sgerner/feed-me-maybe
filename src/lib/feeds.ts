@@ -101,7 +101,13 @@ export async function syncFeed(
       try {
         const poll = await fetch(
           `/api/feeds/${encodeURIComponent(feedId)}/refresh?jobId=${encodeURIComponent(jobId)}`,
-          { cache: 'no-store' },
+          {
+            cache: 'no-store',
+            signal:
+              typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+                ? AbortSignal.timeout(10_000)
+                : undefined,
+          },
         );
         if (!poll.ok) break;
         const detail = (await poll.json()) as {

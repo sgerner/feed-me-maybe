@@ -49,9 +49,11 @@ const memory = vi.hoisted(() => {
 vi.mock('./db', () => memory);
 
 import {
+  cacheArticles,
   cacheSavedArticles,
   getCachedArticles,
   getCachedSavedArticles,
+  reconcileCachedFeed,
   refreshOfflineArticleBodies,
 } from './store';
 import type { CachedArticle, OfflineMutation } from './types';
@@ -208,5 +210,114 @@ describe('offline article cache', () => {
     expect(await getCachedArticles('reader')).toMatchObject([
       { id: 'offline-body', content: 'Previously cached text' },
     ]);
+  });
+
+  it('authoritatively removes ghost articles omitted from snapshot and prioritizes ranked unread articles', async () => {
+    const ghost = cachedArticle('ghost-article', 5);
+    ghost.saved = false;
+    ghost.read = false;
+    memory.stores.get('articles')!.set(ghost.key, ghost);
+
+    await refreshOfflineArticleBodies('reader', async () =>
+      Response.json({
+        articles: [
+          {
+            id: 'low-rank-newer',
+            url: 'https://example.com/low',
+            title: 'Low rank',
+            published_at: 200,
+            read: false,
+            offline_rank_score: 10,
+          },
+          {
+            id: 'high-rank-older',
+            url: 'https://example.com/high',
+            title: 'High rank',
+            published_at: 100,
+            read: false,
+            offline_rank_score: 95,
+          },
+        ],
+        savedArticles: [],
+      }),
+    );
+
+    const cached = await getCachedArticles('reader');
+    expect(cached.map((item) => item.id)).toEqual([
+      'high-rank-older',
+      'low-rank-newer',
+    ]);
+
+    await cacheArticles(
+      'reader',
+      [
+        {
+          id: 'newer-read',
+          url: 'https://example.com/read',
+          title: 'Newer read',
+          published_at: 500,
+          read: true,
+        },
+      ],
+      { articles: 2 },
+    );
+
+    const afterRead = await getCachedArticles('reader');
+    expect(afterRead.map((item) => item.id)).toEqual([
+      'high-rank-older',
+      'low-rank-newer',
+    ]);
+  });
+
+  it('purges or updates cached articles when a feed is paused, cleared, or deleted', async () => {
+    await cacheArticles('reader', [
+      {
+        id: 'feed-unread',
+        feed_id: 'feed-1',
+        url: 'https://example.com/1',
+        title: 'Unread 1',
+        read: false,
+        saved: false,
+      },
+      {
+        id: 'feed-saved',
+        feed_id: 'feed-1',
+        url: 'https://example.com/2',
+        title: 'Saved 2',
+        read: false,
+        saved: true,
+      },
+    ]);
+
+    await reconcileCachedFeed('reader', 'feed-1', { type: 'clear' });
+    expect((await getCachedArticles('reader')).map((a) => a.id)).toEqual([
+      'feed-saved',
+    ]);
+
+    await reconcileCachedFeed('reader', 'feed-1', { type: 'delete' });
+    expect(await getCachedArticles('reader')).toEqual([]);
+  });
+
+  it('skips rewriting unchanged cached articles on repeat snapshot sync', async () => {
+    const replaceSpy = vi.spyOn(memory, 'replaceRecords');
+    const article = {
+      id: 'unchanged-1',
+      url: 'https://example.com/unchanged',
+      title: 'Unchanged',
+      summary: 'Summary',
+      content: '<p>Full body</p>',
+      read: false,
+      saved: false,
+    };
+
+    await cacheArticles('reader', [article]);
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(replaceSpy.mock.calls[0][1]).toHaveLength(1);
+
+    await cacheArticles('reader', [article]);
+    expect(replaceSpy).toHaveBeenCalledTimes(2);
+    expect(replaceSpy.mock.calls[1][1]).toHaveLength(0);
+    expect(replaceSpy.mock.calls[1][2]).toHaveLength(0);
+    replaceSpy.mockRestore();
   });
 });

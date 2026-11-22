@@ -162,23 +162,6 @@ export async function clearOfflineStores(): Promise<void> {
   await transactionComplete(transaction);
 }
 
-export async function deleteOfflineDatabase(): Promise<void> {
-  const factory = getIndexedDbFactory();
-  if (!factory) return;
-
-  const database = await openOfflineDatabase();
-  database?.close();
-  databasePromise = null;
-
-  await new Promise<void>((resolve, reject) => {
-    const request = factory.deleteDatabase(OFFLINE_DB_NAME);
-    request.onsuccess = () => resolve();
-    request.onerror = () =>
-      reject(request.error || new Error('Unable to delete offline storage'));
-    request.onblocked = () => resolve();
-  });
-}
-
 export async function getAllRecords<T extends OfflineDbRecord>(
   storeName: Exclude<OfflineStoreName, 'meta'>,
 ): Promise<T[]> {
@@ -204,23 +187,12 @@ export async function putRecords(
   await transactionComplete(transaction);
 }
 
-export async function deleteRecords(
-  storeName: Exclude<OfflineStoreName, 'meta'>,
-  keys: IDBValidKey[],
-): Promise<void> {
-  const database = await openOfflineDatabase();
-  if (!database || keys.length === 0) return;
-  const transaction = database.transaction(storeName, 'readwrite');
-  const store = transaction.objectStore(storeName);
-  for (const key of keys) store.delete(key);
-  await transactionComplete(transaction);
-}
-
 export async function replaceRecords(
   storeName: Exclude<OfflineStoreName, 'meta'>,
   records: OfflineDbRecord[],
   deleteKeys: IDBValidKey[] = [],
 ): Promise<void> {
+  if (records.length === 0 && deleteKeys.length === 0) return;
   const database = await openOfflineDatabase();
   if (!database) return;
   const transaction = database.transaction(storeName, 'readwrite');

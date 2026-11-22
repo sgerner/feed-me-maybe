@@ -238,15 +238,22 @@
     if (searchQuery) params.set('q', searchQuery);
     if (sort === 'recent') params.set('sort', 'recent');
 
+    let httpErrorMessage: string | null = null;
     try {
+      const signal =
+        typeof AbortSignal !== 'undefined' && 'any' in AbortSignal
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
+          : controller.signal;
       const response = await fetch(`/api/search?${params.toString()}`, {
         headers: { Accept: 'application/json' },
-        signal: controller.signal,
+        signal,
       });
       if (!response.ok) {
-        throw new Error(
-          await responseError(response, 'Search is unavailable right now.'),
+        httpErrorMessage = await responseError(
+          response,
+          'Search is unavailable right now.',
         );
+        throw new Error(httpErrorMessage);
       }
 
       const payload = (await response.json()) as SearchResponse;
@@ -270,8 +277,11 @@
       }
     } catch (error) {
       if (controller.signal.aborted || sequence !== searchSequence) return;
-      if (navigator.onLine === false) {
-        const cached = await getCachedArticles('admin', { limit: 150 });
+      if (httpErrorMessage === null) {
+        const cached = await getCachedArticles(
+          String(pageStore.data.userId || 'admin'),
+          { limit: 150 },
+        ).catch(() => []);
         if (sequence !== searchSequence) return;
         const term = searchText.toLowerCase();
         const filtered = cached.filter((article) => {
@@ -307,8 +317,7 @@
           ? `${total} ${total === 1 ? 'cached match' : 'cached matches'} found.`
           : errorMessage;
       } else {
-        errorMessage =
-          error instanceof Error ? error.message : 'Search failed.';
+        errorMessage = httpErrorMessage;
         articles = [];
         total = 0;
         statusAnnouncement = '';
@@ -334,9 +343,11 @@
         cursor,
       });
       if (sort === 'recent') params.set('sort', 'recent');
-      const response = await fetch(`/api/search?${params}`, {
-        signal: controller.signal,
-      });
+      const signal =
+        typeof AbortSignal !== 'undefined' && 'any' in AbortSignal
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
+          : controller.signal;
+      const response = await fetch(`/api/search?${params}`, { signal });
       if (!response.ok) {
         throw new Error(
           await responseError(response, 'Could not load more results.'),

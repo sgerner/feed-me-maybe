@@ -31,12 +31,20 @@ export function csrfHeaders(headers?: HeadersInit): Headers {
   return next;
 }
 
+const DEFAULT_CSRF_FETCH_TIMEOUT_MS = 15_000;
+
 export function fetchWithCsrf(
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> {
+  const signal =
+    init.signal ??
+    (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+      ? AbortSignal.timeout(DEFAULT_CSRF_FETCH_TIMEOUT_MS)
+      : undefined);
   return fetch(input, {
     ...init,
     headers: csrfHeaders(init.headers),
+    ...(signal ? { signal } : {}),
   });
 }

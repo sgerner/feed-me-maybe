@@ -44,9 +44,13 @@
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(pageData.articles);
+  let lastLoadedArticles: Article[] | null = null;
 
   $effect(() => {
-    articles = loadedArticles;
+    if (loadedArticles !== lastLoadedArticles) {
+      lastLoadedArticles = loadedArticles;
+      articles = loadedArticles;
+    }
   });
 
   function setSort(nextSort: ArticleSort) {

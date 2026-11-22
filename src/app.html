@@ -38,9 +38,18 @@
     <script src="%sveltekit.assets%/registerSW.js" defer></script>
     <script>
       (function () {
+        const supported = [
+          'cerberus',
+          'modern',
+          'catppuccin',
+          'rose',
+          'pine',
+          'seafoam',
+        ];
         let theme = 'cerberus';
         try {
-          theme = localStorage.getItem('theme') || theme;
+          const saved = localStorage.getItem('theme');
+          if (saved && supported.includes(saved)) theme = saved;
         } catch {
           // Storage can be unavailable in private or restricted webviews.
         }
