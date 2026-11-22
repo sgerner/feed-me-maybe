@@ -560,6 +560,7 @@
   const mobileCoreItems = navItems.filter((item) =>
     ['/', '/inbox', '/search', '/saved'].includes(item.href),
   );
+  const isArticleView = $derived(page.url.pathname.startsWith('/articles/'));
 
   const pinnedSearches = $derived(data.pinnedSearches || []);
 
@@ -1475,59 +1476,63 @@
       </div>
     {/if}
 
-    <nav
-      class="mobile-core-nav md:hidden"
-      aria-label="Mobile primary navigation"
-      inert={isMobileViewport && sidebarOpen}
-    >
-      {#each mobileCoreItems as item (item.href)}
-        <a
-          href={item.href}
-          data-sveltekit-preload-data
-          class={'mobile-core-nav-link' +
-            (isCurrentNavItem(item.href, { ignorePinnedSearch: true })
-              ? ' mobile-core-nav-link-active'
-              : '')}
-          aria-current={isCurrentNavItem(item.href, {
-            ignorePinnedSearch: true,
-          })
-            ? 'page'
-            : undefined}
-        >
-          <span class="mobile-core-nav-icon">{@render navIcon(item.href)}</span>
-          <span>{item.label}</span>
-        </a>
-      {/each}
-      <button
-        class={'mobile-core-nav-link' +
-          (sidebarOpen ? ' mobile-core-nav-link-active' : '')}
-        onclick={openMore}
-        bind:this={mobileMoreButtonEl}
-        aria-expanded={sidebarOpen}
-        aria-controls="app-sidebar"
-        type="button"
+    {#if !isArticleView}
+      <nav
+        class="mobile-core-nav md:hidden"
+        aria-label="Mobile primary navigation"
+        inert={isMobileViewport && sidebarOpen}
       >
-        <span class="mobile-core-nav-icon">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            ><circle cx="5" cy="12" r="1" /><circle
-              cx="12"
-              cy="12"
-              r="1"
-            /><circle cx="19" cy="12" r="1" /></svg
+        {#each mobileCoreItems as item (item.href)}
+          <a
+            href={item.href}
+            data-sveltekit-preload-data
+            class={'mobile-core-nav-link' +
+              (isCurrentNavItem(item.href, { ignorePinnedSearch: true })
+                ? ' mobile-core-nav-link-active'
+                : '')}
+            aria-current={isCurrentNavItem(item.href, {
+              ignorePinnedSearch: true,
+            })
+              ? 'page'
+              : undefined}
           >
-        </span>
-        <span>More</span>
-      </button>
-    </nav>
+            <span class="mobile-core-nav-icon"
+              >{@render navIcon(item.href)}</span
+            >
+            <span>{item.label}</span>
+          </a>
+        {/each}
+        <button
+          class={'mobile-core-nav-link' +
+            (sidebarOpen ? ' mobile-core-nav-link-active' : '')}
+          onclick={openMore}
+          bind:this={mobileMoreButtonEl}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
+          type="button"
+        >
+          <span class="mobile-core-nav-icon">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><circle cx="5" cy="12" r="1" /><circle
+                cx="12"
+                cy="12"
+                r="1"
+              /><circle cx="19" cy="12" r="1" /></svg
+            >
+          </span>
+          <span>More</span>
+        </button>
+      </nav>
+    {/if}
 
     {#if navigating.to?.url?.pathname?.startsWith('/articles/')}
       <div
@@ -1704,7 +1709,9 @@
     {#if !cachedArticle}
       <!-- Toast container -->
       <div
-        class="app-toasts fixed right-5 bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))] z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5"
+        class="app-toasts fixed right-5 z-50 flex max-h-[50dvh] max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2.5 overflow-y-auto md:bottom-5 {isArticleView
+          ? 'bottom-[calc(var(--fmm-reader-bar-height)+0.75rem+env(safe-area-inset-bottom))]'
+          : 'bottom-[calc(var(--fmm-mobile-nav-height)+1.25rem+env(safe-area-inset-bottom))]'}"
         aria-live="polite"
         aria-atomic="false"
       >
@@ -1763,13 +1770,10 @@
       </div>
     {/if}
 
-    {#if !page.url.pathname.startsWith('/articles/')}
+    {#if !isArticleView}
       <PWABanner />
     {/if}
-    <KeyboardShortcuts
-      bind:open={showShortcuts}
-      reader={page.url.pathname.startsWith('/articles/')}
-    />
+    <KeyboardShortcuts bind:open={showShortcuts} reader={isArticleView} />
   </div>
 {:else}
   <main id="main-content" tabindex="-1" class="relative z-10 min-h-dvh">

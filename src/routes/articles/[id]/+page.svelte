@@ -1471,7 +1471,7 @@
 
 <div
   class={isEmbeddedMode
-    ? 'absolute inset-0 z-0 bg-surface-950'
+    ? 'absolute inset-x-0 top-0 bottom-[calc(var(--fmm-reader-bar-height)+env(safe-area-inset-bottom))] z-0 bg-surface-950 md:bottom-0'
     : 'mx-auto max-w-4xl'}
 >
   {#if isEmbeddedMode}
@@ -1590,7 +1590,7 @@
 
       <div
         bind:this={readerArticleEl}
-        class="p-5 pb-28 md:p-8 md:pb-32"
+        class="p-5 pb-10 md:p-8 md:pb-24"
         style="--reader-font-scale: {fontScale};"
       >
         <div class="mb-6">
@@ -2015,82 +2015,111 @@
   {/if}
 
   <div
-    class="reader-action-bar fixed bottom-[calc(var(--fmm-mobile-nav-height)+env(safe-area-inset-bottom))] left-0 right-0 z-50 flex flex-wrap items-center justify-center gap-1.5 rounded-t-sm border p-1.5 shadow-2xl backdrop-blur-xl md:bottom-6 md:left-1/2 md:right-auto md:max-w-[calc(100vw-2rem)] md:-translate-x-1/2 md:rounded-sm"
+    class="reader-action-bar"
     role="group"
     aria-label="Article reader actions"
     data-no-reader-swipe
-    style="background: color-mix(in oklch, var(--color-surface-900) 80%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
-    in:fly={{ y: 20, duration: 400, delay: 400 }}
+    in:fly={{ y: 16, duration: 220 }}
   >
     <a
       href={returnPath}
       data-sveltekit-replacestate
-      class="action-btn h-9 px-3 rounded-full"
+      class="reader-bar-btn"
       aria-label="Back to article list"
       title="Back"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
+        width="18"
+        height="18"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="2"><path d="m15 18-6-6 6-6" /></svg
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg
       >
-      <span class="ml-1.5 hidden sm:inline">Back</span>
     </a>
 
     {#if previousId}
       <a
-        class="action-btn h-9 px-3 rounded-full"
+        class="reader-bar-btn"
         href={readerHref(previousId)}
         data-sveltekit-replacestate
         aria-label="Previous article"
-        title="Previous article (k)">←</a
+        title="Previous article (k)"
       >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          ><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg
+        >
+      </a>
     {/if}
     {#if nextId}
       <a
-        class="action-btn h-9 px-3 rounded-full"
+        class="reader-bar-btn"
         href={readerHref(nextId)}
         data-sveltekit-replacestate
         aria-label="Next article"
-        title="Next article (j)">→</a
+        title="Next article (j)"
       >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+          ><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></svg
+        >
+      </a>
     {/if}
 
-    <div class="w-px h-6 bg-surface-100/10 mx-1"></div>
+    <div class="reader-bar-divider" aria-hidden="true"></div>
 
     <button
       type="button"
-      class="action-btn min-h-11 px-3 rounded-full !inline-flex {saved
-        ? '!text-success-400 !bg-success-500/10 !border-success-500/30'
-        : ''}"
+      class="reader-bar-btn"
+      class:reader-bar-btn-saved={saved}
       disabled={Boolean(pendingAction)}
       onclick={() => interact('save')}
+      aria-label={saved ? 'Unsave article' : 'Save article'}
       aria-pressed={saved}
-      title="Save Article"
+      title={saved ? 'Saved (s)' : 'Save article (s)'}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
+        width="18"
+        height="18"
         viewBox="0 0 24 24"
         fill={saved ? 'currentColor' : 'none'}
         stroke="currentColor"
         stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
         aria-hidden="true"
         ><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" /></svg
       >
-      <span class="ml-1.5">{saved ? 'Saved' : 'Save'}</span>
     </button>
 
     <button
       type="button"
-      class="action-btn min-h-11 px-3 rounded-full !inline-flex {!read
-        ? '!text-primary-300 !bg-primary-500/10 !border-primary-500/30'
-        : ''}"
+      class="reader-bar-btn"
+      class:reader-bar-btn-active={!read}
       disabled={Boolean(pendingAction)}
       onclick={() => void toggleRead()}
       aria-label={read ? 'Mark as unread' : 'Mark as read'}
@@ -2099,8 +2128,8 @@
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
+        width="18"
+        height="18"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -2109,15 +2138,12 @@
         stroke-linejoin="round"
         aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
       >
-      <span class="ml-1.5 hidden sm:inline"
-        >{read ? 'Mark as unread' : 'Mark as read'}</span
-      >
     </button>
 
     {#if isReaderMode && isSpeaking}
       <button
         type="button"
-        class="action-btn min-h-11 px-3 rounded-full !inline-flex !text-primary-300 !bg-primary-500/15 !border-primary-500/30"
+        class="reader-bar-btn reader-bar-btn-active"
         onclick={speakArticle}
         aria-label="Stop reading aloud"
         title="Stop reading aloud"
@@ -2131,21 +2157,21 @@
           aria-hidden="true"
           ><rect x="6" y="6" width="12" height="12" rx="2" /></svg
         >
-        <span class="ml-1.5">Stop</span>
       </button>
     {/if}
 
     {#if isReaderMode}
       <button
         type="button"
-        class="action-btn min-h-11 px-3 rounded-full"
+        class="reader-bar-btn"
         onclick={() => void shareArticle()}
+        aria-label="Share article"
         title="Share article"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
-          width="16"
-          height="16"
+          width="18"
+          height="18"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -2159,13 +2185,17 @@
             r="3"
           /><path d="m8.6 13.5 6.8 4" /><path d="m15.4 6.5-6.8 4" /></svg
         >
-        <span class="ml-1.5">Share</span>
       </button>
     {/if}
 
-    <details class="static" data-reader-more bind:open={readerMoreOpen}>
+    <details
+      class="reader-bar-more"
+      data-reader-more
+      bind:open={readerMoreOpen}
+    >
       <summary
-        class="action-btn flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-full px-3"
+        class="reader-bar-btn"
+        class:reader-bar-btn-open={readerMoreOpen}
         aria-label="More reader actions"
         aria-controls="reader-more-actions"
         aria-expanded={readerMoreOpen}
@@ -2183,7 +2213,6 @@
           <circle cx="12" cy="12" r="1.5" />
           <circle cx="19" cy="12" r="1.5" />
         </svg>
-        <span class="hidden sm:inline">More</span>
       </summary>
 
       <div
@@ -2191,7 +2220,7 @@
         class="absolute bottom-full left-1/2 z-40 mb-2 flex w-[min(24rem,calc(100vw-1rem))] -translate-x-1/2 flex-col items-stretch justify-start gap-1 overflow-y-auto overscroll-contain rounded-sm border p-2 shadow-2xl backdrop-blur-xl"
         role="group"
         aria-label="Additional reader controls"
-        style="max-height: max(5rem, min(28rem, calc(100dvh - 13rem))); background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
+        style="max-height: max(5rem, min(28rem, calc(100dvh - 6rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)))); background: color-mix(in oklch, var(--color-surface-900) 94%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 15%, transparent);"
       >
         <div
           class="flex items-center gap-1 border-r pr-1.5 mr-0.5"
@@ -2382,7 +2411,12 @@
 
 <style>
   :global(#main-content:has(.reader-action-bar)) {
-    scroll-padding-bottom: calc(12rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(
+      var(--fmm-reader-bar-height) + env(safe-area-inset-bottom) + 0.5rem
+    );
+    scroll-padding-bottom: calc(
+      var(--fmm-reader-bar-height) + env(safe-area-inset-bottom) + 1rem
+    );
   }
 
   :global(.prose-glass table) {
@@ -2423,7 +2457,8 @@
 
   @media (min-width: 768px) {
     :global(#main-content:has(.reader-action-bar)) {
-      scroll-padding-bottom: 8rem;
+      padding-bottom: 2rem;
+      scroll-padding-bottom: 6rem;
     }
   }
 </style>
