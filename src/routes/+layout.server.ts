@@ -1,10 +1,12 @@
 import { getDb } from '#lib/server/db/index.ts';
+import { listPinnedSavedSearches } from '#lib/server/saved-searches.ts';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, depends }) => {
   if (!locals.sessionId) {
     return {
       feeds: [],
+      pinnedSearches: [],
       totalFeeds: 0,
       pausedFeeds: 0,
       feedCategories: [],
@@ -33,6 +35,7 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
     category: string | null;
     unread_count: number;
   }>;
+  const pinnedSearches = listPinnedSavedSearches();
 
   const feedSummary = db
     .prepare(
@@ -66,6 +69,7 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
 
   return {
     feeds,
+    pinnedSearches,
     totalFeeds: Number(feedSummary?.total_feeds || 0),
     pausedFeeds: Number(feedSummary?.paused_feeds || 0),
     feedCategories: categoryRows.map((row) => row.category),
