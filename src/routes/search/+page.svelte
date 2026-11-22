@@ -10,6 +10,7 @@
     getCachedArticles,
     matchesOfflineVisibility,
   } from '#lib/offline/index.ts';
+  import type { ReaderQueuePagination } from '#lib/reader-queue.ts';
 
   type Article = {
     id: string;
@@ -107,6 +108,8 @@
   let query = $state('');
   let activeFilter = $state<(typeof FILTERS)[number]['value']>('all');
   let sort = $state<SearchSort>('relevance');
+  let activeSearchQuery = $state('');
+  let activeSearchSort = $state<SearchSort>('relevance');
   let preferredSort = $state<SearchSort>('relevance');
   let articles = $state<Article[]>([]);
   let total = $state(0);
@@ -205,6 +208,24 @@
     }
     return Object.values(seen);
   });
+
+  const activeSearchOrigin = $derived.by(() => {
+    const params = new SvelteURLSearchParams();
+    if (activeSearchQuery) params.set('q', activeSearchQuery);
+    if (activeSearchSort === 'recent') params.set('sort', 'recent');
+    return `/search${params.toString() ? `?${params}` : ''}`;
+  });
+
+  const searchQueuePagination = $derived<ReaderQueuePagination | null>(
+    searched
+      ? {
+          kind: 'search',
+          nextCursor,
+          query: activeSearchQuery,
+          sort: activeSearchSort,
+        }
+      : null,
+  );
 
   function tokenizeSearchInput(raw: string): string[] {
     return raw.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
@@ -318,6 +339,8 @@
       articles = (payload.articles || []).map((article) =>
         toListArticle(article as unknown as Record<string, unknown>),
       );
+      activeSearchQuery = searchQuery;
+      activeSearchSort = sort;
       total = payload.total ?? payload.totalArticles ?? articles.length;
       nextCursor = payload.nextCursor ?? null;
       searched = true;
@@ -363,7 +386,9 @@
         articles = filtered.map((article) =>
           toListArticle(article as unknown as Record<string, unknown>),
         );
+        activeSearchQuery = searchQuery;
         sort = term ? requestedSort : 'recent';
+        activeSearchSort = sort;
         total = articles.length;
         nextCursor = null;
         searched = true;
@@ -1192,6 +1217,8 @@
       bind:articles
       totalPages={1}
       showInfiniteScroll={false}
+      queuePagination={searchQueuePagination}
+      streamOrigin={activeSearchOrigin}
       emptyTitle={buildSearchQuery()
         ? 'No stories matched'
         : 'No stories found'}

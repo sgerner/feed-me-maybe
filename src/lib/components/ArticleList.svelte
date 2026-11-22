@@ -64,6 +64,13 @@
     matchesOfflineVisibility,
     type OfflineArticle,
   } from '#lib/offline/index.ts';
+  import {
+    buildReaderArticleHref,
+    READER_QUEUE_STORAGE_KEY,
+    serializeReaderQueue,
+    validateStreamOrigin,
+    type ReaderQueuePagination,
+  } from '#lib/reader-queue.ts';
 
   type InteractionType = TriageAction;
   type ReactionType = 'thumbs_up' | 'unthumbs_up' | 'thumbs_down' | 'boost';
@@ -100,6 +107,8 @@
     initialPage = 1,
     feedId = null,
     loadMoreSearchParams = {},
+    queuePagination = undefined,
+    streamOrigin = undefined,
     showInfiniteScroll = true,
     liveUpdates = false,
     onLiveArticlesAdded,
@@ -119,6 +128,8 @@
     initialPage?: number;
     feedId?: string | null;
     loadMoreSearchParams?: Record<string, string>;
+    queuePagination?: ReaderQueuePagination | null;
+    streamOrigin?: string | null;
     showInfiniteScroll?: boolean;
     liveUpdates?: boolean;
     onLiveArticlesAdded?: (articleIds: string[]) => void;
@@ -277,17 +288,7 @@
 
     writeScrollRestoreState();
     if (mode !== 'tab') {
-      try {
-        sessionStorage.setItem(
-          'feed-me-maybe:reader-queue',
-          JSON.stringify({
-            ids: articles.map((item: Article) => item.id),
-            source: pageStore.url.pathname + pageStore.url.search,
-          }),
-        );
-      } catch {
-        // Direct reader navigation still works without session storage.
-      }
+      writeReaderQueue();
     }
 
     if (openingTimeout) clearTimeout(openingTimeout);
@@ -341,7 +342,12 @@
       }
       await tick();
       try {
-        await goto(`/articles/${article.id}?mode=${mode}`);
+        await goto(
+          buildReaderArticleHref(article.id, {
+            mode,
+            from: currentStreamOrigin(),
+          }),
+        );
       } catch (err) {
         console.error('Failed to navigate to article', err);
         if (openCachedArticle) {
@@ -572,6 +578,23 @@
         console.debug('Offline article cache unavailable', error);
       },
     );
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined' || queuePagination === undefined) return;
+    const activeOrigin = currentStreamOrigin();
+    void articles.length;
+    void queuePagination;
+    try {
+      const raw = sessionStorage.getItem(READER_QUEUE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { source?: unknown } | null;
+      if (validateStreamOrigin(parsed?.source) === activeOrigin) {
+        writeReaderQueue();
+      }
+    } catch {
+      // Ignore storage access errors.
+    }
   });
 
   async function interact(articleId: string, requestedType: InteractionType) {
@@ -830,6 +853,51 @@
     await shareArticleLink(article, 'Link copied');
   }
 
+  function currentStreamOrigin(): string {
+    if (streamOrigin) {
+      return validateStreamOrigin(streamOrigin) ?? '/';
+    }
+    return (
+      validateStreamOrigin(
+        `${pageStore.url.pathname}${pageStore.url.search}`,
+      ) ?? '/'
+    );
+  }
+
+  function currentQueuePagination(): ReaderQueuePagination | null {
+    if (queuePagination !== undefined) {
+      return queuePagination;
+    }
+    if (!showInfiniteScroll) {
+      return null;
+    }
+    return {
+      kind: 'articles',
+      hasMore,
+      page,
+      limit: 25,
+      removedCount: removedFromPage,
+      initialPage,
+      feedId,
+      params: { ...loadMoreSearchParams },
+    };
+  }
+
+  function writeReaderQueue(): void {
+    try {
+      const serialized = serializeReaderQueue({
+        ids: articles.map((item: Article) => item.id),
+        source: currentStreamOrigin(),
+        pagination: currentQueuePagination(),
+      });
+      if (serialized) {
+        sessionStorage.setItem(READER_QUEUE_STORAGE_KEY, serialized);
+      }
+    } catch {
+      // Direct reader navigation still works without session storage.
+    }
+  }
+
   function articleMode(article: Article): string {
     return (
       article.feed_open_mode ||
@@ -842,7 +910,10 @@
     const mode = articleMode(article);
     return mode === 'tab'
       ? article.url
-      : `/articles/${article.id}?mode=${encodeURIComponent(mode)}`;
+      : buildReaderArticleHref(article.id, {
+          mode,
+          from: currentStreamOrigin(),
+        });
   }
 
   function handleArticleLinkClick(event: MouseEvent, article: Article): void {
@@ -855,6 +926,9 @@
       event.shiftKey ||
       event.altKey
     ) {
+      if (articleMode(article) !== 'tab') {
+        writeReaderQueue();
+      }
       return;
     }
 
@@ -947,6 +1021,7 @@
         const data = await res.json();
         if (data.articles.length === 0) {
           hasMore = false;
+          writeReaderQueue();
         } else {
           const seen = new SvelteSet(
             articles.map((article: Article) => article.id),
@@ -962,6 +1037,7 @@
           page += 1;
           advanced = true;
           if (data.articles.length < 25) hasMore = false;
+          writeReaderQueue();
         }
       } else {
         console.error('Failed to load more articles', res.status);
@@ -1677,6 +1753,11 @@
             onpointermove={(e) => handlePointerMove(e, article.id)}
             onpointerup={(e) => handlePointerUp(e, article.id)}
             onpointercancel={(e) => handlePointerCancel(e, article.id)}
+            onauxclick={(e) => {
+              if (e.button === 1 && articleMode(article) !== 'tab') {
+                writeReaderQueue();
+              }
+            }}
             onclick={(e) => handleArticleLinkClick(e, article)}
           >
             {#if article.image_url}

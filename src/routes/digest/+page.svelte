@@ -13,6 +13,13 @@
   import { formatContent } from '#lib/utils/format.ts';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import {
+    buildReaderArticleHref,
+    deduplicateArticleIds,
+    READER_QUEUE_STORAGE_KEY,
+    serializeReaderQueue,
+    validateStreamOrigin,
+  } from '#lib/reader-queue.ts';
+  import {
     EMPTY_DIGEST,
     type DigestArticle,
     type WeeklyDigestResult as WeeklyDigest,
@@ -48,6 +55,33 @@
     return String(pageStore.data.userId || 'admin');
   }
 
+  const digestSource = $derived(
+    validateStreamOrigin(`${pageStore.url.pathname}${pageStore.url.search}`) ??
+      '/digest',
+  );
+
+  function digestArticleHref(articleId: string): string {
+    return buildReaderArticleHref(articleId, {
+      mode: 'app',
+      from: digestSource,
+    });
+  }
+
+  function writeDigestSectionQueue(sectionIds: readonly string[]): void {
+    try {
+      const serialized = serializeReaderQueue({
+        ids: deduplicateArticleIds(sectionIds),
+        source: digestSource,
+        pagination: null,
+      });
+      if (serialized) {
+        sessionStorage.setItem(READER_QUEUE_STORAGE_KEY, serialized);
+      }
+    } catch {
+      // Direct reader navigation still works without session storage.
+    }
+  }
+
   async function openDigestArticle(
     event: MouseEvent,
     article: {
@@ -61,7 +95,9 @@
       saved?: boolean | number;
       hidden?: boolean | number;
     },
+    sectionIds: readonly string[],
   ) {
+    writeDigestSectionQueue(sectionIds);
     if (
       event.button !== 0 ||
       event.metaKey ||
@@ -137,6 +173,10 @@
     return result;
   });
 
+  const rankedStoryIds = $derived(
+    rankedStories.map((story) => story.article.id),
+  );
+
   const isAllListVisible = $derived(
     showAll || allQuery.trim().length > 0 || activeClusterFilter !== null,
   );
@@ -155,6 +195,10 @@
         .includes(query);
     });
   });
+
+  const filteredAllArticleIds = $derived(
+    filteredAllArticles.map((article) => article.id),
+  );
 
   function isTrue(value: boolean | number | undefined): boolean {
     return value === true || value === 1;
@@ -666,9 +710,18 @@
                           >{/if}
                       </div>
                       <a
-                        href="/articles/{story.article.id}?mode=app"
+                        href={digestArticleHref(story.article.id)}
+                        onauxclick={(e) => {
+                          if (e.button === 1) {
+                            writeDigestSectionQueue(rankedStoryIds);
+                          }
+                        }}
                         onclick={(e) =>
-                          void openDigestArticle(e, story.article)}
+                          void openDigestArticle(
+                            e,
+                            story.article,
+                            rankedStoryIds,
+                          )}
                         class="block min-h-7 py-0.5 text-base font-semibold leading-snug text-surface-50 underline decoration-transparent underline-offset-4 transition group-hover:decoration-primary-300/50 md:text-lg"
                         >{story.article.title}</a
                       >{#if story.reason}<div
@@ -744,8 +797,20 @@
                   </div>
                   <div class="mt-2 space-y-1.5">
                     {#each theme.articles.slice(0, 3) as article (article.id)}<a
-                        href="/articles/{article.id}?mode=app"
-                        onclick={(e) => void openDigestArticle(e, article)}
+                        href={digestArticleHref(article.id)}
+                        onauxclick={(e) => {
+                          if (e.button === 1) {
+                            writeDigestSectionQueue(
+                              theme.articles.slice(0, 3).map((item) => item.id),
+                            );
+                          }
+                        }}
+                        onclick={(e) =>
+                          void openDigestArticle(
+                            e,
+                            article,
+                            theme.articles.slice(0, 3).map((item) => item.id),
+                          )}
                         class="flex min-h-7 items-center truncate py-1.5 text-xs text-primary-300 hover:text-primary-200"
                         >{article.title}</a
                       >{/each}
@@ -904,8 +969,14 @@
               >
                 <div class="min-w-0 flex-1">
                   <a
-                    href="/articles/{article.id}?mode=app"
-                    onclick={(e) => void openDigestArticle(e, article)}
+                    href={digestArticleHref(article.id)}
+                    onauxclick={(e) => {
+                      if (e.button === 1) {
+                        writeDigestSectionQueue(filteredAllArticleIds);
+                      }
+                    }}
+                    onclick={(e) =>
+                      void openDigestArticle(e, article, filteredAllArticleIds)}
                     class="line-clamp-2 min-h-6 py-0.5 text-sm font-medium text-surface-100 hover:text-primary-200"
                     >{article.title}</a
                   >
