@@ -1,7 +1,19 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import dns from 'node:dns/promises';
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { DELETE, PATCH, POST } from './+server';
+import { DELETE as DELETE_BY_ID, PATCH as PATCH_BY_ID } from './[id]/+server';
+import { POST as TEST_BY_ID } from './[id]/test/+server';
 
 type Handler = typeof POST | typeof PATCH | typeof DELETE;
 
@@ -16,6 +28,20 @@ describe('webhooks API request bodies', () => {
 
     const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     initializeDatabase();
+  });
+
+  beforeEach(() => {
+    vi.spyOn(dns, 'lookup').mockImplementation(async (hostname: string) => {
+      if (hostname.includes('private') || hostname.includes('127.0.0.1')) {
+        return [{ address: '127.0.0.1', family: 4 }] as never;
+      }
+      return [{ address: '93.184.216.34', family: 4 }] as never;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   afterAll(async () => {
@@ -121,6 +147,19 @@ describe('webhooks API request bodies', () => {
     expect(await webhookCount()).toBe(0);
   });
 
+  it('rejects DNS rebinding URLs on create and update', async () => {
+    const rebindRes = await send(
+      POST,
+      'POST',
+      JSON.stringify({
+        ...validWebhook,
+        url: 'https://127.0.0.1.nip.io/webhook',
+      }),
+    );
+    expect(rebindRes.status).toBe(400);
+    expect(await rebindRes.json()).toMatchObject({ field: 'url' });
+  });
+
   it('accepts a null secret as no secret, as before', async () => {
     const response = await send(
       POST,
@@ -134,27 +173,69 @@ describe('webhooks API request bodies', () => {
     await send(DELETE, 'DELETE', JSON.stringify({ id }));
   });
 
-  it('still creates, updates and deletes a webhook with valid bodies', async () => {
-    const created = await send(POST, 'POST', JSON.stringify(validWebhook));
+  it('creates, updates, tests, and deletes a webhook via collection and [id] routes', async () => {
+    const fetchMock = vi.fn(async () => new Response('OK', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await send(
+      POST,
+      'POST',
+      JSON.stringify({
+        ...validWebhook,
+        url: 'https://1.1.1.1/hook',
+        secret: 'initial-secret',
+      }),
+    );
     expect(created.status).toBe(200);
     const { id } = await created.json();
     expect(await webhookCount()).toBe(1);
 
-    const updated = await send(
-      PATCH,
-      'PATCH',
-      JSON.stringify({ id, name: 'Renamed', enabled: false }),
-    );
-    expect(updated.status).toBe(200);
+    const updatedById = await PATCH_BY_ID({
+      params: { id },
+      request: new Request(`http://localhost/api/webhooks/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Renamed By Id',
+          url: 'https://1.1.1.1/updated-hook',
+          events: ['article.saved', 'article.read'],
+          secret: 'rotated-secret',
+          enabled: false,
+        }),
+      }),
+      locals: { sessionId: 'test-session' },
+    } as Parameters<typeof PATCH_BY_ID>[0]);
+    expect(updatedById.status).toBe(200);
+
     const { getDb } = await import('#lib/server/db/index.ts');
     expect(
       getDb()
-        .prepare('SELECT name, enabled FROM webhooks WHERE id = ?')
+        .prepare('SELECT name, url, enabled FROM webhooks WHERE id = ?')
         .get(id),
-    ).toEqual({ name: 'Renamed', enabled: 0 });
+    ).toEqual({
+      name: 'Renamed By Id',
+      url: 'https://1.1.1.1/updated-hook',
+      enabled: 0,
+    });
 
-    const deleted = await send(DELETE, 'DELETE', JSON.stringify({ id }));
-    expect(deleted.status).toBe(200);
+    const testRes = await TEST_BY_ID({
+      params: { id },
+      locals: { sessionId: 'test-session' },
+    } as Parameters<typeof TEST_BY_ID>[0]);
+    expect(testRes.status).toBe(200);
+    const testPayload = await testRes.json();
+    expect(testPayload).toMatchObject({
+      ok: true,
+      status: 200,
+      error: null,
+    });
+    expect(typeof testPayload.durationMs).toBe('number');
+
+    const deletedById = await DELETE_BY_ID({
+      params: { id },
+      locals: { sessionId: 'test-session' },
+    } as Parameters<typeof DELETE_BY_ID>[0]);
+    expect(deletedById.status).toBe(200);
     expect(await webhookCount()).toBe(0);
   });
 });

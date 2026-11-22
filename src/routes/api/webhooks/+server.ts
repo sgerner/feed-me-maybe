@@ -4,20 +4,10 @@ import {
   updateWebhook,
   deleteWebhook,
   isWebhookEventList,
+  WebhookNotFoundError,
 } from '#lib/server/webhooks.ts';
 import { SafeFetchError } from '#lib/server/network.ts';
-
-/** The parsed body if it is a JSON object; null for malformed JSON, null, arrays and primitives. */
-async function readBody(request: Request): Promise<Record<string, any> | null> {
-  try {
-    const body: unknown = await request.json();
-    return body && typeof body === 'object' && !Array.isArray(body)
-      ? (body as Record<string, any>)
-      : null;
-  } catch {
-    return null;
-  }
-}
+import { readJsonObject } from '#lib/server/request-body.ts';
 
 const invalidBody = () =>
   Response.json({ error: 'Invalid body' }, { status: 400 });
@@ -26,14 +16,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await readBody(request);
+  const body = await readJsonObject(request);
   if (!body) return invalidBody();
   const { name, url, events, secret } = body;
 
   const missingField =
-    typeof name !== 'string' || !name
+    typeof name !== 'string' || !name.trim()
       ? 'name'
-      : typeof url !== 'string' || !url
+      : typeof url !== 'string' || !url.trim()
         ? 'url'
         : !isWebhookEventList(events)
           ? 'events'
@@ -56,7 +46,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   }
 
   try {
-    const id = createWebhook(name, url, events, secret);
+    const id = await createWebhook(
+      (name as string).trim(),
+      (url as string).trim(),
+      events as string[],
+      typeof secret === 'string' ? secret : undefined,
+    );
     return Response.json({ success: true, id });
   } catch (err: any) {
     if (err instanceof SafeFetchError) {
@@ -73,15 +68,27 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await readBody(request);
+  const body = await readJsonObject(request);
   if (!body) return invalidBody();
   const { id, ...updates } = body;
 
   if (typeof id !== 'string' || !id)
     return Response.json({ error: 'id is required' }, { status: 400 });
-  if (updates.name !== undefined && typeof updates.name !== 'string') {
+  if (
+    updates.name !== undefined &&
+    (typeof updates.name !== 'string' || !updates.name.trim())
+  ) {
     return Response.json(
-      { error: 'Name must be text', field: 'name' },
+      { error: 'Name must be non-empty text', field: 'name' },
+      { status: 400 },
+    );
+  }
+  if (
+    updates.url !== undefined &&
+    (typeof updates.url !== 'string' || !updates.url.trim())
+  ) {
+    return Response.json(
+      { error: 'Target URL must be non-empty text', field: 'url' },
       { status: 400 },
     );
   }
@@ -91,19 +98,49 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
       { status: 400 },
     );
   }
-  if (updates.secret !== undefined && typeof updates.secret !== 'string') {
+  if (
+    updates.secret !== undefined &&
+    updates.secret !== null &&
+    typeof updates.secret !== 'string'
+  ) {
     return Response.json(
       { error: 'Signing secret must be text', field: 'secret' },
       { status: 400 },
     );
   }
+  if (updates.enabled !== undefined && typeof updates.enabled !== 'boolean') {
+    return Response.json(
+      { error: 'enabled must be a boolean', field: 'enabled' },
+      { status: 400 },
+    );
+  }
 
   try {
-    updateWebhook(id, updates);
+    await updateWebhook(id, {
+      ...(typeof updates.name === 'string'
+        ? { name: updates.name.trim() }
+        : {}),
+      ...(typeof updates.url === 'string' ? { url: updates.url.trim() } : {}),
+      ...(Array.isArray(updates.events)
+        ? { events: updates.events as string[] }
+        : {}),
+      ...(updates.secret === null || typeof updates.secret === 'string'
+        ? { secret: updates.secret }
+        : {}),
+      ...(typeof updates.enabled === 'boolean'
+        ? { enabled: updates.enabled }
+        : {}),
+    });
     return Response.json({ success: true });
   } catch (err: any) {
+    if (err instanceof WebhookNotFoundError) {
+      return Response.json({ error: err.message }, { status: 404 });
+    }
     if (err instanceof SafeFetchError) {
-      return Response.json({ error: err.message }, { status: 400 });
+      return Response.json(
+        { error: err.message, field: 'url' },
+        { status: 400 },
+      );
     }
     return Response.json({ error: err.message }, { status: 500 });
   }
@@ -113,7 +150,7 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const body = await readBody(request);
+  const body = await readJsonObject(request);
   if (!body) return invalidBody();
   const { id } = body;
 

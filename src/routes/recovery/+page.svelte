@@ -177,6 +177,7 @@
               <span>{relativeTime(article.stateChangedAt)}</span>
             </div>
             <a
+              id="recovery-title-{article.id}"
               class="block font-semibold text-surface-100 no-underline transition hover:text-primary-300"
               href="/articles/{article.id}">{article.title}</a
             >
@@ -184,12 +185,16 @@
           <div class="flex shrink-0 items-center gap-2">
             <a
               class="btn preset-tonal no-underline"
-              href="/articles/{article.id}">Review</a
+              href="/articles/{article.id}"
+              aria-label="Review {article.title}">Review</a
             >
             <button
               type="button"
               class="btn preset-filled-secondary-500"
               id="restore-{article.id}"
+              aria-label={restoring[article.id]
+                ? `Restoring ${article.title}`
+                : `Restore ${article.title}`}
               onclick={(event) => void restore(article, event.currentTarget)}
               disabled={Boolean(restoring[article.id])}
               >{restoring[article.id] ? 'Restoring…' : 'Restore'}</button

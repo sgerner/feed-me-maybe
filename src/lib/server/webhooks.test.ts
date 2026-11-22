@@ -8,12 +8,15 @@ import {
   afterEach,
   vi,
 } from 'vitest';
+import dns from 'node:dns/promises';
 import {
   createWebhook,
   dispatchWebhookEvent,
   deleteWebhook,
   getWebhooks,
+  testWebhook,
   updateWebhook,
+  validatePublicUrlWithDns,
 } from './webhooks';
 import { recordInteraction } from './interactions';
 import { closeDb, getDb } from './db';
@@ -40,6 +43,9 @@ describe('Webhooks', () => {
 
   beforeEach(() => {
     closeDb();
+    const db = getDb();
+    db.prepare('DELETE FROM webhooks').run();
+    db.prepare('DELETE FROM app_error_logs').run();
     receivedRequest = null;
     fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       receivedRequest = {
@@ -53,6 +59,7 @@ describe('Webhooks', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     closeDb();
   });
@@ -65,7 +72,7 @@ describe('Webhooks', () => {
   });
 
   it('should register and dispatch a webhook event', async () => {
-    const hookId = createWebhook(
+    const hookId = await createWebhook(
       'Test Hook',
       WEBHOOK_URL,
       ['article.saved'],
@@ -80,25 +87,25 @@ describe('Webhooks', () => {
 
     await dispatchWebhookEvent(event);
 
-    // Wait a bit for async dispatch
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
     expect(receivedRequest).not.toBeNull();
     expect(receivedRequest.url).toBe(WEBHOOK_URL);
     expect(receivedRequest.headers.get('x-feed-me-maybe-event')).toBe(
       'article.saved',
     );
-    expect(
-      receivedRequest.headers.get('x-feed-me-maybe-signature'),
-    ).toBeDefined();
+    expect(receivedRequest.headers.get('x-feed-me-maybe-timestamp')).toBe(
+      String(event.timestamp),
+    );
+    expect(receivedRequest.headers.get('x-feed-me-maybe-signature')).toMatch(
+      /^sha256=[0-9a-f]{64}$/,
+    );
     expect(receivedRequest.body.type).toBe('article.saved');
     expect(receivedRequest.body.payload.article.title).toBe('Test');
 
     deleteWebhook(hookId);
   });
 
-  it('does not expose webhook secrets through settings data', () => {
-    const hookId = createWebhook(
+  it('does not expose webhook secrets through settings data', async () => {
+    const hookId = await createWebhook(
       'Private Hook',
       WEBHOOK_URL,
       ['article.saved'],
@@ -117,8 +124,8 @@ describe('Webhooks', () => {
     deleteWebhook(hookId);
   });
 
-  it('does not send an unsigned event when an encrypted secret cannot be read', async () => {
-    const hookId = createWebhook('Restored Hook', WEBHOOK_URL, [
+  it('does not send an unsigned event when an encrypted secret cannot be read and surfaces failure status', async () => {
+    const hookId = await createWebhook('Restored Hook', WEBHOOK_URL, [
       'article.saved',
     ]);
     const db = getDb();
@@ -138,12 +145,16 @@ describe('Webhooks', () => {
       expect(
         db
           .prepare(
-            "SELECT message FROM app_error_logs WHERE source = 'webhook.dispatch'",
+            "SELECT message FROM app_error_logs WHERE source = 'webhooks'",
           )
           .pluck()
           .all(),
       ).toContain(
         'Webhook signing secret is unreadable. Restore APP_SECRET or replace the signing secret.',
+      );
+      const hookWithStatus = getWebhooks().find((item) => item.id === hookId);
+      expect(hookWithStatus?.last_error).toContain(
+        'Webhook signing secret is unreadable',
       );
     } finally {
       errorLog.mockRestore();
@@ -151,22 +162,77 @@ describe('Webhooks', () => {
     }
   });
 
-  it('rejects private webhook destinations on create and update', () => {
-    expect(() =>
+  it('rejects private and DNS-rebinding webhook destinations on create and update', async () => {
+    await expect(
       createWebhook('Local Hook', 'http://127.0.0.1:5555/webhook', [
         'article.saved',
       ]),
-    ).toThrow(/private network/i);
+    ).rejects.toThrow(/private network/i);
 
-    const hookId = createWebhook('Public Hook', WEBHOOK_URL, ['article.saved']);
-    expect(() =>
+    await expect(
+      createWebhook('Nip Rebind Hook', 'http://127.0.0.1.nip.io/webhook', [
+        'article.saved',
+      ]),
+    ).rejects.toThrow(/private network/i);
+
+    const lookupSpy = vi
+      .spyOn(dns, 'lookup')
+      .mockResolvedValue([{ address: '10.0.0.8', family: 4 }] as never);
+    await expect(
+      validatePublicUrlWithDns('https://rebind.example.com/webhook'),
+    ).rejects.toThrow(/private network/i);
+    lookupSpy.mockRestore();
+
+    const hookId = await createWebhook('Public Hook', WEBHOOK_URL, [
+      'article.saved',
+    ]);
+    await expect(
       updateWebhook(hookId, { url: 'http://localhost/webhook' }),
-    ).toThrow(/private network/i);
+    ).rejects.toThrow(/private network/i);
+    await expect(
+      updateWebhook(hookId, { url: 'https://192.168.1.1.sslip.io/webhook' }),
+    ).rejects.toThrow(/private network/i);
+    deleteWebhook(hookId);
+  });
+
+  it('sends a signed test payload and clears failure status when recovery succeeds', async () => {
+    const hookId = await createWebhook(
+      'Test Ping Hook',
+      WEBHOOK_URL,
+      ['article.saved'],
+      'ping-secret',
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response('Server Error', { status: 503, statusText: 'Unavailable' }),
+    );
+    const failedTest = await testWebhook(hookId);
+    expect(failedTest.ok).toBe(false);
+    expect(failedTest.status).toBe(503);
+    expect(failedTest.error).toContain('HTTP 503');
+    expect(getWebhooks().find((h) => h.id === hookId)?.last_error).toContain(
+      'HTTP 503',
+    );
+
+    const okTest = await testWebhook(hookId);
+    expect(okTest.ok).toBe(true);
+    expect(okTest.status).toBe(200);
+    expect(okTest.error).toBeNull();
+    expect(receivedRequest.headers.get('x-feed-me-maybe-event')).toBe(
+      'webhook.test',
+    );
+    expect(receivedRequest.headers.get('x-feed-me-maybe-signature')).toMatch(
+      /^sha256=[0-9a-f]{64}$/,
+    );
+    expect(getWebhooks().find((h) => h.id === hookId)?.last_error).toBeNull();
+
     deleteWebhook(hookId);
   });
 
   it('should not dispatch if event type is not subscribed', async () => {
-    const hookId = createWebhook('Test Hook', WEBHOOK_URL, ['other.event']);
+    const hookId = await createWebhook('Test Hook', WEBHOOK_URL, [
+      'other.event',
+    ]);
 
     const event = {
       type: 'article.saved' as const,
@@ -176,7 +242,6 @@ describe('Webhooks', () => {
 
     await dispatchWebhookEvent(event);
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
     expect(receivedRequest).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
 
@@ -184,7 +249,6 @@ describe('Webhooks', () => {
   });
 
   it('should trigger webhook when article is saved via recordInteraction', async () => {
-    // Seed an article
     const db = getDb();
     db.prepare(
       'INSERT OR IGNORE INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
@@ -201,14 +265,13 @@ describe('Webhooks', () => {
       Date.now(),
     );
 
-    const hookId = createWebhook('Integration Hook', WEBHOOK_URL, [
+    const hookId = await createWebhook('Integration Hook', WEBHOOK_URL, [
       'article.saved',
     ]);
 
     recordInteraction('test-article', 'save');
 
-    // Wait a bit for async dispatch
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(receivedRequest).not.toBeNull();
     expect(receivedRequest.headers.get('x-feed-me-maybe-event')).toBe(

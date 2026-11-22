@@ -1,5 +1,6 @@
 <script lang="ts">
   import { refreshAll } from '$app/navigation';
+  import { tick } from 'svelte';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { enhance } from '$app/forms';
   import ThemeChooser from '#lib/components/ThemeChooser.svelte';
@@ -14,6 +15,7 @@
     data.rankingProviderConfigured ?? { jev: false, subq: false },
   );
   let savingRankingProvider = $state(false);
+  let confirmingProviderChange = $state(false);
   let rankingProviderMessage = $state('');
 
   $effect(() => {
@@ -22,8 +24,23 @@
     savedRankingProvider = currentProvider;
   });
 
+  async function promptRankingProviderSwitch() {
+    if (savingRankingProvider || rankingProvider === savedRankingProvider)
+      return;
+    confirmingProviderChange = true;
+    await tick();
+    document.getElementById('confirm-ranking-provider-switch')?.focus();
+  }
+
+  async function cancelRankingProviderSwitch() {
+    confirmingProviderChange = false;
+    await tick();
+    document.getElementById('save-ranking-provider-trigger')?.focus();
+  }
+
   async function saveRankingProvider() {
     savingRankingProvider = true;
+    confirmingProviderChange = false;
     rankingProviderMessage = '';
     try {
       const response = await fetchWithCsrf('/api/settings', {
@@ -148,14 +165,46 @@
       </label>
       <button
         type="button"
+        id="save-ranking-provider-trigger"
         class="btn preset-filled-primary-500 inline-flex min-h-11 items-center justify-center text-sm"
-        onclick={saveRankingProvider}
+        onclick={promptRankingProviderSwitch}
         disabled={savingRankingProvider ||
           rankingProvider === savedRankingProvider}
       >
         {savingRankingProvider ? 'Saving…' : 'Save provider'}
       </button>
     </div>
+    {#if confirmingProviderChange && rankingProvider !== savedRankingProvider}
+      <div
+        class="mt-3 flex flex-wrap items-center justify-between gap-3 rounded border border-warning-500/30 bg-warning-500/10 p-3 text-xs text-surface-200"
+        role="group"
+        aria-label="Confirm ranking provider switch"
+      >
+        <span>
+          Switch to {rankingProvider === 'subq' ? 'SubQ Snap' : 'Jev'}? Existing
+          provider scores will be cleared and queued for recalculation.
+        </span>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            id="confirm-ranking-provider-switch"
+            class="btn preset-filled-primary-500 px-3 py-1.5 text-xs"
+            onclick={saveRankingProvider}
+            disabled={savingRankingProvider}
+          >
+            Confirm switch
+          </button>
+          <button
+            type="button"
+            class="btn preset-tonal px-3 py-1.5 text-xs"
+            onclick={cancelRankingProviderSwitch}
+            disabled={savingRankingProvider}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    {/if}
     <p
       id="ranking-provider-status"
       class="mt-3 text-xs leading-5 text-surface-300"
