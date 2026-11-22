@@ -3,7 +3,15 @@
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
-  import { formatContent, renderContent } from '#lib/utils/format.ts';
+  import {
+    extractArticleHeadings,
+    formatContent,
+    normalizeFragmentHref,
+    normalizeUserContentId,
+    renderContent,
+    shouldToggleReaderOutline,
+    type ReaderHeading,
+  } from '#lib/utils/format.ts';
   import { extractArticleImages } from '#lib/utils/article-images.ts';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
@@ -79,6 +87,9 @@
   let fullTextConfirmed = $state(false);
   let showSummaryInstead = $state(false);
   let heroImageBroken = $state(false);
+  let outlineHeadings = $state<ReaderHeading[]>([]);
+  let outlineOpen = $state(true);
+  let activeHeadingId = $state('');
   let loadFullTextController: AbortController | null = null;
   let activeArticleId = '';
   let restoringScroll = false;
@@ -291,6 +302,8 @@
       fullTextConfirmed = false;
       showSummaryInstead = false;
       heroImageBroken = false;
+      outlineHeadings = [];
+      activeHeadingId = '';
       readerMoreOpen = false;
       lightboxOpen = false;
       lightboxIndex = 0;
@@ -307,6 +320,12 @@
 
   const isEmbeddedMode = $derived(mode === 'iframe' || mode === 'proxy');
   const isReaderMode = $derived(mode === 'app' || mode === 'archive');
+  const hasOutline = $derived(isReaderMode && outlineHeadings.length >= 2);
+  const minOutlineHeadingLevel = $derived(
+    outlineHeadings.length > 0
+      ? Math.min(...outlineHeadings.map((heading) => heading.level))
+      : 2,
+  );
   const reactionsLocked = $derived(explicitlyHidden || disliked);
   const canRestore = $derived(hidden || explicitlyHidden || disliked);
   const isRedditPost = $derived(
@@ -357,11 +376,19 @@
       const existing = (await getCachedArticles(scope)).find(
         (item) => item.id === targetId,
       );
-      if (
-        existing?.content &&
-        existing.content.length > candidateContent.length
-      ) {
-        bestContent = existing.content;
+      if (existing?.content) {
+        const existingPlainLen = stripPlainText(existing.content).length;
+        const candidatePlainLen = stripPlainText(candidateContent).length;
+        const candidateHasMoreIds =
+          (candidateContent.match(/\bid="user-content-/gi) ?? []).length >
+          (existing.content.match(/\bid="user-content-/gi) ?? []).length;
+        if (
+          existingPlainLen > candidatePlainLen ||
+          (existing.content.length > candidateContent.length &&
+            !candidateHasMoreIds)
+        ) {
+          bestContent = existing.content;
+        }
       }
       if (article.id !== targetId) return;
       await cacheArticles(scope, [
@@ -455,6 +482,7 @@
       const max = Math.max(0, main.scrollHeight - main.clientHeight);
       readingProgress = max > 0 ? Math.round((main.scrollTop / max) * 100) : 0;
       saveArticleScrollProgress(article.id, main.scrollTop, max);
+      syncActiveHeading(main);
     };
 
     main?.addEventListener('scroll', updateProgress, { passive: true });
@@ -596,6 +624,155 @@
     };
   });
 
+  function escapeCssIdent(value: string): string {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      return CSS.escape(value);
+    }
+    return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+
+  function syncActiveHeading(
+    mainEl?: HTMLElement | null,
+    headings: readonly ReaderHeading[] = outlineHeadings,
+  ): void {
+    if (!isReaderMode || headings.length < 2 || !articleContentEl) {
+      activeHeadingId = '';
+      return;
+    }
+    const main =
+      mainEl ?? document.querySelector<HTMLElement>('#main-content, main');
+    const threshold = (main?.getBoundingClientRect().top ?? 0) + 96;
+    let current = headings[0]?.id ?? '';
+    for (const heading of headings) {
+      const el = articleContentEl.querySelector<HTMLElement>(
+        `#${escapeCssIdent(heading.id)}`,
+      );
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= threshold) {
+        current = heading.id;
+      } else {
+        break;
+      }
+    }
+    activeHeadingId = current;
+  }
+
+  function scrollToReaderAnchor(rawId: string): boolean {
+    if (typeof document === 'undefined' || !readerArticleEl) return false;
+    const normalizedId = normalizeUserContentId(rawId);
+    if (!normalizedId) return false;
+
+    const targetEl = readerArticleEl.querySelector<HTMLElement>(
+      `#${escapeCssIdent(normalizedId)}`,
+    );
+    if (!targetEl) return false;
+
+    let ancestor = targetEl.parentElement;
+    while (ancestor && ancestor !== readerArticleEl) {
+      if (ancestor instanceof HTMLDetailsElement && !ancestor.open) {
+        ancestor.open = true;
+      }
+      ancestor = ancestor.parentElement;
+    }
+
+    const main = document.querySelector<HTMLElement>('#main-content, main');
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+    const behavior: ScrollBehavior = prefersReducedMotion ? 'auto' : 'smooth';
+
+    if (main) {
+      const mainRect = main.getBoundingClientRect();
+      const targetRect = targetEl.getBoundingClientRect();
+      const scrollMarginTop =
+        Number.parseFloat(getComputedStyle(targetEl).scrollMarginTop) || 40;
+      const nextTop = Math.max(
+        0,
+        main.scrollTop + (targetRect.top - mainRect.top) - scrollMarginTop,
+      );
+      main.scrollTo({ top: nextTop, behavior });
+    } else {
+      targetEl.scrollIntoView({ behavior, block: 'start' });
+    }
+
+    if (outlineHeadings.some((heading) => heading.id === normalizedId)) {
+      activeHeadingId = normalizedId;
+    }
+
+    if (!targetEl.hasAttribute('tabindex')) {
+      targetEl.setAttribute('tabindex', '-1');
+    }
+    targetEl.focus({ preventScroll: true });
+    return true;
+  }
+
+  function handleOutlineLinkClick(event: MouseEvent, headingId: string): void {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    event.preventDefault();
+    scrollToReaderAnchor(headingId);
+  }
+
+  $effect(() => {
+    const content = articleContentEl;
+    const rendered = renderedArticleContent;
+    const summaryFallback = !activeBodyContent ? article.summary : null;
+    const readerActive = isReaderMode;
+    void rendered;
+    void summaryFallback;
+
+    if (!readerActive || !content) {
+      outlineHeadings = [];
+      activeHeadingId = '';
+      return;
+    }
+
+    const headings = extractArticleHeadings(content);
+    outlineHeadings = headings;
+    syncActiveHeading(null, headings);
+  });
+
+  $effect(() => {
+    const container = readerArticleEl;
+    if (!container) return;
+
+    const onReaderClick = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      const target = event.target instanceof Element ? event.target : null;
+      const anchor = target?.closest('a');
+      if (!anchor) return;
+      const rawHref = anchor.getAttribute('href')?.trim();
+      if (!rawHref || !rawHref.startsWith('#')) return;
+
+      event.preventDefault();
+      const normalizedHref = normalizeFragmentHref(rawHref);
+      if (!normalizedHref) return;
+      scrollToReaderAnchor(normalizedHref.slice(1));
+    };
+
+    container.addEventListener('click', onReaderClick);
+    return () => {
+      container.removeEventListener('click', onReaderClick);
+    };
+  });
+
   $effect(() => {
     if (!lightboxBackdropEl) return;
 
@@ -680,6 +857,22 @@
     }
 
     if (!lightboxOpen) {
+      const hasOpenModal = Boolean(
+        document.querySelector('dialog[open], [aria-modal="true"]'),
+      );
+      if (
+        shouldToggleReaderOutline(event, {
+          singleKeyShortcutsEnabled: getSingleKeyShortcutsEnabled(),
+          lightboxOpen,
+          isReaderMode,
+          headingCount: outlineHeadings.length,
+          hasOpenModal,
+        })
+      ) {
+        event.preventDefault();
+        outlineOpen = !outlineOpen;
+        return;
+      }
       if (
         event.defaultPrevented ||
         event.repeat ||
@@ -687,6 +880,7 @@
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
+        hasOpenModal ||
         (event.target instanceof Element &&
           event.target.closest(
             'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="dialog"], dialog[open], [aria-modal="true"]',
@@ -1388,6 +1582,113 @@
           </div>
         {/if}
 
+        {#if hasOutline}
+          <nav
+            aria-label="Table of contents"
+            data-no-reader-swipe
+            class="mb-6 border"
+            style="background: color-mix(in oklch, var(--color-surface-900) 65%, transparent); border-color: color-mix(in oklch, var(--color-surface-100) 12%, transparent); border-radius: 2px;"
+          >
+            <button
+              type="button"
+              class="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left text-xs font-semibold tracking-wide transition-colors hover:bg-white/[0.03]"
+              style="color: var(--color-surface-200);"
+              aria-expanded={outlineOpen}
+              aria-controls="reader-outline-list"
+              onclick={() => (outlineOpen = !outlineOpen)}
+            >
+              <span class="flex items-center gap-2">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  style="color: var(--color-primary-400);"
+                >
+                  <line x1="8" y1="6" x2="21" y2="6" />
+                  <line x1="8" y1="12" x2="21" y2="12" />
+                  <line x1="8" y1="18" x2="21" y2="18" />
+                  <line x1="3" y1="6" x2="3.01" y2="6" />
+                  <line x1="3" y1="12" x2="3.01" y2="12" />
+                  <line x1="3" y1="18" x2="3.01" y2="18" />
+                </svg>
+                <span>Table of contents</span>
+                <span
+                  class="rounded px-1.5 py-0.5 text-[11px] font-medium"
+                  style="background: color-mix(in oklch, var(--color-surface-100) 8%, transparent); color: var(--color-surface-300);"
+                >
+                  {outlineHeadings.length}
+                </span>
+              </span>
+              <span class="flex items-center gap-2">
+                <kbd
+                  class="hidden rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono text-[11px] font-normal text-surface-300 sm:inline-block"
+                  title="Press [ to toggle table of contents">[</kbd
+                >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  class="transition-transform duration-150 {outlineOpen
+                    ? 'rotate-180'
+                    : ''}"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </span>
+            </button>
+
+            {#if outlineOpen}
+              <ol
+                id="reader-outline-list"
+                class="max-h-60 overflow-y-auto border-t px-2 py-2 text-sm"
+                style="border-color: color-mix(in oklch, var(--color-surface-100) 10%, transparent);"
+              >
+                {#each outlineHeadings as heading (heading.id)}
+                  {@const isActive = activeHeadingId === heading.id}
+                  {@const depth = Math.max(
+                    0,
+                    heading.level - minOutlineHeadingLevel,
+                  )}
+                  <li>
+                    <a
+                      href={`#${heading.id}`}
+                      onclick={(event) =>
+                        handleOutlineLinkClick(event, heading.id)}
+                      aria-current={isActive ? 'location' : undefined}
+                      class="block truncate rounded-sm border-l-2 py-1 pr-2.5 text-[13px] leading-snug no-underline transition-colors hover:bg-white/[0.04]"
+                      style="padding-left: {(0.625 + depth * 0.875).toFixed(
+                        3,
+                      )}rem; border-color: {isActive
+                        ? 'var(--color-primary-400)'
+                        : 'transparent'}; color: {isActive
+                        ? 'var(--color-primary-300)'
+                        : 'var(--color-surface-200)'}; background: {isActive
+                        ? 'color-mix(in oklch, var(--color-primary-500) 8%, transparent)'
+                        : 'transparent'};"
+                    >
+                      {heading.text}
+                    </a>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+          </nav>
+        {/if}
+
         <div
           class="prose prose-glass max-w-none min-w-0 overflow-x-auto break-words [&_img]:cursor-zoom-in"
           bind:this={articleContentEl}
@@ -1972,19 +2273,6 @@
 
   :global(.prose-glass.prose ol) {
     list-style-type: decimal;
-  }
-
-  :global(.prose-glass.prose pre code) {
-    background: transparent;
-    padding: 0;
-  }
-
-  :global(.prose-glass.prose th),
-  :global(.prose-glass.prose td) {
-    border: 1px solid
-      color-mix(in oklch, var(--color-surface-100) 14%, transparent);
-    padding: 0.5rem 0.75rem;
-    text-align: left;
   }
 
   @media (min-width: 768px) {

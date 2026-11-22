@@ -230,6 +230,18 @@
     return formatted;
   }
 
+  function getHighlightedExcerpt(article: Article): string {
+    for (const candidate of [
+      article.summary_highlight,
+      article.content_highlight,
+    ]) {
+      if (!candidate || !candidate.includes('<mark>')) continue;
+      const sanitized = stripSummaryLinks(sanitizeHtml(candidate));
+      if (sanitized.includes('<mark>')) return sanitized;
+    }
+    return '';
+  }
+
   async function openArticle(article: Article) {
     if (navigator.onLine === false && openCachedArticle) {
       const nextReadArticle = article.read
@@ -1576,13 +1588,10 @@
       {@const swipeOffset =
         activeSwipeId === article.id ? activeSwipeOffset : 0}
       {@const articleDate = article.published_at || article.fetched_at}
-      {@const highlightedSummary =
-        article.summary_highlight || article.content_highlight}
-      {@const formattedSummary = highlightedSummary
-        ? stripSummaryLinks(sanitizeHtml(highlightedSummary))
-        : article.summary
-          ? getFormattedSummary(article)
-          : ''}
+      {@const highlightedSummary = getHighlightedExcerpt(article)}
+      {@const formattedSummary =
+        highlightedSummary ||
+        (article.summary ? getFormattedSummary(article) : '')}
       <div class="relative rounded-sm">
         <!-- Swipe Action Indicators -->
         {#if swipeOffset !== 0}
@@ -1732,7 +1741,7 @@
                 {/if}
               </h2>
 
-              {#if article.summary || article.summary_highlight || article.content_highlight}
+              {#if formattedSummary}
                 <div
                   class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
                   style="color: var(--color-surface-300);"

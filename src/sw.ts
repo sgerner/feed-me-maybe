@@ -43,6 +43,7 @@ function buildOfflineSvelteKitDataResponse(url: URL): Response | null {
         data: [
           {
             feeds: 1,
+            pinnedSearches: 1,
             sessionId: 2,
             userId: 3,
             globalSettings: 4,
