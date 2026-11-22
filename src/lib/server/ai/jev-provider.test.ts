@@ -7,8 +7,9 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 vi.mock('node:dns/promises', () => ({
   default: {
@@ -17,9 +18,8 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 describe('selected ranking provider', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-ranking-provider.db');
-  const testSubqKeyPath = `${testDbPath}.subq-key`;
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
+  let testSubqKeyPath = '';
   const originalEnv = {
     JEV_API_KEY: process.env.JEV_API_KEY,
     JEV_API_KEY_FILE: process.env.JEV_API_KEY_FILE,
@@ -29,15 +29,12 @@ describe('selected ranking provider', () => {
     SUBQ_API_KEY_FILE: process.env.SUBQ_API_KEY_FILE,
   };
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-ranking-provider-');
+    testSubqKeyPath = join(testDb.dir, 'subq-key');
   });
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.restoreAllMocks();
     process.env.JEV_API_KEY = 'test-jev-key';
     process.env.TYPESAFE_API_KEY = '';
@@ -46,15 +43,8 @@ describe('selected ranking provider', () => {
     process.env.SUBQ_API_KEY = 'test-subq-key';
     process.env.SUBQ_API_KEY_FILE = '';
 
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM ranking_refresh_queue').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM user_interactions').run();
-    db.prepare('DELETE FROM user_preference_memory').run();
-    db.prepare('DELETE FROM article_ai_metadata').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+    testDb.reset();
+    const db = testDb.db;
     db.prepare(
       "DELETE FROM app_settings WHERE key IN ('ranking_provider_revision', 'ranking_feedback_revision', 'provider_cooldown_jev_process')",
     ).run();
@@ -74,20 +64,13 @@ describe('selected ranking provider', () => {
     );
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     vi.restoreAllMocks();
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
+    testDb.cleanup();
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
-    if (existsSync(testSubqKeyPath)) unlinkSync(testSubqKeyPath);
   });
 
   async function insertArticle(id: string, jevScore: number | null = null) {

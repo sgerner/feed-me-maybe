@@ -1,38 +1,24 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 describe('weekly digest', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-weekly-digest.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-digest-');
   });
 
-  beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare(
-      "DELETE FROM app_settings WHERE key LIKE 'weekly_digest_cache%' OR key IN ('calm_daily_briefing_history', 'ai_enabled')",
-    ).run();
-    db.prepare('DELETE FROM provider_configs').run();
-    db.prepare('DELETE FROM user_interactions').run();
-    db.prepare('DELETE FROM article_ai_metadata').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+  beforeEach(() => {
+    testDb.reset();
+    testDb.db
+      .prepare(
+        "DELETE FROM app_settings WHERE key LIKE 'weekly_digest_cache%' OR key IN ('calm_daily_briefing_history', 'ai_enabled')",
+      )
+      .run();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    if (existsSync(testDbPath)) unlinkSync(testDbPath);
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('summarizes the last 7 days and reuses the weekly cache', async () => {

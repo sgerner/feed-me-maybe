@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import ArticleList from '#lib/components/ArticleList.svelte';
@@ -142,16 +143,17 @@
   }
 
   const matchedFeeds = $derived.by(() => {
-    const seen = new Map<string, { id: string; title: string }>();
+    const seen: Record<string, { id: string; title: string }> =
+      Object.create(null);
     for (const article of articles) {
       const feedId = article.feed_id?.trim();
-      if (!feedId || seen.has(feedId)) continue;
-      seen.set(feedId, {
+      if (!feedId || seen[feedId]) continue;
+      seen[feedId] = {
         id: feedId,
         title: article.feed_title?.trim() || 'Feed',
-      });
+      };
     }
-    return [...seen.values()];
+    return Object.values(seen);
   });
 
   function tokenizeSearchInput(raw: string): string[] {
@@ -234,7 +236,7 @@
     const searchText = query.trim();
     const searchFilter = activeFilter;
     const searchQuery = buildSearchQuery();
-    const params = new URLSearchParams();
+    const params = new SvelteURLSearchParams();
     if (searchQuery) params.set('q', searchQuery);
     if (sort === 'recent') params.set('sort', 'recent');
 
@@ -275,7 +277,7 @@
           await goto(target, { reset: false });
         }
       }
-    } catch (error) {
+    } catch {
       if (controller.signal.aborted || sequence !== searchSequence) return;
       if (httpErrorMessage === null) {
         const cached = await getCachedArticles(
@@ -338,7 +340,7 @@
     loadMoreController = controller;
     loadingMore = true;
     try {
-      const params = new URLSearchParams({
+      const params = new SvelteURLSearchParams({
         q: buildSearchQuery(),
         cursor,
       });
@@ -714,7 +716,7 @@
       aria-label="Search filters"
       hidden={!showFilters}
     >
-      {#each FILTERS as filter}
+      {#each FILTERS as filter (filter.value)}
         <button
           type="button"
           class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {activeFilter ===

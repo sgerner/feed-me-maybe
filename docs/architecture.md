@@ -60,7 +60,6 @@ src/
 │   │   │   └── ingester.ts  # Fetch → deduplicate → store pipeline
 │   │   ├── interactions.ts  # User interaction recording + heuristic scoring
 │   │   └── poller.ts        # Background feed polling (setInterval, 15 min)
-│   └── index.ts             # Shared utilities (exports placeholder)
 ├── routes/
 │   ├── +layout.svelte       # App shell: top bar + sidebar navigation
 │   ├── +page.svelte         # Landing/welcome page

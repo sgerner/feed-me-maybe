@@ -1,29 +1,28 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
+
+vi.mock('#lib/server/webhooks.ts', () => ({
+  dispatchWebhookEvent: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('article state foundation', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-article-state.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-article-state-');
   });
 
-  beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM article_state_history').run();
-    db.prepare('DELETE FROM user_interactions').run();
-    db.prepare('DELETE FROM user_preference_memory').run();
-    db.prepare('DELETE FROM ranking_refresh_queue').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+  beforeEach(() => {
+    testDb.reset();
+    const db = testDb.db;
     const now = Date.now();
     db.prepare(
       'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
@@ -57,14 +56,8 @@ describe('article state foundation', () => {
     );
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      const path = `${testDbPath}${suffix}`;
-      if (existsSync(path)) unlinkSync(path);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('applies explicit timestamps and replays idempotently', async () => {
@@ -416,6 +409,8 @@ describe('article state foundation', () => {
 
   it('retracts superseded deltas on reaction switches, supports unthumbs_up, and dispatches thumbs_up webhook', async () => {
     const { getDb } = await import('#lib/server/db/index.ts');
+    const { dispatchWebhookEvent } = await import('#lib/server/webhooks.ts');
+    vi.mocked(dispatchWebhookEvent).mockClear();
     const { applyArticleState, getArticleState } =
       await import('./article-state');
     const db = getDb();
@@ -441,6 +436,9 @@ describe('article state foundation', () => {
       action: 'thumbs_up',
     });
     expect(liked.changes[0]?.after.thumbsUp).toBe(true);
+    expect(dispatchWebhookEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'article.thumbs_up' }),
+    );
     expect(
       db
         .prepare(

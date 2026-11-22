@@ -7,8 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 vi.mock('./fetcher', () => ({
   fetchFeed: vi.fn(),
@@ -28,25 +27,14 @@ vi.mock('#lib/server/proxy.ts', () => ({
 }));
 
 describe('feed ingester identity and duplicate handling', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-feed-ingester.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-ingester-');
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM feed_fetch_logs').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
-    db.prepare('DELETE FROM provider_configs').run();
+    testDb.reset();
     const { fetchFeed } = await import('./fetcher');
     vi.mocked(fetchFeed).mockReset();
   });
@@ -119,14 +107,8 @@ describe('feed ingester identity and duplicate handling', () => {
     ).toEqual({ etag: 'new-etag', last_modified_header: 'new-modified' });
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      const path = `${testDbPath}${suffix}`;
-      if (existsSync(path)) unlinkSync(path);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('normalizes tracking parameters, fragments, hosts, and query order', async () => {

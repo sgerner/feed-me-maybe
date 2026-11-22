@@ -1,25 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 describe('personal search engine', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-personal-search.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
   let now = Date.now();
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-search-');
   });
 
-  beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+  beforeEach(() => {
+    testDb.reset();
+    const db = testDb.db;
     now = Date.now();
     const insertFeed = db.prepare(
       'INSERT INTO feeds (id, url, title, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -130,14 +122,8 @@ describe('personal search engine', () => {
     );
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      const path = `${testDbPath}${suffix}`;
-      if (existsSync(path)) unlinkSync(path);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('indexes article fields and returns highlighted matches', async () => {

@@ -2,26 +2,17 @@ import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 vi.mock('./poller', () => ({ wakePoller: vi.fn() }));
 
 import { exportOpml, parseOpml, importOpml } from './opml';
-import { closeDb, getDb } from './db';
-import { initializeDatabase } from './db/migrate';
-import { unlinkSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { getDb } from './db';
+import { createTestDb, type TestDbHandle } from './db/test-db';
 
-const testDbPath = join(process.cwd(), 'data', 'test-opml.db');
-const originalDbUrl = process.env.DATABASE_URL;
+let testDb: TestDbHandle;
 
 beforeAll(() => {
-  closeDb();
-  process.env.DATABASE_URL = testDbPath;
-  const dataDir = join(process.cwd(), 'data');
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  initializeDatabase();
+  testDb = createTestDb('feed-me-maybe-opml-');
 });
 
 afterAll(() => {
-  closeDb();
-  process.env.DATABASE_URL = originalDbUrl ?? '';
-  if (existsSync(testDbPath)) unlinkSync(testDbPath);
+  testDb.cleanup();
 });
 
 describe('parseOpml', () => {

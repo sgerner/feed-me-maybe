@@ -118,16 +118,12 @@
   let msg = $state('');
   let pending = $state(false);
   let failed = $state(false);
-  let preferences = $state<PreferenceItem[]>([]);
+  let preferences = $derived((pageData?.preferences ?? []) as PreferenceItem[]);
   let polarityFilter = $state<'all' | 'positive' | 'negative'>('all');
   let showPhrases = $state(false);
   let phraseLimit = $state(12);
   let confirmingDeleteId = $state<string | null>(null);
   let confirmingReset = $state(false);
-
-  $effect(() => {
-    preferences = (pageData?.preferences ?? []) as PreferenceItem[];
-  });
 
   const filteredPreferences = $derived(
     preferences.filter((p) =>

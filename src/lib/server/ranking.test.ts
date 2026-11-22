@@ -1,34 +1,19 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 describe('ranking recency boost for undated articles', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-ranking-undated.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-ranking-');
   });
 
-  beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+  beforeEach(() => {
+    testDb.reset();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('gives zero recency boost when published_at is null so fresh dated stories outrank undated archives', async () => {

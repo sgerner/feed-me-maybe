@@ -8,31 +8,23 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 describe('poller scheduling and startup reclaim', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-poller.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-poller-');
   });
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.useFakeTimers();
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM feed_fetch_logs').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM feeds').run();
-    db.prepare(
-      "UPDATE app_settings SET value = '60' WHERE key = 'poll_interval_mins'",
-    ).run();
+    testDb.reset();
+    testDb.db
+      .prepare(
+        "UPDATE app_settings SET value = '60' WHERE key = 'poll_interval_mins'",
+      )
+      .run();
   });
 
   afterEach(async () => {
@@ -42,14 +34,8 @@ describe('poller scheduling and startup reclaim', () => {
     vi.restoreAllMocks();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      const path = `${testDbPath}${suffix}`;
-      if (existsSync(path)) unlinkSync(path);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('runs one-time startup reclaim when polling starts', async () => {

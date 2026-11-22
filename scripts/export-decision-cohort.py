@@ -22,8 +22,9 @@ import sqlite3
 import sys
 import unicodedata
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import quote
 
 
@@ -86,21 +87,20 @@ STOPWORDS = {
 
 def parse_timestamp(value: str) -> int:
     """Parse an ISO-8601 timestamp into Unix milliseconds (naive means UTC)."""
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    parsed = dt.datetime.fromisoformat(text)
+    parsed = dt.datetime.fromisoformat(value.strip())
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        parsed = parsed.replace(tzinfo=dt.UTC)
     return int(parsed.timestamp() * 1000)
 
 
 def iso_timestamp(epoch_ms: int | float | None) -> str | None:
     if epoch_ms is None:
         return None
-    return dt.datetime.fromtimestamp(
-        float(epoch_ms) / 1000, tz=dt.timezone.utc
-    ).isoformat().replace("+00:00", "Z")
+    return (
+        dt.datetime.fromtimestamp(float(epoch_ms) / 1000, tz=dt.UTC)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def compact_text(value: Any, limit: int) -> str:
@@ -793,7 +793,7 @@ def export_cohort(args: argparse.Namespace) -> dict[str, Any]:
     connection = open_readonly(input_path)
     tables = validate_schema(connection)
     cutoff_ms = parse_timestamp(args.cutoff)
-    as_of_ms = parse_timestamp(args.as_of) if args.as_of else int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+    as_of_ms = parse_timestamp(args.as_of) if args.as_of else int(dt.datetime.now(dt.UTC).timestamp() * 1000)
     mode = args.profile
     temporal = mode == "temporal"
     selected, sample_stats = candidate_select(

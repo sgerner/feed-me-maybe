@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fade, fly } from 'svelte/transition';
+  import { fly } from 'svelte/transition';
 
   let showBanner = $state(false);
   let platform = $state<'ios' | 'android' | 'other'>('other');

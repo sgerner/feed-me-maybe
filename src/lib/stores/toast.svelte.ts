@@ -1,3 +1,5 @@
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+
 type ToastType = 'success' | 'error' | 'info' | 'warning';
 
 export interface Toast {
@@ -22,7 +24,7 @@ type ToastTimer = {
   timeout: ReturnType<typeof setTimeout> | null;
   pausedFor: Set<PauseReason>;
 };
-const toastTimers = new Map<number, ToastTimer>();
+const toastTimers = new SvelteMap<number, ToastTimer>();
 let toastSuppressed = false;
 
 function startTimer(id: number, timer: ToastTimer) {
@@ -91,7 +93,7 @@ export function addToast(
     remainingMs: action ? 5_000 : Math.max(0, duration),
     startedAt: null,
     timeout: null,
-    pausedFor: new Set(),
+    pausedFor: new SvelteSet(),
   };
   toastTimers.set(id, timer);
   startTimer(id, timer);

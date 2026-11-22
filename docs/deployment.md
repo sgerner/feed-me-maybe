@@ -13,8 +13,8 @@ not change the selected ranking provider.
 The project uses a multi-stage Dockerfile to minimize the final image size:
 
 ```dockerfile
-Stage 1 (builder): node:24-slim + native build tools → npm ci + build + prune dev deps
-Stage 2 (runner):  node:24-slim → copy production dependencies and build output
+Stage 1 (builder): node:26-slim + native build tools → npm ci + build + prune dev deps
+Stage 2 (runner):  node:26-slim → copy production dependencies and build output
 ```
 
 The final image has no compiler toolchain and runs the app as the unprivileged
@@ -82,9 +82,6 @@ The `docker-compose.yml` defines:
 | `PORT`                  | No                              | `3000`                                                                    | HTTP port to listen on.                                                                                                                                   |
 | `APP_SECRET`            | Required for AI/webhook secrets | —                                                                         | Random encryption key for AI provider and webhook secrets. Generate with `openssl rand -hex 32` and keep stable across deploys; there is no fallback key. |
 | `PROXY_BASE_URL`        | No                              | `https://feed-me-maybe-proxy.your-name.workers.dev`                       | Generic proxy worker URL used for feed fetching, Reddit comments, and other blocked requests. `REDDIT_BASE_URL` is still accepted as a legacy alias.      |
-| `PROVIDER`              | No                              | —                                                                         | AI provider ID: `openai`, `anthropic`, `openrouter`, or `groq`.                                                                                           |
-| `MODEL`                 | No                              | —                                                                         | Model name (e.g., `gpt-4o`, `claude-3-5-sonnet-20241022`).                                                                                                |
-| `API_KEY`               | No                              | —                                                                         | API key for the configured AI provider.                                                                                                                   |
 | `TYPESAFE_API_KEY`      | No                              | —                                                                         | Jev ranking key; `JEV_API_KEY` is also accepted. In Docker Swarm, mount a secret at `/run/secrets/typesafe_api_key`.                                      |
 | `TYPESAFE_API_KEY_FILE` | No                              | —                                                                         | Path to a file containing the Jev ranking key.                                                                                                            |
 | `SUBQ_API_KEY`          | No                              | —                                                                         | SubQ Snap ranking key.                                                                                                                                    |

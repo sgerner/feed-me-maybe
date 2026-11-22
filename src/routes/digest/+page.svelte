@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext, onMount } from 'svelte';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { page as pageStore } from '$app/state';
   import { syncFeeds } from '#lib/feeds.ts';
   import {
@@ -124,12 +125,12 @@
         stories: digest.briefing?.whatChanged || [],
       },
     ];
-    const seen = new Set<string>();
+    const seen: Record<string, true> = Object.create(null);
     const result: RankedStory[] = [];
     for (const group of groups) {
       for (const story of group.stories) {
-        if (seen.has(story.article.id)) continue;
-        seen.add(story.article.id);
+        if (seen[story.article.id]) continue;
+        seen[story.article.id] = true;
         result.push({ ...story, section: group.section, accent: group.accent });
       }
     }
@@ -251,7 +252,7 @@
     errorMessage = '';
     try {
       if (options.sync) await syncFeeds({ silent: true });
-      const params = new URLSearchParams({ days: String(selectedDays) });
+      const params = new SvelteURLSearchParams({ days: String(selectedDays) });
       if (options.force) params.set('refresh', '1');
       const signal =
         typeof AbortSignal !== 'undefined' && 'any' in AbortSignal
@@ -479,6 +480,7 @@
           <div
             class="text-lg leading-relaxed text-surface-50 md:text-2xl md:leading-snug [&_a]:text-primary-300 [&_a]:underline [&_ul]:mt-2 [&_ul]:list-disc [&_ul]:pl-5"
           >
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             {@html renderDigestMarkdown(
               digest.briefing?.summary ||
                 digest.summary ||
@@ -555,7 +557,7 @@
       {#if digest.takeaways.length > 0}<div
           class="mt-6 grid gap-3 border-t border-surface-200/10 pt-5 md:grid-cols-3"
         >
-          {#each digest.takeaways.slice(0, 3) as item}<div
+          {#each digest.takeaways.slice(0, 3) as item, i (`${i}-${item}`)}<div
               class="flex gap-2 text-sm leading-relaxed text-surface-200"
             >
               <span
@@ -564,6 +566,7 @@
               <div
                 class="[&_a]:text-primary-300 [&_a]:underline [&_ul]:list-disc [&_ul]:pl-4"
               >
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                 {@html renderDigestMarkdown(item)}
               </div>
             </div>{/each}
@@ -579,8 +582,9 @@
           Notes about uncertainty ({digest.briefing.uncertainty.length})
         </summary>
         <div class="mt-3 space-y-1.5 text-sm leading-relaxed text-surface-200">
-          {#each digest.briefing.uncertainty as note}
+          {#each digest.briefing.uncertainty as note, i (`${i}-${note}`)}
             <div class="[&_a]:text-primary-300 [&_a]:underline">
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html renderDigestMarkdown(note)}
             </div>
           {/each}
@@ -670,10 +674,12 @@
                       >{#if story.reason}<div
                           class="mt-2 text-sm leading-relaxed text-surface-300 [&_a]:text-primary-300 [&_a]:underline [&_ul]:list-disc [&_ul]:pl-4"
                         >
+                          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                           {@html renderDigestMarkdown(story.reason)}
                         </div>{/if}{#if story.uncertainty}<div
                           class="mt-2 text-xs leading-relaxed text-warning-300 [&_a]:text-primary-300 [&_a]:underline"
                         >
+                          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                           Uncertainty: {@html renderDigestMarkdown(
                             story.uncertainty,
                           )}
@@ -733,6 +739,7 @@
                   <div
                     class="mt-1 text-xs leading-relaxed text-surface-300 [&_a]:text-primary-300 [&_a]:underline"
                   >
+                    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                     {@html renderDigestMarkdown(theme.summary)}
                   </div>
                   <div class="mt-2 space-y-1.5">
