@@ -18,6 +18,7 @@
   let isPulling = $state(false);
   let syncAnnouncement = $state('');
   let touchStartY = 0;
+  let touchStartedAtTop = false;
 
   function isAtTop() {
     return (document.querySelector('main')?.scrollTop ?? 0) <= 0;
@@ -35,13 +36,27 @@
   }
 
   function handleTouchStart(e: TouchEvent) {
+    if (
+      mobileOnly &&
+      typeof window !== 'undefined' &&
+      window.matchMedia('(min-width: 768px)').matches
+    ) {
+      touchStartedAtTop = false;
+      isPulling = false;
+      pullDistance = 0;
+      return;
+    }
+    touchStartedAtTop = isAtTop();
     touchStartY = e.changedTouches[0].screenY;
     isPulling = false;
     pullDistance = 0;
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (!isAtTop()) return;
+    if (!touchStartedAtTop || !isAtTop()) {
+      if (isPulling || pullDistance > 0) resetPull();
+      return;
+    }
 
     const currentY = e.changedTouches[0].screenY;
     const diff = currentY - touchStartY;
@@ -71,6 +86,7 @@
   function resetPull() {
     pullDistance = 0;
     isPulling = false;
+    touchStartedAtTop = false;
   }
 </script>
 

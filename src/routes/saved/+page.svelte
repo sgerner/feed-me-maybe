@@ -11,9 +11,13 @@
 
   // Count refreshes can replace page data while reusing the loaded articles.
   const loadedArticles = $derived(data.articles);
+  let lastLoadedArticles: OfflineArticle[] | null = null;
 
   $effect(() => {
-    articles = loadedArticles;
+    if (loadedArticles !== lastLoadedArticles) {
+      lastLoadedArticles = loadedArticles;
+      articles = loadedArticles;
+    }
   });
 
   $effect(() => {

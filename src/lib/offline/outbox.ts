@@ -169,9 +169,15 @@ export async function replayMutationBatch(
       };
     }
 
-    if (response.ok || (response.status >= 200 && response.status < 300)) {
+    if (
+      response.ok ||
+      (response.status >= 200 && response.status < 300) ||
+      response.status === 404
+    ) {
       removedIds.push(mutation.id);
-      synced += 1;
+      if (response.status !== 404) {
+        synced += 1;
+      }
       continue;
     }
 
@@ -438,10 +444,13 @@ async function replayScopedMutations(
     all,
     async (mutation) => {
       try {
-        const response = await fetchImpl(
-          '/api/interactions',
-          buildInteractionRequest(mutation),
-        );
+        const requestInit = buildInteractionRequest(mutation);
+        const response = await fetchImpl('/api/interactions', {
+          ...requestInit,
+          ...(typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+            ? { signal: AbortSignal.timeout(15_000) }
+            : {}),
+        });
         return {
           ok: response.ok,
           status: response.status,

@@ -81,7 +81,10 @@ export function addToast(
   const id = nextId++;
   toasts.push({ id, message, type, ...(action ? { action } : {}) });
   while (toasts.length > MAX_VISIBLE_TOASTS) {
-    removeToast(toasts[0].id);
+    const nonActionCandidate = toasts.find(
+      (toast) => !toast.action && toast.id !== id,
+    );
+    removeToast((nonActionCandidate ?? toasts[0]).id);
   }
 
   const timer: ToastTimer = {

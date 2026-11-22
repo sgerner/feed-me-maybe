@@ -71,5 +71,11 @@ describe('offline PWA contract', () => {
     expect(offlinePage).toContain("get('active-scope')");
     expect(offlinePage).toContain('item.scope === scope');
     expect(offlinePage).toContain('heading.textContent = article.title');
+    expect(offlinePage).toContain('<a href="/">All</a>');
+    expect(offlinePage).toContain('<a href="/inbox">Unread</a>');
+    expect(offlinePage).toContain('<a href="/search">Search</a>');
+    expect(offlinePage).toContain('<a href="/saved">Saved</a>');
+    expect(offlinePage).toContain('<a href="/digest">Briefing</a>');
+    expect(offlinePage).toContain('queueOfflineAction');
   });
 });

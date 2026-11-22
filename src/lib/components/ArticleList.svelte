@@ -3,7 +3,7 @@
   import { formatContent, sanitizeHtml } from '#lib/utils/format.ts';
   import { getContext, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { afterNavigate, goto, refreshAll } from '$app/navigation';
+  import { afterNavigate, goto, invalidate, refreshAll } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
@@ -62,6 +62,7 @@
     liveUpdates = false,
     onLiveArticlesAdded,
     onLiveArticleVisibilityChanged,
+    onSnapshotCountDelta,
     savedOnly = false,
     feedbackMode = 'standard',
     emptyTitle = 'No articles yet',
@@ -82,6 +83,7 @@
       articleId: string,
       visible: boolean,
     ) => void;
+    onSnapshotCountDelta?: (delta: number) => void;
     savedOnly?: boolean;
     feedbackMode?: 'standard' | 'boost';
     emptyTitle?: string;
@@ -93,10 +95,14 @@
   const openCachedArticle =
     getContext<(article: OfflineArticle) => Promise<void>>('openCachedArticle');
 
-  const RETURNING_FROM_ARTICLE_KEY = 'feed-me-maybe:returning-from-article';
+  const LIVE_UPDATES_PAUSED_KEY = 'feed-me-maybe:live-updates-paused';
 
   function offlineScope(): string {
     return String(pageStore.data.userId || 'admin');
+  }
+
+  function stripSummaryLinks(html: string): string {
+    return html.replace(/<\/?a\b[^>]*>/gi, '');
   }
 
   const summaryCache = new WeakMap<
@@ -112,54 +118,17 @@
     const cached = summaryCache.get(article);
     if (cached?.source === source) return cached.formatted;
 
-    const formatted = formatContent(source);
+    const formatted = stripSummaryLinks(formatContent(source));
     summaryCache.set(article, { source, formatted });
     return formatted;
   }
 
-  let returnRefreshPromise: Promise<void> | null = null;
-
-  function markNeedsRefreshOnReturn(): void {
-    try {
-      sessionStorage.setItem(RETURNING_FROM_ARTICLE_KEY, 'true');
-    } catch {
-      // Session storage may be unavailable in some privacy modes.
-    }
-  }
-
-  async function refreshIfReturningFromArticle(): Promise<void> {
-    if (returnRefreshPromise) return returnRefreshPromise;
-
-    let needsRefresh: boolean;
-    try {
-      needsRefresh =
-        sessionStorage.getItem(RETURNING_FROM_ARTICLE_KEY) === 'true';
-    } catch {
-      return;
-    }
-
-    if (!needsRefresh) return;
-
-    returnRefreshPromise = (async () => {
-      try {
-        await refreshAll();
-        sessionStorage.removeItem(RETURNING_FROM_ARTICLE_KEY);
-      } catch (error) {
-        // Leave the marker in place so a later navigation can retry.
-        console.error('Failed to refresh articles after returning', error);
-      }
-    })();
-
-    try {
-      await returnRefreshPromise;
-    } finally {
-      returnRefreshPromise = null;
-    }
-  }
-
   async function openArticle(article: Article) {
     if (navigator.onLine === false && openCachedArticle) {
-      await openCachedArticle(article);
+      const nextReadArticle = article.read
+        ? article
+        : { ...article, read: true };
+      await openCachedArticle(nextReadArticle);
       try {
         if (!article.read) {
           await enqueueOfflineMutation(offlineScope(), {
@@ -202,42 +171,11 @@
       }
     }
 
-    if (shouldMarkOpened && previousArticle) {
-      articles = articles.filter((a: Article) => a.id !== article.id);
-    }
-
     if (openingTimeout) clearTimeout(openingTimeout);
     openingArticle = {
       id: article.id,
       label: mode === 'tab' ? 'Opening in new tab...' : 'Loading article...',
     };
-
-    if (mode === 'tab')
-      void (
-        navigator.onLine === false
-          ? enqueueOfflineMutation(offlineScope(), {
-              articleId: article.id,
-              type: 'read',
-            })
-          : fetchWithCsrf('/api/interactions', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ articleId: article.id, type: 'open' }),
-              keepalive: true,
-            })
-      ).catch((err) => {
-        console.error('Failed to record open interaction', err);
-
-        if (
-          shouldMarkOpened &&
-          previousArticle &&
-          !articles.some((a: Article) => a.id === article.id)
-        ) {
-          const next = [...articles];
-          next.splice(Math.min(articleIndex, next.length), 0, previousArticle);
-          articles = next;
-        }
-      });
 
     if (mode === 'tab') {
       window.open(article.url, '_blank', 'noopener,noreferrer');
@@ -246,8 +184,34 @@
           openingArticle = null;
         }
       }, 1200);
+
+      if (shouldMarkOpened && previousArticle) {
+        articles = articles.filter((a: Article) => a.id !== article.id);
+        if (liveOnlyArticleIds.has(article.id)) {
+          onLiveArticleVisibilityChanged?.(article.id, false);
+        } else {
+          removedFromPage++;
+          onSnapshotCountDelta?.(-1);
+        }
+      }
+
+      try {
+        const res = await fetchWithCsrf('/api/interactions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ articleId: article.id, type: 'open' }),
+          keepalive: true,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        void invalidate('app:reader-counts');
+      } catch (err) {
+        console.error('Failed to record open interaction', err);
+        await enqueueOfflineMutation(offlineScope(), {
+          articleId: article.id,
+          type: 'read',
+        }).catch(() => undefined);
+      }
     } else {
-      markNeedsRefreshOnReturn();
       isRestoringScroll = true;
       // The app shell keeps the <main> element mounted between routes, so
       // SvelteKit's document-level scroll handling does not reset this
@@ -259,7 +223,19 @@
       await tick();
       try {
         await goto(`/articles/${article.id}?mode=${mode}`);
+      } catch (err) {
+        console.error('Failed to navigate to article', err);
+        if (openCachedArticle) {
+          await openCachedArticle(
+            article.read ? article : { ...article, read: true },
+          );
+        } else {
+          addToast('Could not open article offline', 'error');
+        }
       } finally {
+        if (openingArticle?.id === article.id) {
+          openingArticle = null;
+        }
         isRestoringScroll = false;
       }
     }
@@ -268,14 +244,18 @@
   let page = $state(1);
   let removedFromPage = $state(0);
   let loadingMore = $state(false);
+  let loadMoreError = $state(false);
   let hasMore = $state(false);
   let pendingLiveArticleIds = new Set<string>();
+  let queuedLiveArticles = $state<Article[]>([]);
+  let liveUpdatesPaused = $state(false);
   let liveArticleFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let fetchingLiveArticles = false;
   let liveArticleRequestController: AbortController | null = null;
   let liveUpdatesDisposed = false;
   let liveOnlyArticleIds = new Set<string>();
   let lastSnapshotAt: number | null = null;
+  let lastPaginationKey: string | null = null;
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
@@ -436,11 +416,21 @@
   }
 
   $effect(() => {
+    const sortedParams = Object.entries(loadMoreSearchParams)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `${key}=${value}`)
+      .join('&');
+    const paginationKey = `${feedId ?? ''}|${initialPage}|${sortedParams}`;
+    if (paginationKey === lastPaginationKey) return;
+    lastPaginationKey = paginationKey;
+
     const rawSnapshotAt = Number(loadMoreSearchParams.snapshotAt);
     const snapshotAt = Number.isFinite(rawSnapshotAt) ? rawSnapshotAt : null;
     hasMore = initialHasMore ?? totalPages > 1;
     page = initialPage;
     removedFromPage = 0;
+    loadMoreError = false;
+    queuedLiveArticles = [];
     if (snapshotAt !== lastSnapshotAt) {
       liveOnlyArticleIds = new Set();
       lastSnapshotAt = snapshotAt;
@@ -618,17 +608,21 @@
                   onLiveArticleVisibilityChanged?.(articleId, true);
                 } else {
                   removedFromPage = Math.max(0, removedFromPage - 1);
+                  onSnapshotCountDelta?.(1);
                 }
               }
             }
           : undefined,
       });
 
-      if (result.mode === 'online' && shouldRemove) {
+      if (shouldRemove) {
         if (liveOnlyArticleIds.has(articleId)) {
           onLiveArticleVisibilityChanged?.(articleId, false);
         } else {
-          removedFromPage++;
+          if (result.mode === 'online') {
+            removedFromPage++;
+          }
+          onSnapshotCountDelta?.(-1);
         }
       }
     } catch (err) {
@@ -783,24 +777,80 @@
     void openArticle(article);
   }
 
+  function buildArticlesUrl(options: {
+    page?: number;
+    offset?: number;
+    limit?: number;
+    excludeIds?: string[];
+  }): URL {
+    const url = new URL('/api/articles', window.location.origin);
+    if (options.page !== undefined) {
+      url.searchParams.set('page', String(options.page));
+    }
+    if (options.offset !== undefined) {
+      url.searchParams.set('offset', String(options.offset));
+    }
+    if (options.limit !== undefined) {
+      url.searchParams.set('limit', String(options.limit));
+    }
+    if (feedId) url.searchParams.set('feedId', feedId);
+    for (const [key, value] of Object.entries(loadMoreSearchParams)) {
+      url.searchParams.set(key, String(value));
+    }
+    if (options.excludeIds && options.excludeIds.length > 0) {
+      url.searchParams.set(
+        'excludeIds',
+        options.excludeIds.slice(0, 200).join(','),
+      );
+    }
+    return url;
+  }
+
+  async function appendCachedFallbackArticles(): Promise<boolean> {
+    try {
+      const cached = await getCachedArticles(offlineScope(), {
+        limit: 150,
+        savedOnly,
+      });
+      const unreadOnly = loadMoreSearchParams.unread === '1';
+      const seen = new Set(articles.map((article: Article) => article.id));
+      const matching = cached.filter((article) => {
+        if (seen.has(article.id)) return false;
+        if (!savedOnly && !matchesOfflineVisibility(article)) return false;
+        if (feedId && article.feed_id !== feedId) return false;
+        if (unreadOnly && article.read === true) return false;
+        seen.add(article.id);
+        return true;
+      });
+      if (matching.length > 0) {
+        articles = [...articles, ...matching];
+        return true;
+      }
+    } catch {
+      // Ignore IndexedDB errors when offline fallback is unavailable.
+    }
+    return false;
+  }
+
   async function loadMore() {
     if (loadingMore || !hasMore || Object.keys(pendingArticleIds).length > 0)
       return;
     loadingMore = true;
+    loadMoreError = false;
     let advanced = false;
     try {
-      const url = new URL('/api/articles', window.location.origin);
-      url.searchParams.set('page', (page + 1).toString());
-      url.searchParams.set(
-        'offset',
-        String(Math.max(0, page * 25 - removedFromPage)),
-      );
-      if (feedId) url.searchParams.set('feedId', feedId);
-      for (const [key, value] of Object.entries(loadMoreSearchParams)) {
-        url.searchParams.set(key, String(value));
-      }
+      const existingIds = articles.map((article: Article) => article.id);
+      const url = buildArticlesUrl({
+        page: page + 1,
+        offset: Math.max(0, page * 25 - removedFromPage),
+        excludeIds: existingIds,
+      });
 
-      const res = await fetch(url.toString());
+      const signal =
+        typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+          ? AbortSignal.timeout(12_000)
+          : undefined;
+      const res = await fetch(url.toString(), signal ? { signal } : undefined);
       if (res.ok) {
         const data = await res.json();
         if (data.articles.length === 0) {
@@ -821,12 +871,22 @@
         }
       } else {
         console.error('Failed to load more articles', res.status);
+        loadMoreError = true;
+        await appendCachedFallbackArticles();
       }
     } catch (err) {
       console.error(err);
+      loadMoreError = true;
+      await appendCachedFallbackArticles();
     } finally {
       loadingMore = false;
-      if (advanced && !isRestoringScroll && hasMore && isNearBottom()) {
+      if (
+        advanced &&
+        !loadMoreError &&
+        !isRestoringScroll &&
+        hasMore &&
+        isNearBottom()
+      ) {
         window.requestAnimationFrame(() => maybeLoadMore());
       }
     }
@@ -835,6 +895,7 @@
   function scheduleLiveArticleFetch(delay = 300): void {
     if (
       !liveUpdates ||
+      liveUpdatesPaused ||
       liveUpdatesDisposed ||
       liveArticleFetchTimer ||
       fetchingLiveArticles ||
@@ -848,9 +909,55 @@
     }, delay);
   }
 
+  function toggleLiveUpdatesPaused(): void {
+    liveUpdatesPaused = !liveUpdatesPaused;
+    try {
+      localStorage.setItem(
+        LIVE_UPDATES_PAUSED_KEY,
+        liveUpdatesPaused ? 'true' : 'false',
+      );
+    } catch {
+      // Storage may be unavailable in private modes.
+    }
+    if (!liveUpdatesPaused && pendingLiveArticleIds.size > 0) {
+      scheduleLiveArticleFetch(50);
+    }
+  }
+
+  function showQueuedLiveArticles(): void {
+    if (queuedLiveArticles.length === 0) return;
+    const existingIds = new Set(articles.map((article: Article) => article.id));
+    const toPrepend = queuedLiveArticles.filter((article) => {
+      if (existingIds.has(article.id)) return false;
+      existingIds.add(article.id);
+      return true;
+    });
+    queuedLiveArticles = [];
+    if (toPrepend.length === 0) return;
+
+    const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
+    const addedAfterSnapshot: string[] = [];
+    for (const article of toPrepend) {
+      if (
+        Number.isFinite(snapshotAt) &&
+        typeof article.fetched_at === 'number' &&
+        article.fetched_at > snapshotAt
+      ) {
+        liveOnlyArticleIds.add(article.id);
+        addedAfterSnapshot.push(article.id);
+      }
+    }
+    if (addedAfterSnapshot.length > 0) {
+      onLiveArticlesAdded?.(addedAfterSnapshot);
+    }
+    focusedIndex += toPrepend.length;
+    articles = [...toPrepend, ...articles];
+  }
+
   async function fetchLiveArticles(): Promise<void> {
     if (
       !liveUpdates ||
+      liveUpdatesPaused ||
       liveUpdatesDisposed ||
       fetchingLiveArticles ||
       pendingLiveArticleIds.size === 0
@@ -872,28 +979,21 @@
       }
       for (const id of ids) url.searchParams.append('id', id);
 
-      const response = await fetch(url.toString(), {
-        signal: controller.signal,
-      });
+      const signal =
+        typeof AbortSignal !== 'undefined' && 'any' in AbortSignal
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
+          : controller.signal;
+      const response = await fetch(url.toString(), { signal });
       if (liveUpdatesDisposed) return;
       if (!response.ok)
         throw new Error(`Live article request failed: ${response.status}`);
 
       const data = await response.json();
       if (liveUpdatesDisposed) return;
-      const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
-      for (const article of data.articles as Article[]) {
-        if (
-          Number.isFinite(snapshotAt) &&
-          typeof article.fetched_at === 'number' &&
-          article.fetched_at > snapshotAt
-        ) {
-          liveOnlyArticleIds.add(article.id);
-        }
-      }
-      const existingIds = new Set(
-        articles.map((article: Article) => article.id),
-      );
+      const existingIds = new Set([
+        ...articles.map((article: Article) => article.id),
+        ...queuedLiveArticles.map((article: Article) => article.id),
+      ]);
       const newArticles = (data.articles as Article[]).filter((article) => {
         if (existingIds.has(article.id)) return false;
         existingIds.add(article.id);
@@ -901,29 +1001,7 @@
       });
 
       if (newArticles.length > 0) {
-        const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
-        const addedAfterSnapshot = newArticles
-          .filter(
-            (article) =>
-              Number.isFinite(snapshotAt) &&
-              typeof article.fetched_at === 'number' &&
-              article.fetched_at > snapshotAt,
-          )
-          .map((article) => article.id);
-        if (addedAfterSnapshot.length > 0) {
-          onLiveArticlesAdded?.(addedAfterSnapshot);
-        }
-
-        const previousScrollTop = scrollContainerEl?.scrollTop ?? 0;
-        const previousScrollHeight = scrollContainerEl?.scrollHeight ?? 0;
-        articles = [...newArticles, ...articles];
-        await tick();
-
-        if (scrollContainerEl && previousScrollTop > 0) {
-          scrollContainerEl.scrollTop =
-            previousScrollTop +
-            (scrollContainerEl.scrollHeight - previousScrollHeight);
-        }
+        queuedLiveArticles = [...newArticles, ...queuedLiveArticles];
       }
     } catch (error) {
       if (!liveUpdatesDisposed) {
@@ -936,7 +1014,11 @@
       if (liveArticleRequestController === controller) {
         liveArticleRequestController = null;
       }
-      if (!liveUpdatesDisposed && pendingLiveArticleIds.size > 0) {
+      if (
+        !liveUpdatesDisposed &&
+        !liveUpdatesPaused &&
+        pendingLiveArticleIds.size > 0
+      ) {
         scheduleLiveArticleFetch(nextBatchDelay);
       }
     }
@@ -963,23 +1045,52 @@
   }
 
   function maybeLoadMore() {
-    if (isRestoringScroll) return;
+    if (isRestoringScroll || loadMoreError) return;
     if (hasMore && !loadingMore && isNearBottom()) {
       void loadMore();
     }
   }
 
-  // A back/forward navigation handled by SvelteKit does not necessarily
-  // recreate the document, so also cover that lifecycle explicitly.
-  afterNavigate(() => {
-    void refreshIfReturningFromArticle();
-  });
-
   onMount(() => {
     liveUpdatesDisposed = false;
+    try {
+      liveUpdatesPaused =
+        localStorage.getItem(LIVE_UPDATES_PAUSED_KEY) === 'true';
+    } catch {
+      liveUpdatesPaused = false;
+    }
     if (liveUpdates) {
       window.addEventListener('feed-me-maybe:new-articles', handleNewArticles);
     }
+
+    const handleOfflineArticleUpdated = (event: Event) => {
+      const updated = (event as CustomEvent<OfflineArticle | undefined>).detail;
+      if (!updated?.id) return;
+      const isInbox = pageStore.url.pathname === '/inbox';
+      if (
+        (!savedOnly && (updated.hidden || updated.thumbs_down)) ||
+        (savedOnly && !updated.saved) ||
+        (isInbox && updated.read)
+      ) {
+        articles = articles.filter((item: Article) => item.id !== updated.id);
+      } else {
+        articles = articles.map((item: Article) =>
+          item.id === updated.id
+            ? {
+                ...item,
+                read: updated.read,
+                saved: updated.saved,
+                hidden: updated.hidden,
+                thumbs_down: updated.thumbs_down,
+              }
+            : item,
+        );
+      }
+    };
+    window.addEventListener(
+      'feed-me-maybe:offline-article-updated',
+      handleOfflineArticleUpdated,
+    );
 
     const syncShortcutPreference = () => {
       singleKeyShortcutsEnabled = getSingleKeyShortcutsEnabled();
@@ -1002,22 +1113,21 @@
     document.addEventListener('pointerdown', onDocumentPointerDown);
     scrollContainerEl = document.querySelector('main');
 
-    if (navigator.onLine === false && articles.length === 0) {
-      void getCachedArticles(offlineScope(), { limit: 150, savedOnly })
-        .then((cached) => {
-          if (articles.length === 0 && cached.length > 0) {
-            articles = savedOnly
-              ? cached
-              : cached.filter((article) => matchesOfflineVisibility(article));
-            addToast('Showing your saved offline reading shelf', 'info');
-          }
-        })
-        .catch(() => undefined);
+    if (
+      (navigator.onLine === false || articles.length === 0) &&
+      !hasMore &&
+      articles.length === 0
+    ) {
+      void appendCachedFallbackArticles().then((loadedFromCache) => {
+        if (loadedFromCache && navigator.onLine === false) {
+          addToast('Showing your saved offline reading shelf', 'info');
+        }
+      });
     }
 
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) {
-        void refreshIfReturningFromArticle();
+      if (event.persisted && navigator.onLine !== false) {
+        void refreshAll();
       }
     };
 
@@ -1057,18 +1167,56 @@
     if (sentinelEl) observer.observe(sentinelEl);
 
     const restoreScrollPosition = async () => {
-      // Read the snapshot before revalidation or a scroll event can overwrite it.
+      // Read the snapshot before a scroll event can overwrite it.
       const restoreState = readScrollRestoreState();
+      if (!restoreState || !scrollContainerEl) return;
+
       isRestoringScroll = true;
       try {
-        await refreshIfReturningFromArticle();
-        await tick();
-        if (!restoreState || !scrollContainerEl) return;
-
-        while (page < restoreState.page && hasMore) {
-          const previousPage = page;
-          await loadMore();
-          if (page === previousPage) break;
+        if (restoreState.page > page && hasMore) {
+          const pagesNeeded = restoreState.page - page;
+          const fetchLimit = Math.min(200, pagesNeeded * 25);
+          const url = buildArticlesUrl({
+            page: page + 1,
+            offset: Math.max(0, page * 25 - removedFromPage),
+            limit: fetchLimit,
+            excludeIds: articles.map((article: Article) => article.id),
+          });
+          const signal =
+            typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+              ? AbortSignal.timeout(12_000)
+              : undefined;
+          try {
+            const res = await fetch(
+              url.toString(),
+              signal ? { signal } : undefined,
+            );
+            if (res.ok) {
+              const data = await res.json();
+              const seen = new Set(
+                articles.map((article: Article) => article.id),
+              );
+              const nextArticles = (data.articles as Article[]).filter(
+                (article) => {
+                  if (seen.has(article.id)) return false;
+                  seen.add(article.id);
+                  return true;
+                },
+              );
+              if (nextArticles.length > 0) {
+                articles = [...articles, ...nextArticles];
+                page = Math.min(
+                  restoreState.page,
+                  page + Math.max(1, Math.ceil(data.articles.length / 25)),
+                );
+              }
+              if (data.articles.length < fetchLimit) {
+                hasMore = false;
+              }
+            }
+          } catch {
+            loadMoreError = true;
+          }
         }
         await tick();
         scrollContainerEl.scrollTop = restoreState.scrollTop;
@@ -1088,6 +1236,10 @@
       window.removeEventListener(
         'feed-me-maybe:new-articles',
         handleNewArticles,
+      );
+      window.removeEventListener(
+        'feed-me-maybe:offline-article-updated',
+        handleOfflineArticleUpdated,
       );
       if (liveArticleFetchTimer) {
         clearTimeout(liveArticleFetchTimer);
@@ -1226,6 +1378,34 @@
   }
 </script>
 
+{#if liveUpdates}
+  <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+    <div class="flex flex-wrap items-center gap-2">
+      {#if queuedLiveArticles.length > 0}
+        <button
+          type="button"
+          class="btn preset-filled-primary-500 px-3 py-1.5 text-xs font-semibold"
+          onclick={showQueuedLiveArticles}
+        >
+          Show {queuedLiveArticles.length} new {queuedLiveArticles.length === 1
+            ? 'article'
+            : 'articles'}
+        </button>
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {liveUpdatesPaused
+        ? 'border-warning-400/50 bg-warning-500/15 text-warning-200'
+        : 'border-white/15 bg-white/5 text-surface-200 hover:border-white/30'}"
+      aria-pressed={liveUpdatesPaused}
+      onclick={toggleLiveUpdatesPaused}
+    >
+      {liveUpdatesPaused ? 'Resume live updates' : 'Pause live updates'}
+    </button>
+  </div>
+{/if}
+
 {#if articles.length === 0 && !loadingMore && !hasMore}
   <div
     class="glass-card mt-16 p-8 text-center"
@@ -1279,7 +1459,7 @@
     {/if}
   </div>
 {:else}
-  <div class="grid grid-cols-1 md:gap-4 xl:grid-cols-2">
+  <div class="grid grid-cols-1 gap-3 md:gap-4 xl:grid-cols-2">
     {#each articles as article, i (article.id)}
       {@const isPending = Boolean(pendingArticleIds[article.id])}
       {@const swipeOffset =
@@ -1288,11 +1468,11 @@
       {@const highlightedSummary =
         article.summary_highlight || article.content_highlight}
       {@const formattedSummary = highlightedSummary
-        ? sanitizeHtml(highlightedSummary)
+        ? stripSummaryLinks(sanitizeHtml(highlightedSummary))
         : article.summary
           ? getFormattedSummary(article)
           : ''}
-      <div class="relative overflow-hidden rounded-sm">
+      <div class="relative rounded-sm">
         <!-- Swipe Action Indicators -->
         {#if swipeOffset !== 0}
           <div
@@ -1454,11 +1634,7 @@
             class="relative z-20 flex flex-wrap items-center gap-1.5 p-3 pt-0 md:px-6 md:pb-6"
           >
             <div class="w-full">
-              <div
-                class="flex items-center gap-1.5 {isBoostReview
-                  ? 'flex-wrap'
-                  : ''}"
-              >
+              <div class="flex flex-wrap items-center gap-1.5">
                 {#if !isBoostReview}
                   <button
                     type="button"
@@ -1470,7 +1646,7 @@
                       e.stopPropagation();
                       interact(article.id, 'hide');
                     }}
-                    aria-label="Hide article"
+                    aria-label="Hide {article.title}"
                     title="Hide article (h)"
                   >
                     <svg
@@ -1500,6 +1676,9 @@
                     : ''}"
                   disabled={isPending}
                   aria-pressed={Boolean(article.saved)}
+                  aria-label="{savedOnly || article.saved
+                    ? 'Unsave'
+                    : 'Save'} {article.title}"
                   onpointerdown={(e) => e.stopPropagation()}
                   onpointerup={(e) => e.stopPropagation()}
                   onclick={(e) => {
@@ -1520,6 +1699,7 @@
                     fill="none"
                     stroke="currentColor"
                     stroke-width="2"
+                    aria-hidden="true"
                     ><path
                       d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"
                     /></svg
@@ -1539,7 +1719,8 @@
                       stroke="currentColor"
                       stroke-width="2"
                       stroke-linecap="round"
-                      stroke-linejoin="round"><path d="m5 12 4 4L19 6" /></svg
+                      stroke-linejoin="round"
+                      aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
                     >
                     Read
                   </span>
@@ -1558,6 +1739,7 @@
                       interact(article.id, 'boost');
                     }}
                     aria-pressed={Boolean(article.thumbs_up)}
+                    aria-label="Keep and boost {article.title}"
                     title="Restore to feeds and strongly boost relevance"
                   >
                     <svg
@@ -1568,6 +1750,7 @@
                       fill={article.thumbs_up ? 'currentColor' : 'none'}
                       stroke="currentColor"
                       stroke-width="2"
+                      aria-hidden="true"
                     >
                       <path
                         d="m12 2 2.9 6.2L21 10l-6 3.8L16.7 20 12 16.7 7.3 20 8 13.8 2 10l6.1-1.8Z"
@@ -1579,7 +1762,7 @@
                   <details class="relative ml-auto" data-article-overflow>
                     <summary
                       class="action-btn flex min-h-11 min-w-11 cursor-pointer list-none items-center justify-center !bg-surface-900/50 lg:backdrop-blur-sm"
-                      aria-label="More article actions"
+                      aria-label="More actions for {article.title}"
                       title="More actions"
                     >
                       <svg
@@ -1604,7 +1787,7 @@
                       <button
                         type="button"
                         class="article-menu-item"
-                        aria-label="Share article"
+                        aria-label="Share {article.title}"
                         onclick={(e) => {
                           (e.currentTarget as HTMLElement)
                             .closest('details')
@@ -1637,8 +1820,8 @@
                         type="button"
                         class="article-menu-item"
                         aria-label={article.read
-                          ? 'Mark article as unread'
-                          : 'Mark article as read'}
+                          ? `Mark ${article.title} as unread`
+                          : `Mark ${article.title} as read`}
                         title={article.read
                           ? 'Mark as unread (m)'
                           : 'Mark as read (m)'}
@@ -1676,7 +1859,7 @@
                         class="article-menu-item article-menu-reaction {article.thumbs_up
                           ? 'text-primary-300'
                           : ''}"
-                        aria-label="Like article"
+                        aria-label="Like {article.title}"
                         disabled={isPending}
                         aria-pressed={Boolean(article.thumbs_up)}
                         onclick={(e) => {
@@ -1708,7 +1891,7 @@
                         class="article-menu-item article-menu-reaction {article.thumbs_down
                           ? 'text-error-300'
                           : ''}"
-                        aria-label="Dislike and hide article"
+                        aria-label="Dislike and hide {article.title}"
                         disabled={isPending}
                         aria-pressed={Boolean(article.thumbs_down)}
                         onclick={(e) => {
@@ -1737,7 +1920,9 @@
                       </button>
                     </div>
                   </details>
-                  <div class="article-reactions ml-2 items-center gap-1">
+                  <div
+                    class="article-reactions ml-0 flex-wrap items-center gap-1 sm:ml-2"
+                  >
                     <button
                       type="button"
                       class="action-btn min-h-11 min-w-11 !bg-surface-900/50 lg:min-h-8 lg:min-w-0 lg:backdrop-blur-sm {article.thumbs_up
@@ -1751,7 +1936,7 @@
                         interact(article.id, 'thumbs_up');
                       }}
                       aria-pressed={Boolean(article.thumbs_up)}
-                      aria-label="Like article"
+                      aria-label="Like {article.title}"
                       title="Like article"
                     >
                       <svg
@@ -1783,7 +1968,7 @@
                         interact(article.id, 'thumbs_down');
                       }}
                       aria-pressed={Boolean(article.thumbs_down)}
-                      aria-label="Dislike and hide article"
+                      aria-label="Dislike and hide {article.title}"
                       title="Dislike and hide article"
                     >
                       <svg
@@ -1866,6 +2051,20 @@
           <span class="font-medium">Loading more articles...</span>
         </div>
       </div>
+    {:else if loadMoreError}
+      <div class="flex flex-col items-center gap-3 text-center" role="status">
+        <p class="text-sm text-surface-300">Could not load more articles.</p>
+        <button
+          type="button"
+          class="btn preset-tonal px-4 py-2 text-xs font-semibold"
+          onclick={() => {
+            loadMoreError = false;
+            void loadMore();
+          }}
+        >
+          Retry
+        </button>
+      </div>
     {:else if !hasMore && articles.length > 0}
       <p class="text-sm" style="color: var(--color-surface-400);" role="status">
         No more articles to show.
@@ -1910,10 +2109,14 @@
     font-size: 0.875rem;
   }
 
-  .article-menu-item:hover,
-  .article-menu-item:focus-visible {
+  .article-menu-item:hover {
     background: color-mix(in oklch, var(--color-primary-500) 14%, transparent);
-    outline: none;
+  }
+
+  .article-menu-item:focus-visible {
+    background: color-mix(in oklch, var(--color-primary-500) 18%, transparent);
+    outline: 2px solid var(--fmm-focus-ring);
+    outline-offset: 2px;
   }
 
   .article-menu-item:disabled {

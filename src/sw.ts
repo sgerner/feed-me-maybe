@@ -27,6 +27,73 @@ clientsClaim();
 precacheAndRoute(self.__WB_MANIFEST);
 cleanupOutdatedCaches();
 
+function buildOfflineSvelteKitDataResponse(url: URL): Response | null {
+  const routePath = url.pathname.replace(/\/__data\.json$/, '') || '/';
+  if (routePath !== '/' && routePath !== '/inbox' && routePath !== '/saved') {
+    return null;
+  }
+  const category = url.searchParams.get('category')?.trim() || '';
+  const rawSort = url.searchParams.get('sort');
+  const sort =
+    rawSort === 'newest' || rawSort === 'oldest' ? rawSort : 'ranked';
+  const invalidated = url.searchParams.get('x-sveltekit-invalidated') || '';
+  const layoutNode = invalidated.startsWith('1')
+    ? {
+        type: 'data',
+        data: [
+          {
+            feeds: 1,
+            sessionId: 2,
+            userId: 3,
+            globalSettings: 4,
+          },
+          [],
+          'offline',
+          'admin',
+          { articleOpenMode: 5, hideOnOpen: 6 },
+          'app',
+          false,
+        ],
+        uses: { dependencies: ['app:reader-counts'] },
+      }
+    : null;
+  const pageNode = {
+    type: 'data',
+    data: [
+      {
+        category: 1,
+        sort: 2,
+        articles: 3,
+        page: 4,
+        totalPages: 4,
+        totalArticles: 5,
+        initialHasMore: 6,
+        snapshotAt: 5,
+      },
+      category,
+      sort,
+      [],
+      1,
+      0,
+      false,
+    ],
+    uses: { url: 1 },
+  };
+  return new Response(
+    JSON.stringify({
+      type: 'data',
+      nodes: [layoutNode, pageNode],
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'private, no-store, max-age=0',
+      },
+    },
+  );
+}
+
 // Keep authenticated SSR navigations network-only. If the request fails at
 // the network layer, show the static shell that reads the signed-in user's
 // bounded article snapshot from IndexedDB. HTTP responses such as 401 remain
@@ -41,6 +108,30 @@ registerRoute(
       // SvelteKit's PWA manifest normalizes static HTML assets to extensionless
       // URLs, so offline.html is precached under /offline.
       return (await matchPrecache('/offline')) ?? Response.error();
+    }
+  },
+  'GET',
+);
+
+// Keep client-side SvelteKit route transitions inside the live PWA shell when
+// offline by returning an empty uncached devalue envelope on network error,
+// allowing the target route component to hydrate its reading shelf from IndexedDB.
+registerRoute(
+  ({ url }) =>
+    url.origin === self.location.origin &&
+    url.pathname.endsWith('/__data.json'),
+  async ({ request, url }) => {
+    try {
+      return await fetch(request);
+    } catch {
+      const activeScope = await getMetaValue('active-scope').catch(
+        () => undefined,
+      );
+      if (typeof activeScope === 'string' && activeScope) {
+        const fallback = buildOfflineSvelteKitDataResponse(url);
+        if (fallback) return fallback;
+      }
+      return Response.error();
     }
   },
   'GET',

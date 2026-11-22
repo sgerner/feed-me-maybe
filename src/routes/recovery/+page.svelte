@@ -1,7 +1,14 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { getContext, onMount, tick } from 'svelte';
+  import { page as pageStore } from '$app/state';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
+  import {
+    enqueueOfflineMutation,
+    getCachedArticles,
+    matchesOfflineVisibility,
+    type OfflineArticle,
+  } from '#lib/offline/index.ts';
 
   type RecoveryArticle = {
     id: string;
@@ -14,6 +21,7 @@
     rejected: boolean;
     thumbsDown: boolean;
     stateChangedAt?: number | null;
+    cached?: OfflineArticle;
   };
 
   let articles = $state<RecoveryArticle[]>([]);
@@ -23,20 +31,73 @@
   let restoring = $state<Record<string, boolean>>({});
   let heading = $state<HTMLHeadingElement>();
   let nextCursor = $state<string | null>(null);
+  let offlineFallback = $state(false);
+  const openCachedArticle = getContext<
+    ((article: OfflineArticle) => Promise<void>) | undefined
+  >('openCachedArticle');
+
+  function offlineScope(): string {
+    return String(pageStore.data.userId || 'admin');
+  }
+
+  async function loadCachedRecoveryFallback(): Promise<boolean> {
+    try {
+      const cached = await getCachedArticles(offlineScope());
+      const hiddenOrRejected = cached.filter(
+        (item) =>
+          item.cleared_at == null &&
+          (matchesOfflineVisibility(item, 'hidden') ||
+            matchesOfflineVisibility(item, 'rejected')),
+      );
+      articles = hiddenOrRejected.map((item) => ({
+        id: item.id,
+        title: item.title,
+        url: item.url,
+        feedTitle: item.feed_title || 'Unknown source',
+        read: Boolean(item.read),
+        saved: Boolean(item.saved),
+        hidden: Boolean(item.hidden),
+        rejected: Boolean(item.thumbs_down),
+        thumbsDown: Boolean(item.thumbs_down),
+        stateChangedAt: item.updatedAt,
+        cached: item,
+      }));
+      nextCursor = null;
+      offlineFallback = true;
+      errorMessage = '';
+      statusAnnouncement = articles.length
+        ? `Showing ${articles.length} cached hidden or rejected ${articles.length === 1 ? 'article' : 'articles'}.`
+        : '';
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   async function loadRecovery(append = false) {
     loading = !append;
     if (!append) statusAnnouncement = 'Loading hidden and rejected articles.';
     errorMessage = '';
     try {
+      if (navigator.onLine === false && !append) {
+        if (await loadCachedRecoveryFallback()) return;
+      }
       const params = new URLSearchParams({ limit: '50' });
       if (append && nextCursor) params.set('cursor', nextCursor);
-      const response = await fetch(`/api/article-state/recovery?${params}`);
+      const signal =
+        typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+          ? AbortSignal.timeout(12_000)
+          : undefined;
+      const response = await fetch(
+        `/api/article-state/recovery?${params}`,
+        signal ? { signal } : undefined,
+      );
       if (!response.ok) throw new Error('Recovery is unavailable right now.');
       const payload = (await response.json()) as {
         articles?: RecoveryArticle[];
         nextCursor?: string | null;
       };
+      offlineFallback = false;
       articles = append
         ? [...articles, ...(payload.articles || [])]
         : payload.articles || [];
@@ -45,6 +106,9 @@
         ? `${articles.length} hidden or rejected ${articles.length === 1 ? 'article' : 'articles'} loaded.`
         : '';
     } catch (error) {
+      if (!append && (await loadCachedRecoveryFallback())) {
+        return;
+      }
       errorMessage =
         error instanceof Error ? error.message : 'Recovery failed.';
       statusAnnouncement = '';
@@ -53,10 +117,78 @@
     }
   }
 
+  async function openRecoveryArticle(
+    event: MouseEvent,
+    article: RecoveryArticle,
+  ) {
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    if ((offlineFallback || navigator.onLine === false) && openCachedArticle) {
+      event.preventDefault();
+      const cached =
+        article.cached ??
+        (await getCachedArticles(offlineScope())
+          .then((list) => list.find((item) => item.id === article.id))
+          .catch(() => undefined));
+      await openCachedArticle(
+        cached ?? {
+          id: article.id,
+          title: article.title,
+          url: article.url,
+          feed_title: article.feedTitle,
+          read: article.read,
+          saved: article.saved,
+          hidden: article.hidden,
+          thumbs_down: article.thumbsDown,
+        },
+      );
+    }
+  }
+
+  async function removeAndRefocus(
+    article: RecoveryArticle,
+    trigger: HTMLButtonElement,
+  ) {
+    const index = articles.indexOf(article);
+    const hadFocus =
+      document.activeElement === trigger ||
+      document.activeElement === document.body;
+    articles = articles.filter((item) => item.id !== article.id);
+    await tick();
+    if (
+      hadFocus &&
+      (document.activeElement === document.body ||
+        document.activeElement === trigger)
+    ) {
+      const neighbor = articles[Math.min(index, articles.length - 1)];
+      const next = neighbor
+        ? document.getElementById(`restore-${neighbor.id}`)
+        : heading;
+      next?.focus();
+    }
+  }
+
   async function restore(article: RecoveryArticle, trigger: HTMLButtonElement) {
     if (restoring[article.id]) return;
     restoring = { ...restoring, [article.id]: true };
     try {
+      if (navigator.onLine === false || offlineFallback) {
+        await enqueueOfflineMutation(offlineScope(), {
+          articleId: article.id,
+          type: 'restore',
+        });
+        await removeAndRefocus(article, trigger);
+        addToast('Restore queued — will sync when you’re online', 'info');
+        return;
+      }
+
       const response = await fetchWithCsrf('/api/article-state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -66,26 +198,28 @@
           state: { hidden: false, rejected: false },
         }),
       });
-      if (!response.ok) throw new Error('Could not restore this article.');
-      const index = articles.indexOf(article);
-      const hadFocus =
-        document.activeElement === trigger ||
-        document.activeElement === document.body;
-      articles = articles.filter((item) => item.id !== article.id);
-      await tick();
-      if (
-        hadFocus &&
-        (document.activeElement === document.body ||
-          document.activeElement === trigger)
-      ) {
-        const neighbor = articles[Math.min(index, articles.length - 1)];
-        const next = neighbor
-          ? document.getElementById(`restore-${neighbor.id}`)
-          : heading;
-        next?.focus();
+      if (!response.ok) {
+        throw new Error('Could not restore this article.');
       }
+      await removeAndRefocus(article, trigger);
       addToast('Article restored to your feed', 'success');
     } catch (error) {
+      if (
+        error instanceof TypeError ||
+        (error instanceof DOMException && error.name === 'TimeoutError')
+      ) {
+        try {
+          await enqueueOfflineMutation(offlineScope(), {
+            articleId: article.id,
+            type: 'restore',
+          });
+          await removeAndRefocus(article, trigger);
+          addToast('Restore queued — will sync when you’re online', 'info');
+          return;
+        } catch {
+          // Fall through to error toast below.
+        }
+      }
       addToast(
         error instanceof Error ? error.message : 'Restore failed',
         'error',
@@ -104,7 +238,26 @@
     return `${days} days ago`;
   }
 
-  onMount(() => void loadRecovery());
+  onMount(() => {
+    void loadRecovery();
+    const handleOfflineArticleUpdated = (event: Event) => {
+      const updated = (event as CustomEvent<OfflineArticle | undefined>).detail;
+      if (!updated?.id) return;
+      if (!updated.hidden && !updated.thumbs_down) {
+        articles = articles.filter((item) => item.id !== updated.id);
+      }
+    };
+    window.addEventListener(
+      'feed-me-maybe:offline-article-updated',
+      handleOfflineArticleUpdated,
+    );
+    return () => {
+      window.removeEventListener(
+        'feed-me-maybe:offline-article-updated',
+        handleOfflineArticleUpdated,
+      );
+    };
+  });
 </script>
 
 <svelte:head>
@@ -179,13 +332,16 @@
             <a
               id="recovery-title-{article.id}"
               class="block font-semibold text-surface-100 no-underline transition hover:text-primary-300"
-              href="/articles/{article.id}">{article.title}</a
+              href="/articles/{article.id}"
+              onclick={(e) => void openRecoveryArticle(e, article)}
+              >{article.title}</a
             >
           </div>
           <div class="flex shrink-0 items-center gap-2">
             <a
               class="btn preset-tonal no-underline"
               href="/articles/{article.id}"
+              onclick={(e) => void openRecoveryArticle(e, article)}
               aria-label="Review {article.title}">Review</a
             >
             <button

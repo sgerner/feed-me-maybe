@@ -240,4 +240,23 @@ describe('offline mutation outbox', () => {
     expect(result.synced).toBe(1);
     expect(result.updated).toEqual([]);
   });
+
+  it('drops mutations for deleted articles on HTTP 404 without blocking the outbox', async () => {
+    const result = await replayMutationBatch(
+      [
+        mutation(1, 'deleted-article', 'read'),
+        mutation(2, 'surviving-article', 'save'),
+      ],
+      async (item) =>
+        item.articleId === 'deleted-article'
+          ? { ok: false, status: 404, error: 'Article not found' }
+          : { ok: true, status: 200 },
+      { now: 10 },
+    );
+
+    expect(result.blocked).toBe(0);
+    expect(result.synced).toBe(1);
+    expect(result.removedIds).toHaveLength(2);
+    expect(result.updated).toEqual([]);
+  });
 });

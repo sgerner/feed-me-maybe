@@ -146,7 +146,7 @@
   >
     <div
       bind:this={dialogEl}
-      class="glass-card w-full max-w-sm p-6 shadow-2xl"
+      class="glass-card max-h-[90dvh] w-full max-w-sm overflow-y-auto p-6 shadow-2xl"
       transition:fly={{ y: 20, duration: 300 }}
       role="dialog"
       aria-modal="true"
