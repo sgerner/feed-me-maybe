@@ -24,7 +24,22 @@ type ArticleAnalysisRow = {
   hidden: number | null;
   rejected: number | null;
   thumbs_down: number | null;
+  cleared_at: number | null;
+  feed_enabled: number | null;
 };
+
+function shouldSkipArticleAnalysis(
+  article: ArticleAnalysisRow | undefined,
+): boolean {
+  return (
+    !article ||
+    !article.feed_enabled ||
+    article.cleared_at != null ||
+    Boolean(article.hidden) ||
+    Boolean(article.rejected) ||
+    Boolean(article.thumbs_down)
+  );
+}
 
 type CachedAiMetadataRow = {
   summary: string | null;
@@ -183,14 +198,16 @@ export async function processArticle(
   const selectArticle = db.prepare(
     `
     SELECT a.title, a.url, a.summary, a.content, a.author, a.categories,
-           a.published_at, a.hidden, a.rejected, a.thumbs_down
+           a.published_at, a.hidden, a.rejected, a.thumbs_down,
+           a.cleared_at, f.enabled AS feed_enabled
     FROM articles a
+    JOIN feeds f ON f.id = a.feed_id
     WHERE a.id = ?
   `,
   );
   const article = selectArticle.get(articleId) as
     ArticleAnalysisRow | undefined;
-  if (!article || article.hidden || article.rejected || article.thumbs_down) {
+  if (!article || shouldSkipArticleAnalysis(article)) {
     return;
   }
   if (!hasArticleAnalysisText(article.summary, article.content)) {
@@ -273,8 +290,7 @@ export async function processArticle(
       if (!isAiProcessingConfigured()) return false;
       const current = selectArticle.get(articleId) as
         ArticleAnalysisRow | undefined;
-      if (!current || current.hidden || current.rejected || current.thumbs_down)
-        return false;
+      if (!current || shouldSkipArticleAnalysis(current)) return false;
       if (
         current.content !== article.content ||
         current.summary !== article.summary

@@ -123,11 +123,20 @@ export const load: PageServerLoad = async ({ locals }) => {
     error_count: number;
   }>;
   const recentJobs = db
-    .prepare('SELECT * FROM feed_fetch_logs ORDER BY created_at DESC LIMIT 10')
+    .prepare(
+      `SELECT id, feed_id, status, articles_found, articles_new,
+              error_message, started_at, completed_at, created_at
+       FROM feed_fetch_logs
+       ORDER BY created_at DESC LIMIT 10`,
+    )
     .all();
   const recentErrors = (
     db
-      .prepare('SELECT * FROM app_error_logs ORDER BY created_at DESC LIMIT 10')
+      .prepare(
+        `SELECT id, source, message, details, path, method, created_at
+         FROM app_error_logs
+         ORDER BY created_at DESC LIMIT 10`,
+      )
       .all() as Array<{ details?: string | null; [key: string]: unknown }>
   ).map((row) => ({
     ...row,

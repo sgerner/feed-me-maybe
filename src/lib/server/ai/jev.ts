@@ -30,6 +30,21 @@ const JEV_MODEL = 'jev-latest';
 const SUBQ_ENDPOINT = 'https://api.subq.ai/v1/systemone';
 const SUBQ_MODEL = 'subq-snap-preview';
 const PREFERENCE_HALF_LIFE_DAYS = 45;
+const READER_PROFILE_CACHE_TTL_MS = 60_000;
+
+type ReaderProfileCacheEntry = {
+  db: ReturnType<typeof getDb>;
+  revision: number;
+  signature: string;
+  expiresAt: number;
+  profile: Record<string, unknown>;
+};
+
+let readerProfileCache: ReaderProfileCacheEntry | null = null;
+
+export function clearReaderProfileCache(): void {
+  readerProfileCache = null;
+}
 
 type ArticleJevRow = {
   title: string | null;
@@ -126,6 +141,34 @@ function decayedStrength(strength: number, lastReinforced: number): number {
 
 function getReaderProfile(): Record<string, unknown> {
   const db = getDb();
+  const now = Date.now();
+  const revision = getRankingFeedbackRevision();
+  const stats = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM user_interactions) AS interaction_count,
+         (SELECT COALESCE(MAX(rowid), 0) FROM user_interactions) AS interaction_max_rowid,
+         (SELECT COUNT(*) FROM user_preference_memory WHERE evidence_count > 0) AS pref_count,
+         (SELECT COALESCE(MAX(last_reinforced), 0) FROM user_preference_memory WHERE evidence_count > 0) AS pref_last_reinforced`,
+    )
+    .get() as {
+    interaction_count: number;
+    interaction_max_rowid: number;
+    pref_count: number;
+    pref_last_reinforced: number;
+  };
+  const signature = `${stats.interaction_count}:${stats.interaction_max_rowid}:${stats.pref_count}:${stats.pref_last_reinforced}`;
+
+  if (
+    readerProfileCache &&
+    readerProfileCache.db === db &&
+    readerProfileCache.revision === revision &&
+    readerProfileCache.signature === signature &&
+    now < readerProfileCache.expiresAt
+  ) {
+    return readerProfileCache.profile;
+  }
+
   const rows = db
     .prepare(
       `
@@ -284,7 +327,7 @@ function getReaderProfile(): Record<string, unknown> {
     )
     .all() as Array<{ source: string; interaction_count: number }>;
 
-  return {
+  const profile = {
     positive_preferences: positivePreferences,
     negative_preferences: negativePreferences,
     preferred_sources: sourceRows.map((row) => ({
@@ -296,6 +339,15 @@ function getReaderProfile(): Record<string, unknown> {
       interactions: Number(row.interaction_count || 0),
     })),
   };
+
+  readerProfileCache = {
+    db,
+    revision,
+    signature,
+    expiresAt: now + READER_PROFILE_CACHE_TTL_MS,
+    profile,
+  };
+  return profile;
 }
 
 function getArticle(articleId: string): ArticleJevRow | undefined {
@@ -314,6 +366,8 @@ function getArticle(articleId: string): ArticleJevRow | undefined {
         JOIN feeds f ON f.id = a.feed_id
         LEFT JOIN article_ai_metadata am ON am.article_id = a.id
         WHERE a.id = ?
+          AND f.enabled = 1
+          AND a.cleared_at IS NULL
       `,
     )
     .get(articleId) as ArticleJevRow | undefined;
@@ -459,7 +513,11 @@ async function scoreArticleWithJevInternal(
     )
     .pluck();
   const readArticleSnapshot = db.prepare(
-    'SELECT title, summary, length(content) AS content_length FROM articles WHERE id = ?',
+    `SELECT a.title, a.summary, a.content, a.author, a.categories,
+            length(a.content) AS content_length, a.cleared_at, f.enabled AS feed_enabled
+     FROM articles a
+     JOIN feeds f ON f.id = a.feed_id
+     WHERE a.id = ?`,
   );
   const analysisChanged = () =>
     (readAnalysisVersion.get(articleId) ?? null) !== article.ai_processed_at;
@@ -468,13 +526,22 @@ async function scoreArticleWithJevInternal(
       | {
           title: string | null;
           summary: string | null;
+          content: string | null;
+          author: string | null;
+          categories: string | null;
           content_length: number | null;
+          cleared_at: number | null;
+          feed_enabled: number | null;
         }
       | undefined;
-    if (!current) return true;
+    if (!current || !current.feed_enabled || current.cleared_at != null)
+      return true;
     return (
       (current.title ?? null) !== (article.title ?? null) ||
       (current.summary ?? null) !== (article.summary ?? null) ||
+      (current.content ?? null) !== (article.content ?? null) ||
+      (current.author ?? null) !== (article.author ?? null) ||
+      (current.categories ?? null) !== (article.categories ?? null) ||
       Number(current.content_length ?? 0) !==
         Number(article.content_length ?? 0)
     );

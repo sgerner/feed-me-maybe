@@ -120,7 +120,7 @@ describe('feed job queue', () => {
     const { getDb } = await import('#lib/server/db/index.ts');
     const db = getDb();
     const now = Date.now();
-    const job = enqueueAiProcess('paused-ai-article', { now });
+    const job = enqueueAiProcess('paused-ai-article', { now })!;
     db.prepare(
       `INSERT INTO app_settings (key, value, updated_at)
        VALUES ('ai_enabled', 'false', ?)
@@ -294,8 +294,8 @@ describe('feed job queue', () => {
           ),
         }),
       );
-      const first = enqueueAiProcess('one');
-      const second = enqueueAiProcess('two');
+      const first = enqueueAiProcess('one')!;
+      const second = enqueueAiProcess('two')!;
       await runDueJobs({ maxJobs: 4 });
 
       expect(aiMocks.processArticle).toHaveBeenCalledTimes(1);
@@ -1217,7 +1217,7 @@ describe('feed job queue', () => {
     expect(getJob('jev-backoff')?.result).toEqual({ retryAt });
 
     db.prepare('DELETE FROM provider_configs').run();
-    const unconfiguredAi = enqueueAiProcess('unconfigured-ai', { now });
+    const unconfiguredAi = enqueueAiProcess('unconfigured-ai', { now })!;
     expect(getNextQueuedJobAt()).toBeGreaterThanOrEqual(
       Math.max(now + 60_000, retryAt),
     );
@@ -1353,16 +1353,71 @@ describe('feed job queue', () => {
        VALUES ('paused-jq-art', 'feed-paused-jq', 'https://paused-jq.example.com/1', 'Paused Art', 'Summary text long enough', 'Detailed body content long enough for AI analysis.', ?, ?, ?)`,
     ).run(now, now, now);
 
+    expect(enqueueAiProcess('paused-jq-art', { now })).toBeNull();
     expect(enqueueJevProcess('paused-jq-art', { now })).toBeNull();
     expect(enqueueJevBackfill({ now })).toBe(0);
     expect(enqueueAiBackfill({ now })).toBe(0);
 
-    // Pre-existing queued jobs for paused feed are skipped cleanly at execution
-    const queuedAi = enqueueAiProcess('paused-jq-art', { now })!;
-    expect(queuedAi).toBeTruthy();
+    // Cleared articles in an enabled feed are also skipped
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run(
+      'feed-cleared-jq',
+      'https://cleared-jq.example.com/rss',
+      'Cleared Feed',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, cleared_at, fetched_at, created_at, updated_at)
+       VALUES ('cleared-jq-art', 'feed-cleared-jq', 'https://cleared-jq.example.com/1', 'Cleared Art', 'Summary text', 'Body text', ?, ?, ?, ?)`,
+    ).run(now, now, now, now);
+    expect(enqueueAiProcess('cleared-jq-art', { now })).toBeNull();
+    expect(enqueueJevProcess('cleared-jq-art', { now })).toBeNull();
+
+    // Pre-existing queued jobs for paused feed or cleared article are skipped cleanly at execution
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, scheduled_at, created_at)
+       VALUES ('prequeued-paused-ai', 'ai_process', 'queued', ?, 0, 3, ?, ?),
+              ('prequeued-cleared-ai', 'ai_process', 'queued', ?, 0, 3, ?, ?)`,
+    ).run(
+      JSON.stringify({ articleId: 'paused-jq-art' }),
+      now,
+      now,
+      JSON.stringify({ articleId: 'cleared-jq-art' }),
+      now,
+      now,
+    );
     await runDueJobs({ now: now + 1, maxJobs: 5 });
     expect(aiMocks.processArticle).not.toHaveBeenCalledWith('paused-jq-art');
-    expect(getJob(queuedAi.id)?.status).toBe('completed');
+    expect(aiMocks.processArticle).not.toHaveBeenCalledWith('cleared-jq-art');
+    expect(getJob('prequeued-paused-ai')?.status).toBe('completed');
+    expect(getJob('prequeued-cleared-ai')?.status).toBe('completed');
+  });
+
+  it('evicts unclaimable targetedFeedJobIds so deferred or processing feed jobs never block AI or Jev jobs', async () => {
+    const { enqueueAiProcess, enqueueFeedFetch, getJob, runDueJobs } =
+      await import('./job-queue');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    const deferred = enqueueFeedFetch('feed-deferred-target', { now });
+    db.prepare('UPDATE jobs SET scheduled_at = ? WHERE id = ?').run(
+      now + 120_000,
+      deferred.id,
+    );
+    const aiJob = enqueueAiProcess('ai-behind-deferred', { now })!;
+
+    const result = await runDueJobs({
+      now,
+      maxJobs: 2,
+      jobId: deferred.id,
+    });
+    expect(result.completed).toBe(1);
+    expect(getJob(deferred.id)?.status).toBe('queued');
+    expect(getJob(aiJob.id)?.status).toBe('completed');
+    expect(aiMocks.processArticle).toHaveBeenCalledWith('ai-behind-deferred');
   });
 
   it('separates feed budget from AI/Jev budget and prioritizes fresh feed fetches over retries', async () => {

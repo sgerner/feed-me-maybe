@@ -128,6 +128,7 @@
         <button
           type="button"
           class="btn preset-filled-surface-200-800"
+          aria-label="Retry {feed.title || 'Untitled feed'}"
           disabled={refreshing !== null}
           onclick={() => retryFeed(feed.id)}
         >

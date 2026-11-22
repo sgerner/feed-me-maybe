@@ -658,4 +658,36 @@ describe('selected ranking provider', () => {
         .get('read-bump-ok'),
     ).toBe(0.88);
   });
+
+  it('reuses cached reader profile across articles when feedback revision and interaction stats are unchanged', async () => {
+    await insertArticle('cache-art-1');
+    await insertArticle('cache-art-2');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { clearReaderProfileCache, scoreArticleWithJev } =
+      await import('./jev');
+    const db = getDb();
+
+    clearReaderProfileCache();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ answers: { would_open: { noul: 0.75 } } }),
+          { status: 200 },
+        ),
+    );
+    const prepareSpy = vi.spyOn(db, 'prepare');
+
+    expect(await scoreArticleWithJev('cache-art-1')).toBe(0.75);
+    const interactionScansAfterFirst = prepareSpy.mock.calls.filter(([sql]) =>
+      String(sql).includes('COUNT(DISTINCT a.id) AS interaction_count'),
+    ).length;
+    expect(interactionScansAfterFirst).toBe(2);
+
+    expect(await scoreArticleWithJev('cache-art-2')).toBe(0.75);
+    const interactionScansAfterSecond = prepareSpy.mock.calls.filter(([sql]) =>
+      String(sql).includes('COUNT(DISTINCT a.id) AS interaction_count'),
+    ).length;
+    // Cached profile must not re-run the two user_interactions GROUP BY scans
+    expect(interactionScansAfterSecond).toBe(2);
+  });
 });

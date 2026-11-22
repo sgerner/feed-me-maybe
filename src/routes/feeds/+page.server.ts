@@ -13,8 +13,9 @@ export const load: PageServerLoad = async ({ locals }) => {
       SELECT f.id, f.url, f.title, f.custom_title, f.category, f.icon_url,
              f.enabled, f.error_count, f.last_fetch_status, f.last_fetch_at,
              f.last_error, f.poll_interval_mins, f.updated_at,
-             COUNT(CASE WHEN a.read = 0 AND a.hidden = 0 AND a.thumbs_down = 0 THEN 1 END) AS unread_count,
-             COUNT(CASE WHEN a.hidden = 0 THEN 1 END) AS visible_count,
+             COUNT(CASE WHEN COALESCE(a.read, 0) = 0 AND COALESCE(a.hidden, 0) = 0 AND COALESCE(a.rejected, 0) = 0 AND COALESCE(a.thumbs_down, 0) = 0 THEN 1 END) AS unread_count,
+             COUNT(CASE WHEN COALESCE(a.saved, 0) = 1 THEN 1 END) AS saved_count,
+             COUNT(CASE WHEN COALESCE(a.hidden, 0) = 0 AND COALESCE(a.rejected, 0) = 0 AND COALESCE(a.thumbs_down, 0) = 0 THEN 1 END) AS visible_count,
              COUNT(a.id) AS article_count
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.id
@@ -38,12 +39,17 @@ export const load: PageServerLoad = async ({ locals }) => {
     poll_interval_mins: number | null;
     updated_at: number;
     unread_count: number;
+    saved_count: number;
     visible_count: number;
     article_count: number;
   }>;
 
   const healthByFeed = new Map(
     getAllFeedHealth().map((health) => [health.feedId, health]),
+  );
+  const totalUnread = feeds.reduce(
+    (sum, feed) => (feed.enabled ? sum + Number(feed.unread_count || 0) : sum),
+    0,
   );
 
   return {
@@ -55,5 +61,6 @@ export const load: PageServerLoad = async ({ locals }) => {
         health_stale: health?.stale ?? false,
       };
     }),
+    totalUnread,
   };
 };

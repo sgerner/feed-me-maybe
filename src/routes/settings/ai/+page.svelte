@@ -36,6 +36,9 @@
   let aiJobCounts = $state({ queued: 0, processing: 0, failed: 0 });
   let aiCooldownUntil = $state<number | null>(null);
   let retryingFailures = $state(false);
+  let confirmingClearConfig = $state(false);
+  let clearTriggerEl = $state<HTMLButtonElement | null>(null);
+  let clearConfirmButtonEl = $state<HTMLButtonElement | null>(null);
   let recentFailures = $state<
     Array<{
       article_id: string;
@@ -47,37 +50,69 @@
     }>
   >([]);
 
-  // Derived state
+  type SearchableModel = AiModel & {
+    provider: AiProvider;
+    providerId: string;
+    idLower: string;
+    nameLower: string;
+    providerNameLower: string;
+  };
+
+  const MAX_VISIBLE_MODEL_OPTIONS = 50;
+
+  // Precompute lowercase searchable text and alphabetical sort once when providers load
   const allModels = $derived(
-    providers.flatMap((p) => p.models.map((m) => ({ ...m, provider: p }))),
+    providers
+      .flatMap((p) =>
+        p.models.map((m): SearchableModel => ({
+          ...m,
+          provider: p,
+          providerId: p.id,
+          idLower: m.id.toLowerCase(),
+          nameLower: m.name.toLowerCase(),
+          providerNameLower: p.name.toLowerCase(),
+        })),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name)),
   );
 
-  const filteredModels = $derived(
-    (() => {
-      const query = searchQuery.trim().toLowerCase();
-      if (query.length < 2) return [];
-      const rank = (model: AiModel & { provider: AiProvider }) => {
-        const id = model.id.toLowerCase();
-        const name = model.name.toLowerCase();
-        const provider = model.provider.name.toLowerCase();
-        if (id === query) return 0;
-        if (name === query) return 1;
-        if (id.startsWith(query)) return 2;
-        if (name.startsWith(query)) return 3;
-        if (provider.startsWith(query)) return 4;
-        if (id.includes(query)) return 5;
-        if (name.includes(query)) return 6;
-        return 7;
-      };
-      return allModels
-        .filter((m) =>
-          [m.name, m.id, m.provider.name].some((value) =>
-            value.toLowerCase().includes(query),
-          ),
-        )
-        .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
-    })(),
-  );
+  const modelSearchMatches = $derived.by(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (query.length < 2) {
+      return { items: [] as SearchableModel[], total: 0 };
+    }
+    const buckets: SearchableModel[][] = [[], [], [], [], [], [], [], []];
+    let total = 0;
+    for (const model of allModels) {
+      const { idLower, nameLower, providerNameLower } = model;
+      let rank = -1;
+      if (idLower === query) rank = 0;
+      else if (nameLower === query) rank = 1;
+      else if (idLower.startsWith(query)) rank = 2;
+      else if (nameLower.startsWith(query)) rank = 3;
+      else if (providerNameLower.startsWith(query)) rank = 4;
+      else if (idLower.includes(query)) rank = 5;
+      else if (nameLower.includes(query)) rank = 6;
+      else if (providerNameLower.includes(query)) rank = 7;
+      if (rank >= 0) {
+        buckets[rank].push(model);
+        total += 1;
+      }
+    }
+    const items: SearchableModel[] = [];
+    for (const bucket of buckets) {
+      for (const model of bucket) {
+        items.push(model);
+        if (items.length >= MAX_VISIBLE_MODEL_OPTIONS) {
+          return { items, total };
+        }
+      }
+    }
+    return { items, total };
+  });
+
+  const filteredModels = $derived(modelSearchMatches.items);
+  const totalMatchingModels = $derived(modelSearchMatches.total);
   const showModelOptions = $derived(
     !modelSuggestionsDismissed && filteredModels.length > 0,
   );
@@ -328,10 +363,27 @@
     }
   }
 
+  function requestClearSelectedModel(event?: MouseEvent) {
+    if (!hasSavedConfig) {
+      void clearSelectedModel();
+      return;
+    }
+    clearTriggerEl = (event?.currentTarget as HTMLButtonElement | null) ?? null;
+    confirmingClearConfig = true;
+    void tick().then(() => clearConfirmButtonEl?.focus());
+  }
+
+  function cancelClearSelectedModel() {
+    confirmingClearConfig = false;
+    void tick().then(() => clearTriggerEl?.focus());
+  }
+
   async function clearSelectedModel() {
+    confirmingClearConfig = false;
     if (!hasSavedConfig) {
       selectedProviderId = '';
       selectedModelId = '';
+      customModelId = '';
       customBaseUrl = '';
       envConfig = {};
       hasSavedCredential = false;
@@ -569,7 +621,7 @@
         hidden={!showModelOptions}
         in:fade={{ duration: 150 }}
       >
-        {#each filteredModels as m, index}
+        {#each filteredModels as m, index (m.providerId + ':' + m.id)}
           <button
             id="ai-model-option-{index}"
             type="button"
@@ -583,14 +635,12 @@
             onmousedown={(event) => event.preventDefault()}
             onclick={() => selectModel(m)}
           >
-            <img
-              src="https://models.dev/logos/{m.provider.id}.svg"
-              alt=""
-              class="h-6 w-6 rounded-sm bg-white/10 p-1"
-              onerror={(e) =>
-                ((e.currentTarget as HTMLImageElement).src =
-                  'https://models.dev/logos/default.svg')}
-            />
+            <span
+              class="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm bg-white/10 text-[10px] font-bold uppercase text-white/80"
+              aria-hidden="true"
+            >
+              {m.provider.name.slice(0, 2)}
+            </span>
             <div class="flex-1">
               <div class="text-sm font-semibold text-white">{m.name}</div>
               <div class="text-xs opacity-60">{m.provider.name} • {m.id}</div>
@@ -602,6 +652,15 @@
             </div>
           </button>
         {/each}
+        {#if totalMatchingModels > filteredModels.length}
+          <div
+            class="border-t border-white/10 px-4 py-2 text-xs opacity-65"
+            role="status"
+          >
+            Showing {filteredModels.length} of {totalMatchingModels} matches — type
+            to narrow
+          </div>
+        {/if}
       </div>
       {#if searchQuery.length >= 2 && filteredModels.length === 0 && !registryError}
         <p class="mt-2 text-sm opacity-65" role="status">
@@ -622,6 +681,37 @@
       </div>
     {/if}
 
+    {#if confirmingClearConfig}
+      <div
+        class="glass-card flex flex-wrap items-center justify-between gap-4 border border-error-500/30 bg-error-500/10 p-4"
+        role="region"
+        aria-label="Confirm clearing saved AI configuration"
+      >
+        <p class="text-sm text-white">
+          Clear the saved AI provider configuration and stored credentials?
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="btn preset-tonal-error btn-sm"
+            bind:this={clearConfirmButtonEl}
+            onclick={() => void clearSelectedModel()}
+            disabled={saving}
+          >
+            Confirm clear
+          </button>
+          <button
+            type="button"
+            class="btn preset-tonal btn-sm"
+            onclick={cancelClearSelectedModel}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    {/if}
+
     {#if hasSavedConfig && !hasUsableSelection}
       <div
         class="glass-card flex flex-wrap items-center justify-between gap-4 p-5"
@@ -634,13 +724,13 @@
         <button
           type="button"
           class="btn preset-tonal-error btn-sm"
-          onclick={clearSelectedModel}
+          onclick={requestClearSelectedModel}
           disabled={saving}>Clear saved configuration</button
         >
       </div>
     {/if}
 
-    {#if hasUsableSelection}
+    {#if selectedProvider}
       <div
         class="glass-card space-y-6 p-5 md:p-6"
         in:fly={{ y: 20, duration: 400 }}
@@ -663,10 +753,13 @@
             <h3 class="text-xl font-bold text-white">
               {customModelId.trim() && customBaseUrl.trim()
                 ? customModelId.trim()
-                : (selectedModel?.name ?? effectiveModelId)}
+                : (selectedModel?.name ??
+                  (effectiveModelId || selectedProvider.name))}
             </h3>
             <p class="text-sm opacity-70">
-              {selectedProvider?.name} — {effectiveModelId}
+              {selectedProvider?.name}{effectiveModelId
+                ? ` — ${effectiveModelId}`
+                : ''}
             </p>
 
             <div class="mt-3 flex flex-wrap gap-2">
@@ -687,10 +780,11 @@
             </div>
           </div>
           <button
+            type="button"
             class="btn-icon variant-soft-surface btn-sm"
             aria-label="Clear saved model configuration"
             title="Clear saved model configuration"
-            onclick={clearSelectedModel}
+            onclick={requestClearSelectedModel}
             disabled={saving}
           >
             <svg
@@ -735,7 +829,7 @@
             </p>
           {:else}
             <div class="grid gap-4 sm:grid-cols-1">
-              {#each selectedProvider?.requiredEnvVars || [] as ev}
+              {#each selectedProvider?.requiredEnvVars || [] as ev (ev)}
                 <label class="label">
                   <span class="mb-1 block text-xs font-medium opacity-80"
                     >{ev}</span
@@ -768,25 +862,23 @@
             </label>
           </div>
 
-          {#if customBaseUrl.trim() && selectedProvider}
-            <label class="label">
-              <span class="mb-1 block text-xs font-medium opacity-80"
-                >Custom model ID (optional)</span
-              >
-              <input
-                class="input glass-input w-full"
-                type="text"
-                bind:value={customModelId}
-                maxlength="200"
-                autocomplete="off"
-                placeholder={selectedModelId || 'e.g. llama3.1:8b'}
-              />
-              <span class="mt-1 block text-xs opacity-60">
-                Use this when your compatible endpoint serves a model that is
-                not listed in the registry.
-              </span>
-            </label>
-          {/if}
+          <label class="label">
+            <span class="mb-1 block text-xs font-medium opacity-80"
+              >Custom model ID (optional)</span
+            >
+            <input
+              class="input glass-input w-full"
+              type="text"
+              bind:value={customModelId}
+              maxlength="200"
+              autocomplete="off"
+              placeholder={selectedModelId || 'e.g. llama3.1:8b'}
+            />
+            <span class="mt-1 block text-xs opacity-60">
+              Use this when your compatible endpoint serves a model that is not
+              listed in the registry.
+            </span>
+          </label>
         </div>
 
         <div class="flex items-center justify-between pt-4">

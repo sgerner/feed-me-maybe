@@ -1,6 +1,7 @@
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import {
+  cancelQueuedArticleWorkForFeeds,
   deleteJobsForFeeds,
   enqueueFeedFetch,
 } from '#lib/server/feed/job-queue.ts';
@@ -104,11 +105,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       }
 
       if (action === 'disable') {
-        return db
+        const changes = db
           .prepare(
             `UPDATE feeds SET enabled = 0, updated_at = ? WHERE id IN (${placeholders})`,
           )
           .run(now, ...feedIds).changes;
+        cancelQueuedArticleWorkForFeeds(feedIds, db);
+        return changes;
       }
 
       if (action === 'set_category') {

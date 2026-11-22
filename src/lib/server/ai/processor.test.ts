@@ -199,4 +199,55 @@ describe('article enrichment', () => {
         .get('fresh-item'),
     ).toEqual({ hidden: 1, state_version: 1 });
   });
+
+  it('skips articles in paused feeds or cleared articles before calling LLM and before committing', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
+    const { getConfiguredAiClient } = await import('./runtime');
+    const { processArticle } = await import('./processor');
+    db = new Database(':memory:');
+    vi.mocked(getDb).mockReturnValue(db);
+    initializeDatabase();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 0, ?, ?)',
+    ).run('feed-paused', 'https://example.com/paused', now, now);
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?)',
+    ).run('feed-active', 'https://example.com/active', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, content, cleared_at, fetched_at, created_at, updated_at)
+       VALUES
+         ('paused-feed-art', 'feed-paused', 'https://example.com/pf', 'Paused Feed Story', 'Readable body text', NULL, ?, ?, ?),
+         ('cleared-art', 'feed-active', 'https://example.com/cl', 'Cleared Story', 'Readable body text', ?, ?, ?, ?),
+         ('cleared-midflight', 'feed-active', 'https://example.com/cm', 'Cleared Midflight', 'Readable body text', NULL, ?, ?, ?)`,
+    ).run(now, now, now, now, now, now, now, now, now, now);
+
+    const analyzeMock = vi.fn(async () => {
+      db.prepare('UPDATE articles SET cleared_at = ? WHERE id = ?').run(
+        now,
+        'cleared-midflight',
+      );
+      return { summary: 'Should not commit', relevanceScore: 0.9 };
+    });
+    vi.mocked(getConfiguredAiClient).mockResolvedValue({
+      analyzeArticle: analyzeMock,
+    } as never);
+
+    await processArticle('paused-feed-art');
+    await processArticle('cleared-art');
+    expect(analyzeMock).not.toHaveBeenCalled();
+
+    await processArticle('cleared-midflight');
+    expect(analyzeMock).toHaveBeenCalledOnce();
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) FROM article_ai_metadata WHERE article_id = 'cleared-midflight'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+  });
 });

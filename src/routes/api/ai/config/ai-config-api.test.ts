@@ -316,6 +316,80 @@ describe('AI configuration API', () => {
       customBaseUrl: 'https://public.example/v1',
     });
     expect(invalid.status).toBe(400);
+
+    // Rejects arbitrary http://, query strings, and fragments, while normalizing trailing slashes and allowing loopback http://
+    for (const badBaseUrl of [
+      'http://public.example/v1',
+      'https://public.example/v1?key=1',
+      'https://public.example/v1#frag',
+    ]) {
+      const rejected = await post({
+        providerId: 'test-provider',
+        modelId: 'local-llama:8b',
+        config: { TEST_API_KEY: 'secret-key' },
+        customBaseUrl: badBaseUrl,
+      });
+      expect(rejected.status).toBe(400);
+    }
+
+    const trailingSlash = await post({
+      providerId: 'test-provider',
+      modelId: 'local-llama:8b',
+      config: { TEST_API_KEY: 'secret-key' },
+      customBaseUrl: 'https://public.example/v1/',
+    });
+    expect(trailingSlash.status).toBe(200);
+    expect(
+      getDb()
+        .prepare(
+          'SELECT custom_base_url FROM provider_configs WHERE enabled = 1',
+        )
+        .get(),
+    ).toEqual({ custom_base_url: 'https://public.example/v1' });
+
+    const loopback = await post({
+      providerId: 'test-provider',
+      modelId: 'local-llama:8b',
+      config: { TEST_API_KEY: 'secret-key' },
+      customBaseUrl: 'http://127.0.0.1:11434/v1/',
+    });
+    expect(loopback.status).toBe(200);
+    expect(
+      getDb()
+        .prepare(
+          'SELECT custom_base_url FROM provider_configs WHERE enabled = 1',
+        )
+        .get(),
+    ).toEqual({ custom_base_url: 'http://127.0.0.1:11434/v1' });
+  });
+
+  it('allows retryFailed when the saved model was removed from models.dev catalog', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { encrypt } = await import('#lib/server/ai/crypto.ts');
+    const db = getDb();
+    const now = Date.now();
+    const creds = encrypt(JSON.stringify({ TEST_API_KEY: 'secret-key' }));
+
+    db.prepare(
+      `INSERT INTO provider_configs
+       (id, provider_id, model_id, api_key_encrypted, api_key_nonce, custom_base_url, enabled, created_at, updated_at)
+       VALUES ('retired-cfg', 'test-provider', 'retired-model-id', ?, ?, NULL, 1, ?, ?)`,
+    ).run(creds.encrypted, creds.nonce, now, now);
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?)',
+    ).run('retired-feed', 'https://example.com/retired', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at)
+       VALUES ('retired-art', 'retired-feed', 'https://example.com/retired/1', 'Story', ?, ?, ?)`,
+    ).run(now, now, now);
+    db.prepare(
+      `INSERT INTO article_ai_metadata (id, article_id, analysis_status, analysis_error, processed_at, created_at)
+       VALUES ('retired-meta', 'retired-art', 'failed', 'Timeout', ?, ?)`,
+    ).run(now, now);
+
+    const retryResponse = await post({ retryFailed: true });
+    expect(retryResponse.status).toBe(200);
+    expect(await retryResponse.json()).toMatchObject({ queued: 1 });
   });
 
   it('queues backlog on config save and counts unindexed pending jobs in status', async () => {

@@ -20,18 +20,20 @@
     health_status?: string;
     health_stale?: boolean;
     unread_count: number;
+    saved_count?: number;
     visible_count: number;
     article_count: number;
   };
 
   type StatusFilter = 'all' | 'active' | 'paused' | 'errored';
 
-  let { data }: { data: { feeds: Feed[] } } = $props();
+  let { data }: { data: { feeds: Feed[]; totalUnread?: number } } = $props();
   let query = $state('');
   let statusFilter = $state<StatusFilter>('all');
   let selectedIds = $state<string[]>([]);
   let batchCategory = $state('');
   let batchPending = $state(false);
+  let confirmingBatchDelete = $state(false);
   let importingOpml = $state(false);
   let editingCategoryFeedId = $state<string | null>(null);
   let editingCategoryValue = $state('');
@@ -117,12 +119,20 @@
   );
 
   const selectedSet = $derived(new Set(selectedIds));
+  const selectedSavedCount = $derived(
+    data.feeds.reduce(
+      (sum, feed) =>
+        selectedSet.has(feed.id) ? sum + Number(feed.saved_count || 0) : sum,
+      0,
+    ),
+  );
   const allFilteredSelected = $derived(
     filteredFeeds.length > 0 &&
       filteredFeeds.every((feed) => selectedSet.has(feed.id)),
   );
 
   function toggleSelect(feedId: string) {
+    confirmingBatchDelete = false;
     if (selectedSet.has(feedId)) {
       selectedIds = selectedIds.filter((id) => id !== feedId);
     } else {
@@ -131,6 +141,7 @@
   }
 
   function toggleSelectAllFiltered() {
+    confirmingBatchDelete = false;
     if (allFilteredSelected) {
       const filteredSet = new Set(filteredFeeds.map((feed) => feed.id));
       selectedIds = selectedIds.filter((id) => !filteredSet.has(id));
@@ -144,20 +155,19 @@
   function clearSelection() {
     selectedIds = [];
     batchCategory = '';
+    confirmingBatchDelete = false;
+  }
+
+  function requestBatchDelete() {
+    if (selectedIds.length === 0 || batchPending) return;
+    confirmingBatchDelete = true;
   }
 
   async function runBatchAction(
     action: 'enable' | 'disable' | 'set_category' | 'delete',
   ) {
     if (selectedIds.length === 0 || batchPending) return;
-    if (
-      action === 'delete' &&
-      !confirm(
-        `Delete ${selectedIds.length} selected ${selectedIds.length === 1 ? 'feed' : 'feeds'}? All of their articles will be removed.`,
-      )
-    ) {
-      return;
-    }
+    confirmingBatchDelete = false;
 
     batchPending = true;
     try {
@@ -522,13 +532,57 @@
         <button
           type="button"
           class="btn preset-tonal-error px-3 py-1.5 text-xs"
-          onclick={() => runBatchAction('delete')}
+          onclick={requestBatchDelete}
           disabled={batchPending}
         >
           Delete
         </button>
       </div>
     </div>
+
+    {#if confirmingBatchDelete}
+      <div
+        class="glass-card mb-6 flex flex-col gap-3 border border-error-500/30 bg-error-500/10 p-4 md:flex-row md:items-center md:justify-between"
+        role="alertdialog"
+        aria-label="Confirm feed deletion"
+      >
+        <div class="text-sm text-surface-100">
+          <p class="font-semibold">
+            Delete {selectedIds.length} selected {selectedIds.length === 1
+              ? 'feed'
+              : 'feeds'}? All of their articles will be removed.
+          </p>
+          {#if selectedSavedCount > 0}
+            <p class="mt-1 text-xs font-medium text-warning-300">
+              Warning: This will permanently delete {selectedSavedCount} saved {selectedSavedCount ===
+              1
+                ? 'bookmark'
+                : 'bookmarks'} stored in {selectedIds.length === 1
+                ? 'this feed'
+                : 'these feeds'}.
+            </p>
+          {/if}
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="btn preset-tonal-error px-3 py-1.5 text-xs"
+            onclick={() => void runBatchAction('delete')}
+            disabled={batchPending}
+          >
+            Confirm delete
+          </button>
+          <button
+            type="button"
+            class="btn preset-tonal px-3 py-1.5 text-xs"
+            onclick={() => (confirmingBatchDelete = false)}
+            disabled={batchPending}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    {/if}
   {/if}
 
   {#if data.feeds.length === 0}
@@ -670,7 +724,9 @@
                   {:else}
                     <div class="flex items-center justify-between text-xs">
                       <span class="truncate text-surface-300">
-                        Category: {feed.category?.trim() || 'Unsorted'}
+                        Category: {feed.category?.trim() ||
+                          'Unsorted'}{#if Number(feed.saved_count || 0) > 0}
+                          · {feed.saved_count} saved{/if}
                       </span>
                       <button
                         type="button"

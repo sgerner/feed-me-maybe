@@ -733,4 +733,86 @@ describe('feed ingester identity and duplicate handling', () => {
     ).toBe('["systems","rust"]');
     expect(applyPreferenceModelToArticle).toHaveBeenCalledWith('cat-art');
   });
+
+  it('defers sanitizeHtml on unchanged articles during repeated polls and does not overwrite Readability content with HTML-inflated stubs', async () => {
+    const { fetchFeed } = await import('./fetcher');
+    const { attachLazySanitizedBodies } =
+      await vi.importActual<typeof import('./fetcher')>('./fetcher');
+    const formatMod = await import('#lib/utils/format.ts');
+    const { ingestFeed } = await import('./ingester');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('feed-lazy-sanitize', 'https://example.com/lazy.xml', now, now);
+
+    const makeItem = (rawContent: string, rawSummary = 'Plain summary') =>
+      attachLazySanitizedBodies(
+        {
+          guid: 'lazy-1',
+          url: 'https://example.com/lazy-1',
+          title: 'Lazy Post',
+          categories: [],
+        },
+        {
+          rawSummary,
+          summaryBase: 'https://example.com/lazy-1',
+          rawContent,
+          contentBase: 'https://example.com/lazy-1',
+        },
+      );
+
+    const sanitizeSpy = vi.spyOn(formatMod, 'sanitizeHtml');
+    try {
+      vi.mocked(fetchFeed).mockResolvedValueOnce({
+        success: true,
+        items: [
+          makeItem(
+            '<p>Clean Readability article text with meaningful prose that should never be replaced by tag-bloated short snippets.</p>',
+          ),
+        ],
+      });
+      expect(
+        (await ingestFeed({ feedId: 'feed-lazy-sanitize' })).articlesNew,
+      ).toBe(1);
+      expect(sanitizeSpy).toHaveBeenCalled();
+
+      // Poll 2: identical item should not run sanitizeHtml at all
+      sanitizeSpy.mockClear();
+      vi.mocked(fetchFeed).mockResolvedValueOnce({
+        success: true,
+        items: [
+          makeItem(
+            '<p>Clean Readability article text with meaningful prose that should never be replaced by tag-bloated short snippets.</p>',
+          ),
+        ],
+      });
+      expect(
+        (await ingestFeed({ feedId: 'feed-lazy-sanitize' })).articlesNew,
+      ).toBe(0);
+      expect(sanitizeSpy).not.toHaveBeenCalled();
+
+      // Poll 3: HTML-bloated stub (longer HTML bytes, shorter plain text) must not overwrite cleaner content
+      vi.mocked(fetchFeed).mockResolvedValueOnce({
+        success: true,
+        items: [
+          makeItem(
+            '<div><span><b><i><u>'.repeat(10) +
+              'Short stub' +
+              '</u></i></b></span></div>'.repeat(10),
+          ),
+        ],
+      });
+      await ingestFeed({ feedId: 'feed-lazy-sanitize' });
+      expect(
+        db
+          .prepare('SELECT content FROM articles WHERE feed_id = ?')
+          .pluck()
+          .get('feed-lazy-sanitize'),
+      ).toContain('Clean Readability article text with meaningful prose');
+    } finally {
+      sanitizeSpy.mockRestore();
+    }
+  });
 });
