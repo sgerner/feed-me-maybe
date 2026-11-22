@@ -99,7 +99,16 @@ export function applySettingsMutation(
   if (key === 'ranking_provider') return updateRankingProvider(value);
 
   if (key === 'reset_training' && value === 'true') {
+    const now = Date.now();
     db.transaction(() => {
+      db.prepare(
+        `INSERT OR REPLACE INTO user_preference_memory_archive
+         (original_id, label, type, polarity, strength, evidence_count,
+          last_reinforced, explanation, created_at, archive_reason, archived_at)
+         SELECT id, label, type, polarity, strength, evidence_count,
+                last_reinforced, explanation, created_at, 'reset_training', ?
+         FROM user_preference_memory`,
+      ).run(now);
       db.prepare('DELETE FROM user_preference_memory').run();
       reconcileAutoHiddenArticles();
       db.prepare('DELETE FROM user_interactions').run();
@@ -111,7 +120,17 @@ export function applySettingsMutation(
   if (key.startsWith('delete_pref_') && value === 'true') {
     const prefId = key.slice('delete_pref_'.length);
     if (!prefId) return { success: false, message: 'Preference id missing' };
+    const now = Date.now();
     db.transaction(() => {
+      db.prepare(
+        `INSERT OR REPLACE INTO user_preference_memory_archive
+         (original_id, label, type, polarity, strength, evidence_count,
+          last_reinforced, explanation, created_at, archive_reason, archived_at)
+         SELECT id, label, type, polarity, strength, evidence_count,
+                last_reinforced, explanation, created_at, 'user_deleted', ?
+         FROM user_preference_memory
+         WHERE id = ?`,
+      ).run(now, prefId);
       const deleted = db
         .prepare('DELETE FROM user_preference_memory WHERE id = ?')
         .run(prefId);

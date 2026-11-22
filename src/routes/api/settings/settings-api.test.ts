@@ -453,4 +453,68 @@ describe('settings API mutations', () => {
         .get('manual-hide-1'),
     ).toEqual({ hidden: 1 });
   });
+
+  it('archives deleted preferences and formats raw preference labels and types into human-readable display values', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applySettingsMutation } = await import('#lib/server/settings.ts');
+    const {
+      _formatPreferenceLabel: formatPreferenceLabel,
+      _formatPreferenceType: formatPreferenceType,
+      load,
+    } = await import('../../settings/memory/+page.server');
+    const db = getDb();
+    const now = Date.now();
+
+    expect(formatPreferenceLabel('phrase:apps:fast:web', 'phrase')).toBe(
+      'Apps · Fast · Web',
+    );
+    expect(formatPreferenceLabel('topic:c_plus_plus', 'topic')).toBe('C++');
+    expect(
+      formatPreferenceLabel('negative_filter:obituary', 'negative_filter'),
+    ).toBe('Obituary');
+    expect(formatPreferenceLabel('signal:technical_depth', 'signal')).toBe(
+      'Technical Depth',
+    );
+    expect(formatPreferenceType('signal', 'positive')).toBe('Quality Signal');
+    expect(formatPreferenceType('negative_filter', 'positive')).toBe(
+      'Content Filter (Allowed)',
+    );
+    expect(formatPreferenceType('phrase', 'negative')).toBe('Title Phrase');
+
+    db.prepare(
+      'INSERT OR REPLACE INTO user_preference_memory (id, label, type, polarity, strength, evidence_count, last_reinforced, explanation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'archive-test-pref',
+      'topic:machine_learning',
+      'topic',
+      'positive',
+      0.85,
+      3,
+      now,
+      'Boosted from 3 saved articles',
+      now,
+    );
+
+    const loaded = (await load({ locals: { sessionId: 's' } } as never)) as {
+      preferences: Array<{
+        id: string;
+        displayLabel: string;
+        displayType: string;
+      }>;
+    };
+    const item = loaded.preferences.find((p) => p.id === 'archive-test-pref');
+    expect(item?.displayLabel).toBe('Machine Learning');
+    expect(item?.displayType).toBe('Topic');
+
+    applySettingsMutation('delete_pref_archive-test-pref', 'true');
+    const archived = db
+      .prepare(
+        'SELECT original_id, archive_reason FROM user_preference_memory_archive WHERE original_id = ?',
+      )
+      .get('archive-test-pref');
+    expect(archived).toEqual({
+      original_id: 'archive-test-pref',
+      archive_reason: 'user_deleted',
+    });
+  });
 });

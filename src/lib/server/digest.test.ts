@@ -819,4 +819,111 @@ describe('weekly digest', () => {
       'digest-paused-article',
     );
   });
+
+  it('excludes cleared articles and explicitly hidden read articles while keeping hide_on_open read articles, and keeps cache across read/score updates', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { getWeeklyDigestArticles } = await import('./digest');
+    const { createEmptyDigest } = await import('#lib/digest-types.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    for (let i = 1; i <= 4; i += 1) {
+      db.prepare(
+        'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+      ).run(`feed-${i}`, `https://example.com/rss-${i}`, `Feed ${i}`, now, now);
+    }
+
+    const insertArticle = (
+      id: string,
+      feedId: string,
+      title: string,
+      read: number,
+      hidden: number,
+      clearedAt: number | null = null,
+    ) => {
+      db.prepare(
+        `INSERT INTO articles
+           (id, feed_id, url, title, summary, read, hidden, cleared_at,
+            published_at, fetched_at, heuristic_score, combined_score,
+            categories, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 80, 80, '["news"]', ?, ?)`,
+      ).run(
+        id,
+        feedId,
+        `https://example.com/${id}`,
+        title,
+        `${title} summary`,
+        read,
+        hidden,
+        clearedAt,
+        now - 1000,
+        now - 1000,
+        now,
+        now,
+      );
+    };
+
+    insertArticle('eligible-1', 'feed-1', 'Eligible story one', 0, 0);
+    insertArticle('eligible-2', 'feed-2', 'Eligible story two', 0, 0);
+    insertArticle('eligible-3', 'feed-3', 'Eligible story three', 0, 0);
+    insertArticle(
+      'hide-on-open-read',
+      'feed-4',
+      'Read story hidden on open',
+      1,
+      1,
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'auto-hide-open',
+      'hide-on-open-read',
+      'hide',
+      now,
+      '{"auto":true,"reason":"hide_on_open"}',
+    );
+
+    insertArticle(
+      'explicit-hide-read',
+      'feed-1',
+      'Read story manually hidden',
+      1,
+      1,
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run('manual-hide-read', 'explicit-hide-read', 'hide', now, '{}');
+
+    insertArticle('cleared-story', 'feed-2', 'Cleared story', 0, 0, now);
+
+    const first = await getWeeklyDigestArticles({ now, forceRefresh: true });
+    expect(first.allArticles.map((a) => a.id)).toEqual(
+      expect.arrayContaining([
+        'eligible-1',
+        'eligible-2',
+        'eligible-3',
+        'hide-on-open-read',
+      ]),
+    );
+    expect(first.allArticles.map((a) => a.id)).not.toContain(
+      'explicit-hide-read',
+    );
+    expect(first.allArticles.map((a) => a.id)).not.toContain('cleared-story');
+    expect(first.activeFeeds).toHaveLength(4);
+
+    // Marking an article read/saved and changing its score should NOT thrash the digest cache
+    db.prepare(
+      'UPDATE articles SET read = 1, saved = 1, heuristic_score = 99, combined_score = 99 WHERE id = ?',
+    ).run('eligible-1');
+
+    const second = await getWeeklyDigestArticles({ now: now + 1000 });
+    expect(second.cacheHit).toBe(true);
+    expect(second.inclusionCounts.read).toBe(2);
+    expect(second.inclusionCounts.saved).toBe(1);
+
+    const empty = createEmptyDigest(now);
+    expect(empty.aiEnabled).toBe(false);
+    expect(empty.aiGenerated).toBe(false);
+    expect(empty.inclusionCounts.eligibleArticles).toBe(0);
+  });
 });

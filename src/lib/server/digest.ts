@@ -17,7 +17,34 @@ import {
   type WeeklyDigestArticleContext,
 } from '#lib/server/ai/digest-prompts.ts';
 import type { FeedArticleRow } from '#lib/server/feed/articles.ts';
-import { rankingOrderExpression } from '#lib/server/ranking.ts';
+import { hasExplicitHide } from '#lib/server/preferences.ts';
+import {
+  rankingOrderExpression,
+  rankingScoreExpression,
+} from '#lib/server/ranking.ts';
+import type {
+  CalmDailyBriefing as SharedCalmDailyBriefing,
+  DigestArticle,
+  DigestCluster,
+  DigestHistoryEntry,
+  DigestInclusionCounts,
+  WeeklyDigestResult as SharedWeeklyDigestResult,
+  WeeklyDigestStats,
+  WeeklyDigestStory as SharedWeeklyDigestStory,
+  WeeklyDigestTheme as SharedWeeklyDigestTheme,
+} from '#lib/digest-types.ts';
+
+export type {
+  DigestArticle,
+  DigestCluster,
+  DigestHistoryEntry,
+  DigestInclusionCounts,
+  WeeklyDigestStats,
+};
+export type WeeklyDigestTheme = SharedWeeklyDigestTheme<FeedArticleRow>;
+export type WeeklyDigestStory = SharedWeeklyDigestStory<FeedArticleRow>;
+export type CalmDailyBriefing = SharedCalmDailyBriefing<FeedArticleRow>;
+export type WeeklyDigestResult = SharedWeeklyDigestResult<FeedArticleRow>;
 
 export const WEEKLY_DIGEST_LIMIT = 60;
 export const WEEKLY_DIGEST_WINDOW_DAYS = 7;
@@ -67,29 +94,8 @@ export function parseDigestQuery(url: URL): DigestQuery {
 
 type DigestArticleRow = FeedArticleRow & {
   rejected?: number;
-};
-
-export type DigestCluster = {
-  id: string;
-  representativeId: string;
-  articleIds: string[];
-  feedIds: string[];
-};
-
-export type DigestInclusionCounts = {
-  windowArticles: number;
-  eligibleArticles: number;
-  excludedArticles: number;
-  excludedThumbsDown: number;
-  excludedRejected: number;
-  excludedHiddenUnread: number;
-  visibleUnread: number;
-  hiddenRead: number;
-  read: number;
-  unread: number;
-  saved: number;
-  duplicateArticles: number;
-  deduplicatedArticles: number;
+  cleared_at?: number | null;
+  rank_score?: number;
 };
 
 type WeeklyDigestRawTheme = {
@@ -118,71 +124,6 @@ export type WeeklyDigestRaw = {
   uncertainty?: string[];
 };
 
-export type WeeklyDigestTheme = {
-  name: string;
-  summary: string;
-  articles: FeedArticleRow[];
-};
-
-export type WeeklyDigestStory = {
-  article: FeedArticleRow;
-  reason: string;
-  status: 'new' | 'ongoing';
-  uncertainty?: string;
-  sourceCount: number;
-  relatedArticleIds: string[];
-};
-
-export type CalmDailyBriefing = {
-  headline: string;
-  summary: string;
-  topSignal: WeeklyDigestStory[];
-  worthYourTime: WeeklyDigestStory[];
-  whatChanged: WeeklyDigestStory[];
-  uncertainty: string[];
-};
-
-export type DigestHistoryEntry = {
-  generatedAt: number;
-  windowDays: number;
-  headline: string;
-  totalArticles: number;
-  deduplicatedArticles: number;
-  signature: string;
-};
-
-export type WeeklyDigestStats = {
-  totalArticles: number;
-  totalFeeds: number;
-  unreadArticles: number;
-  savedArticles: number;
-  windowStart: number;
-  windowEnd: number;
-  generatedAt: number;
-  cacheHit: boolean;
-  aiEnabled: boolean;
-  aiGenerated: boolean;
-  windowDays: number;
-};
-
-export type WeeklyDigestResult = WeeklyDigestStats & {
-  headline: string;
-  summary: string;
-  takeaways: string[];
-  themes: WeeklyDigestTheme[];
-  topStories: WeeklyDigestStory[];
-  missedStories: WeeklyDigestStory[];
-  activeFeeds: Array<{ title: string; count: number }>;
-  allArticles: FeedArticleRow[];
-  totalPages: number;
-  limit: number;
-  briefing: CalmDailyBriefing;
-  inclusionCounts: DigestInclusionCounts;
-  clusters: DigestCluster[];
-  history: DigestHistoryEntry[];
-  deduplicatedArticles: number;
-};
-
 type DigestCachePayload = {
   signature: string;
   generatedAt: number;
@@ -195,21 +136,31 @@ function buildFeedArticleSelect(): string {
   return `
     SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url, a.categories,
            a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.thumbs_up, a.thumbs_down,
-           a.rejected,
+           a.rejected, a.cleared_at,
            a.heuristic_score, a.combined_score,
+           ${rankingScoreExpression('a')} AS rank_score,
            f.title as feed_title, f.url as feed_url, f.open_mode as feed_open_mode
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
   `;
 }
 
-function scoreArticle(article: FeedArticleRow, now = Date.now()): number {
+function scoreArticle(article: FeedArticleRow, now?: number): number {
+  const precomputed = (article as DigestArticleRow).rank_score;
+  if (
+    now === undefined &&
+    typeof precomputed === 'number' &&
+    Number.isFinite(precomputed)
+  ) {
+    return precomputed;
+  }
+  const referenceNow = now ?? Date.now();
   const combined =
     article.combined_score && article.combined_score > 0
       ? article.combined_score
       : (article.heuristic_score ?? 0);
   const published = article.published_at ?? article.fetched_at ?? 0;
-  const ageDays = Math.max(0, (now - published) / DAY_MS);
+  const ageDays = Math.max(0, (referenceNow - published) / DAY_MS);
   const recentBoost =
     article.published_at == null
       ? 0
@@ -469,6 +420,20 @@ function hashArticles(
   windowEndLabel: string,
   aiConfigSignature: string,
 ): string {
+  const canonicalArticles = [...articles]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((article) => ({
+      id: article.id,
+      feedId: article.feed_id,
+      url: article.url,
+      title: article.title,
+      summary: article.summary,
+      categories: article.categories,
+      feedTitle: article.feed_title,
+      publishedAt: article.published_at ?? '',
+      fetchedAt: article.fetched_at ?? '',
+    }));
+
   return crypto
     .createHash('sha256')
     .update(
@@ -477,22 +442,7 @@ function hashArticles(
         windowStartLabel,
         windowEndLabel,
         aiConfigSignature,
-        articles: articles.map((article) => ({
-          id: article.id,
-          feedId: article.feed_id,
-          url: article.url,
-          title: article.title,
-          summary: article.summary,
-          categories: article.categories,
-          feedTitle: article.feed_title,
-          read: article.read,
-          saved: article.saved,
-          hidden: article.hidden,
-          publishedAt: article.published_at ?? '',
-          fetchedAt: article.fetched_at ?? '',
-          heuristicScore: article.heuristic_score ?? '',
-          combinedScore: article.combined_score ?? '',
-        })),
+        articles: canonicalArticles,
       }),
     )
     .digest('hex');
@@ -1162,9 +1112,9 @@ function deriveActiveFeeds(
     counts.set(article.feed_id, current);
   }
 
-  return [...counts.values()]
-    .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title))
-    .slice(0, 3);
+  return [...counts.values()].sort(
+    (a, b) => b.count - a.count || a.title.localeCompare(b.title),
+  );
 }
 
 type DigestFlight = {
@@ -1432,7 +1382,8 @@ function getInclusionCounts(
   for (const article of windowArticles) {
     if (article.thumbs_down) excludedThumbsDown += 1;
     else if (article.rejected) excludedRejected += 1;
-    else if (article.hidden && !article.read) excludedHiddenUnread += 1;
+    else if (article.hidden && (!article.read || hasExplicitHide(article.id)))
+      excludedHiddenUnread += 1;
   }
 
   return {
@@ -1601,15 +1552,17 @@ export async function getWeeklyDigestArticles(
   const db = getDb();
   const windowStart = now - windowDays * DAY_MS;
   const windowEnd = now;
-  const select = `${buildFeedArticleSelect()} WHERE f.enabled = 1 AND COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
+  const select = `${buildFeedArticleSelect()} WHERE f.enabled = 1 AND a.cleared_at IS NULL AND COALESCE(a.published_at, a.fetched_at) >= ? AND COALESCE(a.published_at, a.fetched_at) <= ? ORDER BY ${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC`;
   const windowArticles = db
     .prepare(select)
     .all(windowStart, windowEnd) as DigestArticleRow[];
   const allArticles = windowArticles.filter(
     (article) =>
+      !article.cleared_at &&
       !article.thumbs_down &&
       !article.rejected &&
-      (!article.hidden || Boolean(article.read)),
+      (!article.hidden ||
+        (Boolean(article.read) && !hasExplicitHide(article.id))),
   );
   const { representatives, clusters } = deduplicateDigestArticles(allArticles);
   const inclusionCounts = getInclusionCounts(
