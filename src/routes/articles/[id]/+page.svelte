@@ -1505,7 +1505,7 @@
     </div>
   {:else}
     <article
-      class="glass-card glass-card-hover relative overflow-x-clip"
+      class="reader-article glass-card glass-card-hover relative overflow-x-clip"
       style:touch-action="pan-y pinch-zoom"
       onpointerdown={handlePointerDown}
       onpointermove={handlePointerMove}
@@ -1526,7 +1526,7 @@
         </div>
       {/if}
 
-      <div class="flex flex-wrap items-center gap-2 px-4 pt-4">
+      <div class="flex flex-wrap items-center gap-2 px-4 pt-4 md:px-8 md:pt-6">
         <button
           type="button"
           class="btn preset-tonal"
@@ -1590,7 +1590,7 @@
 
       <div
         bind:this={readerArticleEl}
-        class="p-5 pb-10 md:p-8 md:pb-24"
+        class="px-4 pt-4 pb-8 md:p-8 md:pb-24"
         style="--reader-font-scale: {fontScale};"
       >
         <div class="mb-6">
@@ -2411,6 +2411,8 @@
 
 <style>
   :global(#main-content:has(.reader-action-bar)) {
+    padding-top: env(safe-area-inset-top);
+    padding-inline: 0;
     padding-bottom: calc(
       var(--fmm-reader-bar-height) + env(safe-area-inset-bottom) + 0.5rem
     );
@@ -2455,8 +2457,21 @@
     list-style-type: decimal;
   }
 
+  @media (max-width: 767px) {
+    .reader-article,
+    .reader-article:hover {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      transform: none;
+    }
+  }
+
   @media (min-width: 768px) {
     :global(#main-content:has(.reader-action-bar)) {
+      padding-top: max(2rem, env(safe-area-inset-top));
+      padding-inline: 2rem;
       padding-bottom: 2rem;
       scroll-padding-bottom: 6rem;
     }
