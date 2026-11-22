@@ -43,11 +43,13 @@ export const POST: RequestHandler = async ({ locals, params }) => {
     );
   }
 
-  const textLength = (content: string | null | undefined) =>
+  const plainText = (content: string | null | undefined) =>
     (content || '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
-      .trim().length;
+      .trim();
+  const textLength = (content: string | null | undefined) =>
+    plainText(content).length;
   const existingLength = Math.max(
     textLength(article.content),
     textLength(article.summary),
@@ -56,7 +58,8 @@ export const POST: RequestHandler = async ({ locals, params }) => {
   const countUserContentIds = (html: string | null | undefined) =>
     (html?.match(/\bid="user-content-/gi) ?? []).length;
   const restoresMissingIds =
-    nextLength >= existingLength &&
+    nextLength === existingLength &&
+    plainText(result.content) === plainText(article.content) &&
     countUserContentIds(result.content) > countUserContentIds(article.content);
   if (
     existingLength > 0 &&

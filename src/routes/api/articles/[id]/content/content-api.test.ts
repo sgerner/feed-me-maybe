@@ -218,4 +218,55 @@ describe('POST /api/articles/[id]/content', () => {
       .get('art-footnotes') as { content: string };
     expect(stored.content).toContain('id="user-content-fn1"');
   });
+
+  it('does not replace equal-length article text just because the reload has more IDs', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { fetchPublisherArticle } = await import('#lib/server/archive.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'feed-equal-length',
+      'https://example.com/rss',
+      'Example Feed',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)`,
+    ).run(
+      'art-equal-length',
+      'feed-equal-length',
+      'https://example.com/post',
+      'Post Title',
+      '<p>Original story body.</p>',
+      now,
+      now,
+      now,
+    );
+
+    vi.mocked(fetchPublisherArticle).mockResolvedValueOnce({
+      title: 'Post Title',
+      content:
+        '<p>Different text <span id="user-content-body">body.</span></p>',
+      imageUrl: undefined,
+    });
+
+    const response = await POST({
+      locals: { sessionId: 'sess-1' },
+      params: { id: 'art-equal-length' },
+    } as Parameters<typeof POST>[0]);
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { alreadyFullText?: boolean };
+    expect(body.alreadyFullText).toBe(true);
+    expect(
+      db
+        .prepare('SELECT content FROM articles WHERE id = ?')
+        .get('art-equal-length'),
+    ).toEqual({ content: '<p>Original story body.</p>' });
+  });
 });

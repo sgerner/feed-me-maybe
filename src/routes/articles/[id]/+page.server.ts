@@ -81,8 +81,11 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
         article.content = archived.content;
         if (
           archivedLength > existingLength ||
-          countUserContentIds(archived.content) >
-            countUserContentIds(previousContent)
+          (archivedLength === existingLength &&
+            stripHtmlText(archived.content) ===
+              stripHtmlText(previousContent) &&
+            countUserContentIds(archived.content) >
+              countUserContentIds(previousContent))
         ) {
           db.prepare(
             "UPDATE articles SET content = ?, image_url = COALESCE(NULLIF(image_url, ''), ?), updated_at = ? WHERE id = ?",
