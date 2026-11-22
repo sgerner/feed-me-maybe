@@ -16,11 +16,11 @@
   import { afterNavigate, invalidate, refreshAll } from '$app/navigation';
   import PWABanner from '#lib/components/PWABanner.svelte';
   import BrandMark from '#lib/components/BrandMark.svelte';
+  import FeedSubscriptionForm from '#lib/components/FeedSubscriptionForm.svelte';
   import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
   import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
 
   import { syncFeeds } from '#lib/feeds.ts';
-  import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
     activateOfflineUser,
     applyMutationToArticle,
@@ -48,12 +48,7 @@
   let queuedActions = $state(0);
   let syncNeedsAttention = $state(false);
   let syncNeedsSignIn = $state(false);
-  let addingFeed = $state(false);
   let showAddFeedModal = $state(false);
-  let newFeedUrl = $state('');
-  let newFeedCategory = $state('');
-  let newFeedError = $state('');
-  let newFeedUrlInvalid = $state(false);
   let addFeedDialogEl = $state<HTMLDivElement | null>(null);
   let addFeedPreviouslyFocused: HTMLElement | null = null;
   const toasts = getToasts();
@@ -68,6 +63,12 @@
     return Object.entries(groups).sort(([left], [right]) =>
       left.localeCompare(right),
     );
+  });
+  const modalCategories = $derived.by(() => {
+    if (Array.isArray(data.feedCategories)) return data.feedCategories;
+    return sidebarFeedGroups
+      .map(([category]) => category)
+      .filter((category) => category.length > 0);
   });
   let stopOfflineSync: (() => void) | null = null;
   let { children, data } = $props();
@@ -207,8 +208,6 @@
         ? mobileMoreButtonEl
         : (document.activeElement as HTMLElement | null);
     if (isMobileViewport && sidebarOpen) closeSidebar(false);
-    newFeedError = '';
-    newFeedUrlInvalid = false;
     showAddFeedModal = true;
   }
 
@@ -320,40 +319,11 @@
     };
   });
 
-  async function addFeed(e: Event) {
-    e.preventDefault();
-    if (!newFeedUrl.trim() || addingFeed) return;
-
-    addingFeed = true;
-    newFeedError = '';
-    newFeedUrlInvalid = false;
-    try {
-      const res = await fetchWithCsrf('/api/feeds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: newFeedUrl.trim(),
-          category: newFeedCategory.trim(),
-        }),
-      });
-      if (res.ok) {
-        newFeedUrl = '';
-        newFeedCategory = '';
-        showAddFeedModal = false;
-        const { addToast } = await import('#lib/stores/toast.svelte.ts');
-        addToast('Feed added successfully', 'success');
-        // Refresh the page to show the new feed in the sidebar
-        await refreshAll();
-      } else {
-        const errData = await res.json();
-        newFeedError = errData.error || 'Failed to add feed';
-        newFeedUrlInvalid = errData.field === 'url';
-      }
-    } catch {
-      newFeedError = 'Failed to add feed. Check your connection and try again.';
-    } finally {
-      addingFeed = false;
-    }
+  async function handleFeedSubscribed() {
+    showAddFeedModal = false;
+    addToast('Feed added successfully', 'success');
+    // Refresh the page to show the new feed in the sidebar
+    await refreshAll();
   }
 
   async function logout() {
@@ -481,7 +451,11 @@
 
     return () => {
       document.removeEventListener('keydown', handleKeydown);
-      addFeedPreviouslyFocused?.focus?.();
+      if (addFeedPreviouslyFocused?.isConnected) {
+        addFeedPreviouslyFocused.focus();
+      } else {
+        mainContentEl?.focus();
+      }
       addFeedPreviouslyFocused = null;
     };
   });
@@ -1013,36 +987,37 @@
               </div>
             {/if}
 
-            {#if data.feeds && data.feeds.length > 0}
-              <div class="mt-4 flex items-center justify-between px-3 pb-1">
-                <div
-                  class="text-[10px] font-bold uppercase tracking-widest"
-                  style="color: var(--color-surface-300);"
-                >
-                  Sources
-                </div>
-                <button
-                  class="nav-icon-button"
-                  onclick={openAddFeedModal}
-                  aria-label="Add feed"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="3"
-                    ><line x1="12" y1="5" x2="12" y2="19" /><line
-                      x1="5"
-                      y1="12"
-                      x2="19"
-                      y2="12"
-                    /></svg
-                  >
-                </button>
+            <div class="mt-4 flex items-center justify-between px-3 pb-1">
+              <div
+                class="text-[10px] font-bold uppercase tracking-widest"
+                style="color: var(--color-surface-300);"
+              >
+                Sources
               </div>
+              <button
+                type="button"
+                class="nav-icon-button"
+                onclick={openAddFeedModal}
+                aria-label="Add feed"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  ><line x1="12" y1="5" x2="12" y2="19" /><line
+                    x1="5"
+                    y1="12"
+                    x2="19"
+                    y2="12"
+                  /></svg
+                >
+              </button>
+            </div>
+            {#if data.feeds && data.feeds.length > 0}
               <details
                 class="nav-feed-group"
                 open={page.url.pathname.startsWith('/feeds/') ||
@@ -1147,6 +1122,18 @@
                   </a>
                 {/snippet}
               </details>
+            {:else if (data.pausedFeeds ?? 0) > 0}
+              <a
+                href="/feeds"
+                data-sveltekit-preload-data
+                class="nav-item nav-item-subtle text-xs text-surface-300"
+              >
+                <span>
+                  {data.pausedFeeds} paused {data.pausedFeeds === 1
+                    ? 'feed'
+                    : 'feeds'}
+                </span>
+              </a>
             {/if}
 
             <button
@@ -1710,107 +1697,14 @@
             </button>
           </div>
 
-          <form
-            onsubmit={addFeed}
-            class="space-y-4"
-            aria-describedby={newFeedError && !newFeedUrlInvalid
-              ? 'new-feed-error'
-              : undefined}
-          >
-            <label class="label">
-              <span class="mb-1 block text-sm font-medium">Feed URL</span>
-              <input
-                id="new-feed-url"
-                type="url"
-                bind:value={newFeedUrl}
-                oninput={() => {
-                  newFeedError = '';
-                  newFeedUrlInvalid = false;
-                }}
-                placeholder="https://example.com/rss"
-                class="input glass-input w-full"
-                aria-invalid={newFeedUrlInvalid ? 'true' : undefined}
-                aria-describedby={newFeedUrlInvalid
-                  ? 'new-feed-url-help new-feed-error'
-                  : 'new-feed-url-help'}
-                required
-                disabled={addingFeed}
-              />
-              <span
-                id="new-feed-url-help"
-                class="mt-1 block text-xs text-surface-300"
-              >
-                Enter a public RSS, website, or Reddit feed URL.
-              </span>
-            </label>
-
-            <label class="label">
-              <span class="mb-1 block text-sm font-medium">Category</span>
-              <input
-                class="input glass-input w-full"
-                bind:value={newFeedCategory}
-                list="feed-categories"
-                disabled={addingFeed}
-              />
-            </label>
-            <datalist id="feed-categories">
-              {#each sidebarFeedGroups as [category] (category)}
-                {#if category}<option value={category}></option>{/if}
-              {/each}
-            </datalist>
-
-            {#if newFeedError}
-              <p
-                id="new-feed-error"
-                class="text-sm text-error-300"
-                role="alert"
-              >
-                {newFeedError}
-              </p>
-            {/if}
-
-            <div class="flex justify-end gap-3 pt-2">
-              <button
-                type="button"
-                class="btn preset-tonal"
-                onclick={() => (showAddFeedModal = false)}
-                disabled={addingFeed}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                class="btn preset-filled-primary-500 flex items-center gap-2"
-                disabled={addingFeed || !newFeedUrl.trim()}
-              >
-                {#if addingFeed}
-                  <svg
-                    class="h-4 w-4 animate-spin"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      class="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      stroke-width="4"
-                    ></circle>
-                    <path
-                      class="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                  Adding...
-                {:else}
-                  Add Feed
-                {/if}
-              </button>
-            </div>
-          </form>
+          <FeedSubscriptionForm
+            idPrefix="modal-feed"
+            categories={modalCategories}
+            submitLabel="Add Feed"
+            submittingLabel="Adding..."
+            onCancel={() => (showAddFeedModal = false)}
+            onSuccess={handleFeedSubscribed}
+          />
         </div>
       </div>
     {/if}

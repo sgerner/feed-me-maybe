@@ -175,4 +175,70 @@ describe('feed management', () => {
     expect(errorState?.errorCount).toBe(2);
     expect(errorState?.lastError).toBe('HTTP error 503');
   });
+
+  it('normalizes multi-feed discovery candidates while preserving descriptive link titles and formats', async () => {
+    const fetcher = await import('#lib/server/feed/fetcher.ts');
+    const { vi } = await import('vitest');
+    const spy = vi.spyOn(fetcher, 'fetchFeed').mockResolvedValueOnce({
+      success: true,
+      subscriptionUrl: 'https://EXAMPLE.com:443/posts.xml#top',
+      title: 'Example Site',
+      format: 'rss',
+      items: [],
+      discoveredFeeds: [
+        {
+          url: 'https://EXAMPLE.com:443/posts.xml#top',
+          linkTitle: 'RSS',
+          mimeType: 'application/rss+xml',
+          format: 'rss',
+          fetchResult: {
+            success: true,
+            subscriptionUrl: 'https://EXAMPLE.com:443/posts.xml#top',
+            title: 'Example Site',
+            format: 'rss',
+            items: [],
+          },
+        },
+        {
+          url: 'https://example.com/comments.atom',
+          linkTitle: 'Comments Feed',
+          mimeType: 'application/atom+xml',
+          format: 'atom',
+          fetchResult: {
+            success: true,
+            subscriptionUrl: 'https://example.com/comments.atom',
+            title: 'Example Site',
+            format: 'atom',
+            items: [],
+          },
+        },
+      ],
+    });
+
+    try {
+      const { discoverAndValidateFeedSource } =
+        await import('./feed-management');
+      const discovered = await discoverAndValidateFeedSource({
+        url: 'https://example.com',
+      });
+      expect(discovered.ok).toBe(true);
+      if (discovered.ok) {
+        expect(discovered.candidates).toHaveLength(2);
+        expect(discovered.candidates[0]).toMatchObject({
+          url: 'https://example.com/posts.xml',
+          title: 'Example Site',
+          format: 'rss',
+          type: 'rss',
+        });
+        expect(discovered.candidates[1]).toMatchObject({
+          url: 'https://example.com/comments.atom',
+          title: 'Comments Feed',
+          format: 'atom',
+          type: 'atom',
+        });
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

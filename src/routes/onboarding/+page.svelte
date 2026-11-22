@@ -1,58 +1,29 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { fly } from 'svelte/transition';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
+  import FeedSubscriptionForm from '#lib/components/FeedSubscriptionForm.svelte';
 
   let step = $state(1);
   const totalSteps = 2;
-  let feedUrl = $state('');
-  let feedTitle = $state('');
   let loading = $state(false);
   let importing = $state(false);
-  let feedError = $state('');
-  let feedUrlInvalid = $state(false);
   let opmlError = $state('');
   let feedImportStatus = $state('');
   let feedImportStatusKind = $state<'success' | 'warning' | 'error' | 'info'>(
     'info',
   );
   let setupError = $state('');
+  const existingCategories = $derived<string[]>(
+    Array.isArray(page.data.feedCategories) ? page.data.feedCategories : [],
+  );
 
   function finishFeeds(preserveImportStatus = false) {
     step = 2;
-    feedError = '';
-    feedUrlInvalid = false;
     opmlError = '';
     setupError = '';
     if (!preserveImportStatus) feedImportStatus = '';
-  }
-
-  async function addFeed() {
-    if (!feedUrl.trim()) return;
-
-    loading = true;
-    feedError = '';
-    feedUrlInvalid = false;
-    try {
-      const res = await fetchWithCsrf('/api/feeds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: feedUrl.trim(), title: feedTitle.trim() }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        feedError = d.error || 'Failed to add feed';
-        feedUrlInvalid = d.field === 'url';
-        return;
-      }
-      feedUrl = '';
-      feedTitle = '';
-      finishFeeds();
-    } catch {
-      feedError = 'Connection error';
-    } finally {
-      loading = false;
-    }
   }
 
   async function importOpml() {
@@ -188,110 +159,19 @@
         </div>
       </div>
 
-      <form
-        class="space-y-4"
-        aria-describedby={feedError && !feedUrlInvalid
-          ? 'feed-error'
-          : undefined}
-        onsubmit={(event) => {
-          event.preventDefault();
-          void addFeed();
+      <FeedSubscriptionForm
+        idPrefix="onboarding-feed"
+        categories={existingCategories}
+        submitLabel="Add feed"
+        submittingLabel="Adding feed..."
+        disabled={importing}
+        onBusyChange={(busy) => {
+          loading = busy;
         }}
-      >
-        <label class="label block">
-          <span class="mb-1 block text-sm font-medium text-surface-200"
-            >Feed URL</span
-          >
-          <input
-            id="feed-url"
-            name="feedUrl"
-            type="url"
-            bind:value={feedUrl}
-            oninput={() => {
-              feedError = '';
-              feedUrlInvalid = false;
-            }}
-            placeholder="https://example.com/feed.xml"
-            autocomplete="url"
-            class="input glass-input w-full"
-            aria-invalid={feedUrlInvalid ? 'true' : undefined}
-            aria-describedby={feedUrlInvalid
-              ? 'feed-url-help feed-error'
-              : 'feed-url-help'}
-            required
-          />
-          <span id="feed-url-help" class="mt-1 block text-xs text-surface-300">
-            RSS, website, Reddit community, search, or post URLs work too.
-          </span>
-        </label>
-
-        <label class="label block">
-          <span class="mb-1 block text-sm font-medium text-surface-200">
-            Feed title <span class="font-normal text-surface-300"
-              >(optional)</span
-            >
-          </span>
-          <input
-            id="feed-title"
-            name="feedTitle"
-            type="text"
-            bind:value={feedTitle}
-            placeholder="Use the feed's title"
-            autocomplete="off"
-            class="input glass-input w-full"
-          />
-        </label>
-
-        {#if feedError}
-          <div
-            id="feed-error"
-            class="flex items-center gap-2 px-3 py-2 text-sm"
-            role="alert"
-            style="background: color-mix(in oklch, var(--color-error-500) 10%, transparent); color: var(--color-error-300); border: 1px solid color-mix(in oklch, var(--color-error-500) 20%, transparent); border-radius: 2px;"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              aria-hidden="true"
-              ><circle cx="12" cy="12" r="10" /><line
-                x1="12"
-                y1="8"
-                x2="12"
-                y2="12"
-              /><line x1="12" y1="16" x2="12.01" y2="16" /></svg
-            >
-            {feedError}
-          </div>
-        {/if}
-
-        <button
-          type="submit"
-          class="btn preset-filled-primary-500 inline-flex min-h-11 w-full items-center justify-center gap-2"
-          disabled={loading || importing || !feedUrl.trim()}
-        >
-          {#if loading}
-            <svg
-              class="animate-spin"
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg
-            >
-            Adding feed...
-          {:else}
-            Add feed
-          {/if}
-        </button>
-      </form>
+        onSuccess={() => {
+          finishFeeds();
+        }}
+      />
 
       <div
         class="mt-5 flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between"

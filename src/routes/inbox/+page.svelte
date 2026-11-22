@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { getContext, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import PullToRefresh from '#lib/components/PullToRefresh.svelte';
@@ -56,6 +56,31 @@
   );
   let unreadSnapshotAt = $state(0);
   let lastLoadedArticles: Article[] | null = null;
+  const openAddFeed = getContext<(() => void) | undefined>('openAddFeed');
+  const totalFeedsCount = $derived(
+    Number(pageStore.data.totalFeeds ?? (pageStore.data.feeds?.length || 0)),
+  );
+  const pausedFeedsCount = $derived(Number(pageStore.data.pausedFeeds ?? 0));
+  const activeFeedsCount = $derived(
+    Math.max(0, totalFeedsCount - pausedFeedsCount),
+  );
+  const activeCategoryFeedsCount = $derived.by(() => {
+    if (!data.category) return activeFeedsCount;
+    const activeFeeds = Array.isArray(pageStore.data.feeds)
+      ? pageStore.data.feeds
+      : [];
+    return activeFeeds.filter(
+      (feed: { category?: string | null }) =>
+        (feed.category?.trim() || '') === data.category,
+    ).length;
+  });
+  const inboxPausedEmpty = $derived(
+    totalFeedsCount > 0 &&
+      (activeFeedsCount === 0 ||
+        (Boolean(data.category) &&
+          activeCategoryFeedsCount === 0 &&
+          pausedFeedsCount > 0)),
+  );
   const currentSort = $derived<ArticleSort>(data.sort || 'ranked');
   const loadMoreSearchParams = $derived.by(() => {
     const params: Record<string, string> = {
@@ -194,10 +219,21 @@
       onLiveArticleVisibilityChanged={updateLiveUnreadVisibility}
       onSnapshotCountDelta={applySnapshotCountDelta}
       {loadMoreSearchParams}
-      emptyTitle="No unread stories"
-      emptyMessage="You are all caught up."
-      emptyCtaHref="/"
-      emptyCtaLabel="Browse all stories"
+      emptyTitle={totalFeedsCount === 0
+        ? 'No feeds yet'
+        : inboxPausedEmpty
+          ? 'All feeds are paused'
+          : 'No unread stories'}
+      emptyMessage={totalFeedsCount === 0
+        ? 'Add an RSS, website, or Reddit feed to start building your reading queue.'
+        : inboxPausedEmpty
+          ? 'Resume a paused feed or add a new source to receive unread stories.'
+          : pausedFeedsCount > 0
+            ? 'You are all caught up on active feeds. Resume paused feeds anytime on Feeds.'
+            : 'You are all caught up.'}
+      emptyCtaAction={totalFeedsCount === 0 && openAddFeed ? openAddFeed : null}
+      emptyCtaHref={totalFeedsCount === 0 && openAddFeed ? null : '/feeds'}
+      emptyCtaLabel={totalFeedsCount === 0 ? 'Add feed' : 'Manage feeds'}
     />
   {/key}
 </PullToRefresh>
