@@ -287,7 +287,10 @@ type QueryParts = {
   hasPositiveFts: boolean;
 };
 
-function buildQueryParts(parsed: ParsedSearchQuery): QueryParts {
+function buildQueryParts(
+  parsed: ParsedSearchQuery,
+  includeUnreadArticleId?: string,
+): QueryParts {
   const { filters } = parsed;
   const params: Array<string | number> = [];
   const where: string[] = ['1 = 1'];
@@ -334,7 +337,14 @@ function buildQueryParts(parsed: ParsedSearchQuery): QueryParts {
     where.push(`${dateExpression()} >= ?`);
     params.push(filters.after);
   }
-  if (filters.unread) where.push('a.read = 0');
+  if (filters.unread) {
+    if (includeUnreadArticleId && !filters.read) {
+      where.push('(a.read = 0 OR a.id = ?)');
+      params.push(includeUnreadArticleId);
+    } else {
+      where.push('a.read = 0');
+    }
+  }
   if (filters.read) where.push('a.read = 1');
   if (filters.saved) where.push('a.saved = 1');
   if (!filters.feed && !filters.saved && !filters.hidden && !filters.rejected) {
@@ -554,4 +564,77 @@ export function searchArticles(
     articles,
     nextCursor,
   };
+}
+
+export function findSearchNeighbors(
+  articleId: string,
+  options: { query?: string; sort?: string | null } = {},
+): { previous: string | null; next: string | null } {
+  try {
+    const rawQuery = options.query || '';
+    const parsed = parseSearchQuery(rawQuery);
+    const parts = buildQueryParts(parsed, articleId);
+    const rawSort = options.sort;
+    const sort: SearchSort =
+      rawSort === 'recent' || rawSort === 'relevance'
+        ? rawSort
+        : parts.hasPositiveFts
+          ? 'relevance'
+          : 'recent';
+    if (sort === 'relevance' && !parsed.text) {
+      return { previous: null, next: null };
+    }
+
+    const expression = dateExpression();
+    const db = getDb();
+    const row = parts.hasPositiveFts
+      ? (db
+          .prepare(
+            `WITH matched AS (
+               SELECT a.id,
+                      bm25(article_search) AS relevance,
+                      ${expression} AS effective_date
+               ${parts.from}
+               WHERE ${parts.where}
+             ),
+             ordered AS (
+               SELECT id,
+                      LAG(id) OVER (
+                        ORDER BY ${sort === 'relevance' ? 'relevance ASC, ' : ''}effective_date DESC, id DESC
+                      ) AS previous_id,
+                      LEAD(id) OVER (
+                        ORDER BY ${sort === 'relevance' ? 'relevance ASC, ' : ''}effective_date DESC, id DESC
+                      ) AS next_id
+               FROM matched
+             )
+             SELECT previous_id, next_id FROM ordered WHERE id = ?`,
+          )
+          .get(...parts.params, articleId) as
+          { previous_id: string | null; next_id: string | null } | undefined)
+      : (db
+          .prepare(
+            `WITH matched AS (
+               SELECT a.id,
+                      ${expression} AS effective_date
+               ${parts.from}
+               WHERE ${parts.where}
+             ),
+             ordered AS (
+               SELECT id,
+                      LAG(id) OVER (ORDER BY effective_date DESC, id DESC) AS previous_id,
+                      LEAD(id) OVER (ORDER BY effective_date DESC, id DESC) AS next_id
+               FROM matched
+             )
+             SELECT previous_id, next_id FROM ordered WHERE id = ?`,
+          )
+          .get(...parts.params, articleId) as
+          { previous_id: string | null; next_id: string | null } | undefined);
+
+    return {
+      previous: row?.previous_id ?? null,
+      next: row?.next_id ?? null,
+    };
+  } catch {
+    return { previous: null, next: null };
+  }
 }

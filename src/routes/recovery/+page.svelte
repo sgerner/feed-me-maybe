@@ -10,6 +10,12 @@
     matchesOfflineVisibility,
     type OfflineArticle,
   } from '#lib/offline/index.ts';
+  import {
+    buildReaderArticleHref,
+    READER_QUEUE_STORAGE_KEY,
+    serializeReaderQueue,
+    validateStreamOrigin,
+  } from '#lib/reader-queue.ts';
 
   type RecoveryArticle = {
     id: string;
@@ -39,6 +45,48 @@
 
   function offlineScope(): string {
     return String(pageStore.data.userId || 'admin');
+  }
+
+  const recoverySource = $derived(
+    validateStreamOrigin(`${pageStore.url.pathname}${pageStore.url.search}`) ??
+      '/recovery',
+  );
+
+  const recoveryKindFilter = $derived.by<'all' | 'hidden' | 'rejected'>(() => {
+    const raw = (pageStore.url.searchParams.get('kind') || 'all').toLowerCase();
+    return raw === 'hidden' || raw === 'rejected' ? raw : 'all';
+  });
+
+  const recoveryFeedId = $derived(
+    pageStore.url.searchParams.get('feedId') || null,
+  );
+
+  function recoveryArticleHref(articleId: string): string {
+    return buildReaderArticleHref(articleId, { from: recoverySource });
+  }
+
+  function writeRecoveryReaderQueue(): void {
+    try {
+      const serialized = serializeReaderQueue({
+        ids: articles.map((item) => item.id),
+        source: recoverySource,
+        pagination:
+          !offlineFallback && nextCursor
+            ? {
+                kind: 'recovery',
+                nextCursor,
+                limit: 50,
+                feedId: recoveryFeedId,
+                kindFilter: recoveryKindFilter,
+              }
+            : null,
+      });
+      if (serialized) {
+        sessionStorage.setItem(READER_QUEUE_STORAGE_KEY, serialized);
+      }
+    } catch {
+      // Direct reader navigation still works without session storage.
+    }
   }
 
   async function loadCachedRecoveryFallback(): Promise<boolean> {
@@ -84,6 +132,8 @@
         if (await loadCachedRecoveryFallback()) return;
       }
       const params = new SvelteURLSearchParams({ limit: '50' });
+      if (recoveryKindFilter !== 'all') params.set('kind', recoveryKindFilter);
+      if (recoveryFeedId) params.set('feedId', recoveryFeedId);
       if (append && nextCursor) params.set('cursor', nextCursor);
       const signal =
         typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
@@ -103,6 +153,9 @@
         ? [...articles, ...(payload.articles || [])]
         : payload.articles || [];
       nextCursor = payload.nextCursor ?? null;
+      if (append) {
+        writeRecoveryReaderQueue();
+      }
       statusAnnouncement = articles.length
         ? `${articles.length} hidden or rejected ${articles.length === 1 ? 'article' : 'articles'} loaded.`
         : '';
@@ -122,6 +175,7 @@
     event: MouseEvent,
     article: RecoveryArticle,
   ) {
+    writeRecoveryReaderQueue();
     if (
       event.button !== 0 ||
       event.metaKey ||
@@ -333,7 +387,10 @@
             <a
               id="recovery-title-{article.id}"
               class="block font-semibold text-surface-100 no-underline transition hover:text-primary-300"
-              href="/articles/{article.id}"
+              href={recoveryArticleHref(article.id)}
+              onauxclick={(e) => {
+                if (e.button === 1) writeRecoveryReaderQueue();
+              }}
               onclick={(e) => void openRecoveryArticle(e, article)}
               >{article.title}</a
             >
@@ -341,7 +398,10 @@
           <div class="flex shrink-0 items-center gap-2">
             <a
               class="btn preset-tonal no-underline"
-              href="/articles/{article.id}"
+              href={recoveryArticleHref(article.id)}
+              onauxclick={(e) => {
+                if (e.button === 1) writeRecoveryReaderQueue();
+              }}
               onclick={(e) => void openRecoveryArticle(e, article)}
               aria-label="Review {article.title}">Review</a
             >

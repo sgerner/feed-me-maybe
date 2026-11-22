@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
   import { formatContent, renderContent } from '#lib/utils/format.ts';
@@ -15,6 +15,21 @@
   import { cacheArticles, getCachedArticles } from '#lib/offline/index.ts';
   import { page } from '$app/state';
   import RedditComments from '#lib/components/RedditComments.svelte';
+  import {
+    applyQueuePageResponse,
+    buildQueueNextPageRequest,
+    buildReaderArticleHref,
+    extractSameOriginReferrer,
+    getPaginationAttemptKey,
+    parseStoredReaderQueue,
+    queueCanLoadMore,
+    READER_QUEUE_STORAGE_KEY,
+    resolveReaderReturnPath,
+    serializeReaderQueue,
+    shouldPrefetchReaderQueue,
+    validateStreamOrigin,
+    type ReaderQueue,
+  } from '#lib/reader-queue.ts';
   type InteractionType =
     'thumbs_up' | 'thumbs_down' | 'save' | 'hide' | 'read' | 'unread';
   type ArticleData = {
@@ -49,6 +64,7 @@
       article: ArticleData;
       proxyBaseUrl?: string | null;
       neighbors?: { previous: string | null; next: string | null };
+      returnPath?: string;
       archiveFailed?: boolean;
     };
   }>();
@@ -83,25 +99,36 @@
   let activeArticleId = '';
   let restoringScroll = false;
 
-  let readerQueue = $state<{ ids: string[]; source: string } | null>(null);
+  let readerQueue = $state<ReaderQueue | null>(null);
   let dismissedQueueIds = $state<string[]>([]);
-  let fallbackReturnPath = $state('/');
+  let referrerStream = $state<string | null>(null);
+  let prefetchInFlight: Promise<void> | null = null;
+  let failedPrefetchKey = $state<string | null>(null);
 
+  const rawFrom = $derived(page.url.searchParams.get('from'));
+  const validatedFrom = $derived(validateStreamOrigin(rawFrom));
   const readerIndex = $derived(readerQueue?.ids.indexOf(article.id) ?? -1);
 
   const previousId = $derived.by(() => {
-    if (readerIndex > 0 && readerQueue) {
+    if (readerIndex >= 0 && readerQueue) {
       for (let idx = readerIndex - 1; idx >= 0; idx--) {
         const candidate = readerQueue.ids[idx];
         if (candidate && !dismissedQueueIds.includes(candidate)) {
           return candidate;
         }
       }
+      const hasPriorServerPages =
+        readerQueue.pagination?.kind === 'articles' &&
+        (readerQueue.pagination.initialPage ?? 1) > 1;
+      if (!hasPriorServerPages) {
+        return null;
+      }
     }
     const fallbackPrev = pageData.neighbors?.previous ?? null;
     return fallbackPrev &&
       fallbackPrev !== article.id &&
-      !dismissedQueueIds.includes(fallbackPrev)
+      !dismissedQueueIds.includes(fallbackPrev) &&
+      !(readerQueue?.ids.includes(fallbackPrev) ?? false)
       ? fallbackPrev
       : null;
   });
@@ -114,19 +141,34 @@
           return candidate;
         }
       }
+      if (!queueCanLoadMore(readerQueue)) {
+        return null;
+      }
     }
     const fallbackNext = pageData.neighbors?.next ?? null;
     return fallbackNext &&
       fallbackNext !== article.id &&
-      !dismissedQueueIds.includes(fallbackNext)
+      !dismissedQueueIds.includes(fallbackNext) &&
+      !(readerQueue?.ids.includes(fallbackNext) ?? false)
       ? fallbackNext
       : null;
   });
 
   const returnPath = $derived(
-    readerIndex >= 0
-      ? readerQueue?.source || fallbackReturnPath
-      : fallbackReturnPath,
+    resolveReaderReturnPath({
+      rawFrom,
+      queueSource: readerQueue?.source ?? null,
+      hasQueueMatch: readerIndex >= 0,
+      referrer: referrerStream
+        ? `http://feed-me-maybe.local${referrerStream}`
+        : null,
+      currentOrigin: 'http://feed-me-maybe.local',
+    }),
+  );
+
+  const preservedFrom = $derived(
+    validatedFrom ??
+      (readerIndex >= 0 ? validateStreamOrigin(readerQueue?.source) : null),
   );
   const articleContent = $derived(fetchedContent ?? article.content);
 
@@ -243,22 +285,79 @@
     restoringScroll = false;
   }
 
-  function syncQueueSessionStorage(nextDismissed: string[]): void {
-    if (!readerQueue) return;
+  function persistReaderQueue(
+    queue: ReaderQueue | null,
+    nextDismissed: readonly string[],
+  ): void {
+    if (!queue) return;
     try {
-      const filteredIds = readerQueue.ids.filter(
-        (id) => !nextDismissed.includes(id),
-      );
-      sessionStorage.setItem(
-        'feed-me-maybe:reader-queue',
-        JSON.stringify({
-          ids: filteredIds,
-          source: readerQueue.source,
-        }),
-      );
+      const filteredIds = queue.ids.filter((id) => !nextDismissed.includes(id));
+      const serialized = serializeReaderQueue({
+        ids: filteredIds,
+        source: queue.source,
+        pagination: queue.pagination ?? null,
+      });
+      if (serialized) {
+        sessionStorage.setItem(READER_QUEUE_STORAGE_KEY, serialized);
+      }
     } catch {
       // Ignore storage errors
     }
+  }
+
+  function syncQueueSessionStorage(nextDismissed: string[]): void {
+    persistReaderQueue(readerQueue, nextDismissed);
+  }
+
+  async function prefetchNextQueuePage(): Promise<void> {
+    if (prefetchInFlight) return prefetchInFlight;
+    if (!readerQueue || !queueCanLoadMore(readerQueue)) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+    const snapshotQueue = readerQueue;
+    const requestUrl = buildQueueNextPageRequest(
+      snapshotQueue,
+      dismissedQueueIds,
+    );
+    if (!requestUrl) return;
+
+    const attemptKey = getPaginationAttemptKey(snapshotQueue);
+    let task: Promise<void> | null = null;
+    task = (async () => {
+      try {
+        const signal =
+          typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+            ? AbortSignal.timeout(12_000)
+            : undefined;
+        const response = await fetch(
+          requestUrl,
+          signal ? { signal } : undefined,
+        );
+        if (!response.ok) {
+          failedPrefetchKey = attemptKey;
+          return;
+        }
+        const payload: unknown = await response.json();
+        if (!readerQueue || readerQueue.source !== snapshotQueue.source) return;
+        const updatedQueue = applyQueuePageResponse(
+          readerQueue,
+          payload,
+          dismissedQueueIds,
+        );
+        failedPrefetchKey = null;
+        readerQueue = updatedQueue;
+        persistReaderQueue(updatedQueue, dismissedQueueIds);
+      } catch {
+        failedPrefetchKey = attemptKey;
+      } finally {
+        if (prefetchInFlight === task) {
+          prefetchInFlight = null;
+        }
+      }
+    })();
+
+    prefetchInFlight = task;
+    return task;
   }
 
   function markQueueArticleDismissed(id: string, dismissed: boolean): void {
@@ -393,46 +492,12 @@
 
   onMount(() => {
     try {
-      const fromParam = page.url.searchParams.get('from');
-      if (
-        fromParam &&
-        fromParam.startsWith('/') &&
-        !fromParam.startsWith('//') &&
-        !fromParam.includes('\\')
-      ) {
-        fallbackReturnPath = fromParam;
-      } else if (document.referrer) {
-        const refUrl = new URL(document.referrer);
-        if (
-          refUrl.origin === location.origin &&
-          !refUrl.pathname.startsWith('/articles/') &&
-          !refUrl.pathname.startsWith('/login')
-        ) {
-          fallbackReturnPath = `${refUrl.pathname}${refUrl.search}`;
-        }
-      }
-    } catch {
-      // Keep default '/'
-    }
-
-    try {
-      const stored = JSON.parse(
-        sessionStorage.getItem('feed-me-maybe:reader-queue') || 'null',
+      referrerStream = extractSameOriginReferrer(
+        document.referrer,
+        location.origin,
       );
-      if (
-        Array.isArray(stored?.ids) &&
-        stored.ids.every((id: unknown) => typeof id === 'string') &&
-        stored.ids.includes(article.id) &&
-        typeof stored.source === 'string' &&
-        stored.source.startsWith('/') &&
-        !stored.source.startsWith('//') &&
-        !stored.source.includes('\\') &&
-        new URL(stored.source, location.origin).origin === location.origin
-      ) {
-        readerQueue = stored;
-      }
     } catch {
-      // The fallback order comes from the current feed.
+      referrerStream = null;
     }
 
     try {
@@ -468,6 +533,56 @@
       }
       isSpeaking = false;
     };
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const currentId = article.id;
+    const currentRawFrom = rawFrom;
+    const expectedSource =
+      currentRawFrom !== null ? validatedFrom : referrerStream;
+    const currentQueue = untrack(() => readerQueue);
+
+    if (
+      currentQueue &&
+      expectedSource &&
+      currentQueue.source === expectedSource &&
+      (currentQueue.ids.includes(currentId) || prefetchInFlight !== null)
+    ) {
+      return;
+    }
+
+    try {
+      const stored = parseStoredReaderQueue(
+        sessionStorage.getItem(READER_QUEUE_STORAGE_KEY),
+        {
+          articleId: currentId,
+          rawFrom: currentRawFrom,
+          referrer: referrerStream
+            ? `${location.origin}${referrerStream}`
+            : document.referrer,
+          currentOrigin: location.origin,
+        },
+      );
+      readerQueue = stored;
+      dismissedQueueIds = [];
+      failedPrefetchKey = null;
+    } catch {
+      readerQueue = null;
+      dismissedQueueIds = [];
+    }
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    if (
+      !shouldPrefetchReaderQueue(readerQueue, article.id, dismissedQueueIds)
+    ) {
+      return;
+    }
+    const attemptKey = getPaginationAttemptKey(readerQueue);
+    if (attemptKey && failedPrefetchKey === attemptKey) return;
+    void prefetchNextQueuePage();
   });
 
   $effect(() => {
@@ -699,6 +814,17 @@
       if (destination) {
         event.preventDefault();
         void goto(readerHref(destination), { replaceState: true });
+        return;
+      }
+      if (key === 'j' && !nextId && queueCanLoadMore(readerQueue)) {
+        event.preventDefault();
+        failedPrefetchKey = null;
+        void prefetchNextQueuePage().then(() => {
+          if (nextId) {
+            void goto(readerHref(nextId), { replaceState: true });
+          }
+        });
+        return;
       }
       if (key === 'o') {
         event.preventDefault();
@@ -912,7 +1038,7 @@
   }
 
   function readerHref(id: string) {
-    return `/articles/${encodeURIComponent(id)}?mode=${encodeURIComponent(mode)}`;
+    return buildReaderArticleHref(id, { mode, from: preservedFrom });
   }
 
   async function toggleRead() {

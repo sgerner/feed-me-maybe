@@ -5,6 +5,7 @@ import { hasExplicitHide } from '#lib/server/preferences.ts';
 import { recordInteraction } from '#lib/server/interactions.ts';
 import { fetchArchivedArticle, isGarbageContent } from '#lib/server/archive.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
+import { resolveStreamNeighbors } from '#lib/server/reader-neighbors.ts';
 
 function stripHtmlText(value: unknown): string {
   if (typeof value !== 'string') return '';
@@ -39,6 +40,19 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
   }
 
   article.feed_site_url = safeFeedSiteUrl(article.feed_site_url);
+
+  // Resolve stream-aware neighbors BEFORE recordInteraction mutates `read` or
+  // `hidden` flags (e.g. marking an `/inbox` item read or `hide_on_open`).
+  const { neighbors, returnPath } = resolveStreamNeighbors(
+    db,
+    {
+      id: String(article.id),
+      feed_id: String(article.feed_id),
+      published_at: (article.published_at as number | null) ?? null,
+      fetched_at: (article.fetched_at as number | null) ?? null,
+    },
+    url.searchParams.get('from'),
+  );
 
   if (!article.hidden && !article.rejected && !article.thumbs_down) {
     recordInteraction(params.id, 'open');
@@ -92,27 +106,10 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     }
   }
 
-  const published = Number(article.published_at ?? article.fetched_at);
-  const neighbor = (previous: boolean) => {
-    const comparison = previous ? '>' : '<';
-    const order = previous ? 'ASC' : 'DESC';
-    const row = db
-      .prepare(
-        `
-      SELECT id FROM articles
-      WHERE feed_id = ? AND hidden = 0 AND thumbs_down = 0
-        AND (COALESCE(published_at, fetched_at), id) ${comparison} (?, ?)
-      ORDER BY COALESCE(published_at, fetched_at) ${order}, id ${order}
-      LIMIT 1
-    `,
-      )
-      .get(article.feed_id, published, params.id) as { id: string } | undefined;
-    return row?.id ?? null;
-  };
-
   return {
     article,
-    neighbors: { previous: neighbor(true), next: neighbor(false) },
+    neighbors,
+    returnPath,
     proxyBaseUrl: getConfiguredProxyBaseUrl() || null,
     archiveFailed,
   };
