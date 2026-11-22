@@ -27,6 +27,14 @@ export type RecoveryQueuePagination = {
   limit?: number;
   feedId?: string | null;
   kindFilter?: 'all' | 'hidden' | 'rejected';
+  reason?:
+    | 'actionable'
+    | 'all'
+    | 'preference_model'
+    | 'manual_hide'
+    | 'rejected'
+    | 'hide_on_open';
+  query?: string;
 };
 
 export type ReaderQueuePagination =
@@ -246,6 +254,15 @@ function normalizeQueuePagination(
       record.kindFilter === 'all'
         ? record.kindFilter
         : undefined;
+    const reason =
+      record.reason === 'actionable' ||
+      record.reason === 'all' ||
+      record.reason === 'preference_model' ||
+      record.reason === 'manual_hide' ||
+      record.reason === 'rejected' ||
+      record.reason === 'hide_on_open'
+        ? record.reason
+        : undefined;
     return {
       kind: 'recovery',
       nextCursor,
@@ -255,6 +272,8 @@ function normalizeQueuePagination(
           ? record.feedId.trim()
           : null,
       ...(kindFilter ? { kindFilter } : {}),
+      ...(reason ? { reason } : {}),
+      ...(typeof record.query === 'string' ? { query: record.query } : {}),
     };
   }
 
@@ -447,8 +466,13 @@ export function buildQueueNextPageRequest(
     if (pagination.feedId) {
       params.set('feedId', pagination.feedId);
     }
-    if (pagination.kindFilter && pagination.kindFilter !== 'all') {
+    if (pagination.reason) {
+      params.set('reason', pagination.reason);
+    } else if (pagination.kindFilter && pagination.kindFilter !== 'all') {
       params.set('kind', pagination.kindFilter);
+    }
+    if (pagination.query) {
+      params.set('q', pagination.query);
     }
     return `/api/article-state/recovery?${params.toString()}`;
   }

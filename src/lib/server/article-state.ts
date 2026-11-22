@@ -12,6 +12,10 @@ import {
   reversePreferenceMemoryDeltas,
   type PreferenceMemoryDelta,
 } from '#lib/server/preferences.ts';
+import {
+  normalizeFtsSearchQuery,
+  SearchQueryError,
+} from '#lib/server/search.ts';
 import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
 
 export const ARTICLE_STATE_ACTIONS = [
@@ -1350,13 +1354,54 @@ export function getUnreadCounts(): UnreadCounts {
   };
 }
 
+export const HIDE_REASONS = [
+  'preference_model',
+  'manual_hide',
+  'rejected',
+  'hide_on_open',
+] as const;
+
+export type HideReason = (typeof HIDE_REASONS)[number];
+
+export const RECOVERY_REASON_FILTERS = [
+  'actionable',
+  'all',
+  ...HIDE_REASONS,
+] as const;
+
+export type RecoveryReasonFilter = (typeof RECOVERY_REASON_FILTERS)[number];
+
+export type RecoveryReasonCounts = {
+  actionable: number;
+  all: number;
+  preference_model: number;
+  manual_hide: number;
+  rejected: number;
+  hide_on_open: number;
+};
+
+export type RecoveryFeedOption = {
+  id: string;
+  title: string;
+  enabled: boolean;
+  count: number;
+};
+
 export type RecoveryArticle = ArticleState & {
   id: string;
   title: string;
   url: string;
   feedId: string;
   feedTitle: string;
+  hideReason: HideReason;
   stateChangedAt: number | null;
+};
+
+export type RecoveryListResult = {
+  articles: RecoveryArticle[];
+  nextCursor: string | null;
+  reasonCounts: RecoveryReasonCounts;
+  feeds: RecoveryFeedOption[];
 };
 
 type RecoveryCursor = { timestamp: number; id: string };
@@ -1376,10 +1421,40 @@ function decodeRecoveryCursor(value: string): RecoveryCursor {
 
 export type RecoveryKind = 'all' | 'hidden' | 'rejected';
 
-function recoveryKindClause(kind: RecoveryKind): string {
-  if (kind === 'hidden') return 'a.hidden = 1';
-  if (kind === 'rejected') return '(a.rejected = 1 OR a.thumbs_down = 1)';
-  return '(a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)';
+function buildRecoveryHideReasonExpression(alias: string): string {
+  const safeMeta =
+    "CASE WHEN json_valid(ui.metadata) THEN ui.metadata ELSE '{}' END";
+  return `
+    CASE
+      WHEN ${alias}.rejected = 1 OR ${alias}.thumbs_down = 1 THEN 'rejected'
+      WHEN COALESCE((
+        SELECT ui.interaction_type
+        FROM user_interactions ui
+        WHERE ui.article_id = ${alias}.id
+          AND ui.interaction_type IN ('hide', 'unhide', 'restore', 'unreject', 'boost')
+          AND (
+            ui.interaction_type != 'hide'
+            OR COALESCE(json_extract(${safeMeta}, '$.auto'), 0) = 0
+          )
+          AND COALESCE(json_extract(${safeMeta}, '$.undone_at'), 0) = 0
+        ORDER BY ui.timestamp DESC, ui.rowid DESC
+        LIMIT 1
+      ), '') = 'hide' THEN 'manual_hide'
+      ELSE COALESCE((
+        SELECT CASE
+          WHEN ui.interaction_type != 'hide' THEN 'manual_hide'
+          WHEN json_extract(${safeMeta}, '$.reason') = 'preference_model' THEN 'preference_model'
+          ELSE 'hide_on_open'
+        END
+        FROM user_interactions ui
+        WHERE ui.article_id = ${alias}.id
+          AND ui.interaction_type IN ('hide', 'unhide', 'restore', 'unreject', 'boost')
+          AND COALESCE(json_extract(${safeMeta}, '$.undone_at'), 0) = 0
+        ORDER BY ui.timestamp DESC, ui.rowid DESC
+        LIMIT 1
+      ), 'manual_hide')
+    END
+  `;
 }
 
 export function listRecoveryArticles(
@@ -1387,55 +1462,244 @@ export function listRecoveryArticles(
     limit?: number;
     cursor?: string;
     feedId?: string;
+    q?: string;
+    reason?: RecoveryReasonFilter;
     kind?: RecoveryKind;
   } = {},
-): { articles: RecoveryArticle[]; nextCursor: string | null } {
+): RecoveryListResult {
   const limit = Math.min(100, Math.max(1, Math.floor(options.limit || 25)));
-  const kind = options.kind ?? 'all';
-  const params: Array<string | number> = [];
-  let where = `WHERE a.cleared_at IS NULL AND ${recoveryKindClause(kind)}`;
-  if (options.feedId) {
-    where += ' AND a.feed_id = ?';
-    params.push(options.feedId);
+  if (
+    options.reason !== undefined &&
+    !RECOVERY_REASON_FILTERS.includes(options.reason)
+  ) {
+    throw new ArticleStateError(
+      `reason must be one of: ${RECOVERY_REASON_FILTERS.join(', ')}`,
+    );
   }
-  if (options.cursor) {
-    const cursor = decodeRecoveryCursor(options.cursor);
-    const stateChangedAt = 'COALESCE(a.hidden_at, a.rejected_at, a.fetched_at)';
-    where += ` AND (${stateChangedAt} < ? OR (${stateChangedAt} = ? AND a.id < ?))`;
-    params.push(cursor.timestamp, cursor.timestamp, cursor.id);
+  if (
+    options.kind !== undefined &&
+    !['all', 'hidden', 'rejected'].includes(options.kind)
+  ) {
+    throw new ArticleStateError('kind must be all, hidden, or rejected');
   }
 
-  const rows = getDb()
-    .prepare(
-      `
+  let normalizedSearch: ReturnType<typeof normalizeFtsSearchQuery> = null;
+  if (options.q !== undefined) {
+    try {
+      normalizedSearch = normalizeFtsSearchQuery(options.q);
+    } catch (error: unknown) {
+      if (error instanceof SearchQueryError) {
+        throw new ArticleStateError(error.message, 400);
+      }
+      throw error;
+    }
+  }
+
+  const effectiveReason: RecoveryReasonFilter | null =
+    options.reason ?? (options.kind ? null : 'actionable');
+
+  const feedId = options.feedId?.trim() || undefined;
+  const cursor = options.cursor
+    ? decodeRecoveryCursor(options.cursor)
+    : undefined;
+
+  const db = getDb();
+  const feedRows = (
+    feedId
+      ? db
+          .prepare(
+            `
+            SELECT f.id, COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS title,
+                   f.enabled, COUNT(a.id) AS item_count
+            FROM feeds f
+            LEFT JOIN articles a
+              ON a.feed_id = f.id
+              AND a.cleared_at IS NULL
+              AND (a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)
+            GROUP BY f.id, f.title, f.url, f.enabled
+            HAVING COUNT(a.id) > 0 OR f.id = ?
+            ORDER BY LOWER(COALESCE(NULLIF(TRIM(f.title), ''), f.url)) ASC, f.id ASC
+          `,
+          )
+          .all(feedId)
+      : db
+          .prepare(
+            `
+            SELECT f.id, COALESCE(NULLIF(TRIM(f.title), ''), f.url) AS title,
+                   f.enabled, COUNT(a.id) AS item_count
+            FROM feeds f
+            JOIN articles a
+              ON a.feed_id = f.id
+              AND a.cleared_at IS NULL
+              AND (a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)
+            GROUP BY f.id, f.title, f.url, f.enabled
+            ORDER BY LOWER(COALESCE(NULLIF(TRIM(f.title), ''), f.url)) ASC, f.id ASC
+          `,
+          )
+          .all()
+  ) as Array<{
+    id: string;
+    title: string;
+    enabled: number;
+    item_count: number;
+  }>;
+
+  const feeds: RecoveryFeedOption[] = feedRows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    enabled: Boolean(row.enabled),
+    count: Number(row.item_count || 0),
+  }));
+
+  if (normalizedSearch?.emptyMatch) {
+    return {
+      articles: [],
+      nextCursor: null,
+      reasonCounts: {
+        actionable: 0,
+        all: 0,
+        preference_model: 0,
+        manual_hide: 0,
+        rejected: 0,
+        hide_on_open: 0,
+      },
+      feeds,
+    };
+  }
+
+  const hasPositiveFts = Boolean(
+    normalizedSearch &&
+    normalizedSearch.ftsQuery &&
+    !normalizedSearch.standaloneNegation,
+  );
+  const searchJoin = hasPositiveFts
+    ? 'JOIN article_search ON article_search.rowid = a.rowid'
+    : '';
+  const baseWhereParts = [
+    'a.cleared_at IS NULL',
+    '(a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)',
+  ];
+  const baseParams: Array<string | number> = [];
+
+  if (feedId) {
+    baseWhereParts.push('a.feed_id = ?');
+    baseParams.push(feedId);
+  }
+  if (hasPositiveFts && normalizedSearch) {
+    baseWhereParts.push('article_search MATCH ?');
+    baseParams.push(normalizedSearch.ftsQuery);
+  } else if (normalizedSearch?.standaloneNegation) {
+    baseWhereParts.push(
+      'NOT EXISTS (SELECT 1 FROM article_search WHERE article_search.rowid = a.rowid AND article_search MATCH ?)',
+    );
+    baseParams.push(normalizedSearch.standaloneNegation);
+  }
+
+  const classifiedCte = `
+    WITH classified AS (
       SELECT a.id, a.title, a.url, a.feed_id, COALESCE(f.title, '') AS feed_title,
              a.read, a.read_at, a.saved, a.saved_at, a.hidden, a.hidden_at,
              a.thumbs_up, a.thumbs_down, a.rejected, a.rejected_at, a.state_version,
-             COALESCE(a.hidden_at, a.rejected_at, a.fetched_at) AS state_changed_at
-      FROM articles a JOIN feeds f ON f.id = a.feed_id
-      ${where}
-      ORDER BY COALESCE(a.hidden_at, a.rejected_at, a.fetched_at) DESC, a.id DESC
+             COALESCE(a.hidden_at, a.rejected_at, a.fetched_at) AS state_changed_at,
+             ${buildRecoveryHideReasonExpression('a')} AS hide_reason
+      FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
+      ${searchJoin}
+      WHERE ${baseWhereParts.join(' AND ')}
+    )
+  `;
+
+  const rawCounts = db
+    .prepare(
+      `
+      ${classifiedCte}
+      SELECT
+        COALESCE(SUM(CASE WHEN hide_reason != 'hide_on_open' THEN 1 ELSE 0 END), 0) AS actionable,
+        COUNT(*) AS total_all,
+        COALESCE(SUM(CASE WHEN hide_reason = 'preference_model' THEN 1 ELSE 0 END), 0) AS preference_model,
+        COALESCE(SUM(CASE WHEN hide_reason = 'manual_hide' THEN 1 ELSE 0 END), 0) AS manual_hide,
+        COALESCE(SUM(CASE WHEN hide_reason = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
+        COALESCE(SUM(CASE WHEN hide_reason = 'hide_on_open' THEN 1 ELSE 0 END), 0) AS hide_on_open
+      FROM classified
+    `,
+    )
+    .get(...baseParams) as {
+    actionable: number;
+    total_all: number;
+    preference_model: number;
+    manual_hide: number;
+    rejected: number;
+    hide_on_open: number;
+  };
+
+  const reasonCounts: RecoveryReasonCounts = {
+    actionable: Number(rawCounts?.actionable || 0),
+    all: Number(rawCounts?.total_all || 0),
+    preference_model: Number(rawCounts?.preference_model || 0),
+    manual_hide: Number(rawCounts?.manual_hide || 0),
+    rejected: Number(rawCounts?.rejected || 0),
+    hide_on_open: Number(rawCounts?.hide_on_open || 0),
+  };
+
+  const filterWhereParts: string[] = [];
+  const filterParams: Array<string | number> = [];
+
+  if (effectiveReason === 'actionable') {
+    filterWhereParts.push("hide_reason != 'hide_on_open'");
+  } else if (effectiveReason && effectiveReason !== 'all') {
+    filterWhereParts.push('hide_reason = ?');
+    filterParams.push(effectiveReason);
+  } else if (!effectiveReason && options.kind === 'hidden') {
+    filterWhereParts.push('hidden = 1');
+  } else if (!effectiveReason && options.kind === 'rejected') {
+    filterWhereParts.push('(rejected = 1 OR thumbs_down = 1)');
+  }
+
+  if (cursor) {
+    filterWhereParts.push(
+      '(state_changed_at < ? OR (state_changed_at = ? AND id < ?))',
+    );
+    filterParams.push(cursor.timestamp, cursor.timestamp, cursor.id);
+  }
+
+  const filterWhere = filterWhereParts.length
+    ? `WHERE ${filterWhereParts.join(' AND ')}`
+    : '';
+
+  const rows = db
+    .prepare(
+      `
+      ${classifiedCte}
+      SELECT id, title, url, feed_id, feed_title,
+             read, read_at, saved, saved_at, hidden, hidden_at,
+             thumbs_up, thumbs_down, rejected, rejected_at, state_version,
+             state_changed_at, hide_reason
+      FROM classified
+      ${filterWhere}
+      ORDER BY state_changed_at DESC, id DESC
       LIMIT ?
     `,
     )
-    .all(...params, limit + 1) as Array<
+    .all(...baseParams, ...filterParams, limit + 1) as Array<
     RawArticleState & {
       title: string;
       url: string;
       feed_id: string;
       feed_title: string;
       state_changed_at: number | null;
+      hide_reason: HideReason;
     }
   >;
   const hasMore = rows.length > limit;
   const resultRows = hasMore ? rows.slice(0, limit) : rows;
-  const articles = resultRows.map((row) => ({
+  const articles: RecoveryArticle[] = resultRows.map((row) => ({
     id: row.id,
     title: row.title,
     url: row.url,
     feedId: row.feed_id,
     feedTitle: row.feed_title,
     ...toState(row),
+    hideReason: row.hide_reason,
     stateChangedAt: row.state_changed_at,
   }));
   const last = resultRows.at(-1);
@@ -1449,5 +1713,5 @@ export function listRecoveryArticles(
           }),
         ).toString('base64url')
       : null;
-  return { articles, nextCursor };
+  return { articles, nextCursor, reasonCounts, feeds };
 }

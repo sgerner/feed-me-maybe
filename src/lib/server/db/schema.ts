@@ -206,6 +206,7 @@ export const savedSearches = sqliteTable(
     name: text('name').notNull(),
     query: text('query').notNull().default(''),
     description: text('description').default(''),
+    sort: text('sort').notNull().default('relevance'),
     pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),

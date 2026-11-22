@@ -327,5 +327,25 @@ describe('stale-queue rejection and cross-page reader queues', () => {
       nextCursor: null,
     });
     expect(shouldPrefetchReaderQueue(exhaustedRecovery, 'r-3')).toBe(false);
+
+    const filteredRecoveryQueue: ReaderQueue = {
+      ids: ['r-filtered-1'],
+      source: '/recovery?reason=hide_on_open&feedId=feed-1&q=paywall',
+      pagination: {
+        kind: 'recovery',
+        nextCursor: 'filtered-cursor',
+        limit: 50,
+        feedId: 'feed-1',
+        reason: 'hide_on_open',
+        query: 'paywall',
+      },
+    };
+    const filteredRecoveryUrl = new URL(
+      buildQueueNextPageRequest(filteredRecoveryQueue)!,
+      'http://localhost',
+    );
+    expect(filteredRecoveryUrl.searchParams.get('reason')).toBe('hide_on_open');
+    expect(filteredRecoveryUrl.searchParams.get('feedId')).toBe('feed-1');
+    expect(filteredRecoveryUrl.searchParams.get('q')).toBe('paywall');
   });
 });

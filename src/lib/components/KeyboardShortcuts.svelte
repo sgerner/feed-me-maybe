@@ -45,7 +45,7 @@
         : 'Toggle read / unread for focused article',
     },
     ...(reader
-      ? []
+      ? [{ key: '[', description: 'Toggle table of contents' }]
       : [
           { key: 'Enter', description: 'Open article (when focused)' },
           { key: 'Space', description: 'Open article (when focused)' },
@@ -188,8 +188,8 @@
             >Enable single-character shortcuts</span
           >
           <span class="block text-xs leading-relaxed text-surface-300">
-            Turn this off to disable ? help and the J, K, O, H, S, and M article
-            keys.
+            Turn this off to disable ? help and the J, K, O, H, S, M, and [
+            article keys.
           </span>
         </span>
       </label>
