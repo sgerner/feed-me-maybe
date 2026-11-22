@@ -175,7 +175,7 @@
 
 <PullToRefresh onSync={handleSync} {syncing} mobileOnly>
   <div
-    class="mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
+    class="mb-3 flex flex-col gap-2 md:mb-6 md:flex-row md:items-end md:justify-between"
   >
     <div>
       <p class="eyebrow text-primary-300">Unread</p>
@@ -186,19 +186,16 @@
         {unreadCount} unread {unreadCount === 1 ? 'story' : 'stories'}.
       </p>
     </div>
-    <div class="flex flex-wrap items-center gap-2">
-      <div
-        class="flex flex-wrap items-center gap-1.5"
-        role="group"
-        aria-label="Sort unread stories"
-      >
+    <div
+      class="-mx-3 flex flex-wrap items-center justify-between gap-2 border-b px-3 md:mx-0 md:border-0 md:px-0"
+      style="border-color: color-mix(in oklch, var(--color-surface-100) 8%, transparent);"
+    >
+      <div class="feed-sort-tabs" role="group" aria-label="Sort unread stories">
         {#each SORT_OPTIONS as option (option.value)}
           <button
             type="button"
-            class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {currentSort ===
-            option.value
-              ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
-              : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+            class="feed-sort-tab"
+            class:feed-sort-tab-active={currentSort === option.value}
             aria-pressed={currentSort === option.value}
             onclick={() => setSort(option.value)}>{option.label}</button
           >
