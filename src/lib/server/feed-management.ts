@@ -1,6 +1,10 @@
 import { normalizeFeedSourceUrl } from '#lib/server/source-url.ts';
 import { getDb } from '#lib/server/db/index.ts';
-import { fetchFeed, type FetchResult } from '#lib/server/feed/fetcher.ts';
+import {
+  fetchFeed,
+  type FeedFormat,
+  type FetchResult,
+} from '#lib/server/feed/fetcher.ts';
 import {
   fetchRedditSource,
   isRedditUrl,
@@ -490,6 +494,33 @@ export function dispatchAllFeedsRefresh(options: { force: boolean }): {
   };
 }
 
+export type DiscoveredFeedCandidate = {
+  url: string;
+  title: string;
+  format: FeedFormat;
+  type: FeedFormat;
+  mimeType?: string;
+  siteUrl?: string;
+  description?: string;
+  fetchResult: FetchResult;
+};
+
+const GENERIC_FEED_FORMAT_LABEL =
+  /^(?:rss(?:\s*2(?:\.0)?)?|atom(?:\s*1(?:\.0)?)?|json(?:\s*feed)?|xml|feed)$/i;
+
+function resolveDiscoveredCandidateTitle(
+  linkTitle: string | undefined,
+  feedTitle: string | undefined,
+  fallbackUrl: string,
+): string {
+  const trimmedLinkTitle = linkTitle?.trim() || '';
+  const trimmedFeedTitle = feedTitle?.trim() || '';
+  if (trimmedLinkTitle && !GENERIC_FEED_FORMAT_LABEL.test(trimmedLinkTitle)) {
+    return trimmedLinkTitle;
+  }
+  return trimmedFeedTitle || trimmedLinkTitle || fallbackUrl;
+}
+
 export type DiscoveredFeedSource =
   | {
       ok: true;
@@ -500,6 +531,8 @@ export type DiscoveredFeedSource =
       autoEnabledProxy: boolean;
       fetchResult: FetchResult;
       defaultTitle: string;
+      format: FeedFormat | 'reddit';
+      candidates: DiscoveredFeedCandidate[];
     }
   | {
       ok: false;
@@ -577,23 +610,22 @@ export async function discoverAndValidateFeedSource(input: {
         redditSource.subreddit ||
         redditSource.username ||
         'Reddit',
+      format: 'reddit',
+      candidates: [],
     };
   }
 
   let useProxy = Boolean(requestedUseProxy && proxyBaseUrl);
   let autoEnabledProxy = false;
+  const canFallbackToProxy = Boolean(
+    !useProxy && allowProxyFallback && proxyBaseUrl,
+  );
   let result = await fetchFeed(url, {
     discover: true,
     proxyBaseUrl: useProxy ? proxyBaseUrl : undefined,
-    deadline: nextAttemptDeadline(),
+    deadline: canFallbackToProxy ? nextAttemptDeadline() : overallDeadline,
   });
-  if (
-    !result.success &&
-    !useProxy &&
-    allowProxyFallback &&
-    proxyBaseUrl &&
-    !overallDeadline.aborted
-  ) {
+  if (!result.success && canFallbackToProxy && !overallDeadline.aborted) {
     const proxied = await fetchFeed(url, {
       discover: true,
       proxyBaseUrl,
@@ -614,14 +646,59 @@ export async function discoverAndValidateFeedSource(input: {
       fetchResult: result,
     };
   }
+
+  let candidates: DiscoveredFeedCandidate[];
+  if (result.discoveredFeeds && result.discoveredFeeds.length > 0) {
+    const seenUrls = new Set<string>();
+    candidates = [];
+    for (const entry of result.discoveredFeeds) {
+      const candidateUrl = normalizeFeedUrl(entry.url);
+      if (seenUrls.has(candidateUrl)) continue;
+      seenUrls.add(candidateUrl);
+      candidates.push({
+        url: candidateUrl,
+        title: resolveDiscoveredCandidateTitle(
+          entry.linkTitle,
+          entry.fetchResult.title,
+          candidateUrl,
+        ),
+        format: entry.format,
+        type: entry.format,
+        mimeType: entry.mimeType,
+        siteUrl: entry.fetchResult.link,
+        description: entry.fetchResult.description,
+        fetchResult: entry.fetchResult,
+      });
+    }
+  } else {
+    const normalizedCandidateUrl = normalizeFeedUrl(result.subscriptionUrl);
+    const format = result.format ?? 'rss';
+    candidates = [
+      {
+        url: normalizedCandidateUrl,
+        title: result.title?.trim() || normalizedCandidateUrl,
+        format,
+        type: format,
+        siteUrl: result.link,
+        description: result.description,
+        fetchResult: result,
+      },
+    ];
+  }
+
+  const primary = candidates[0];
   return {
     ok: true,
     sourceType: 'rss',
-    normalizedUrl: normalizeFeedUrl(result.subscriptionUrl),
+    normalizedUrl: primary.url,
     sourceMetadata: '{}',
     useProxy,
     autoEnabledProxy,
-    fetchResult: result,
-    defaultTitle: result.title ?? '',
+    fetchResult: primary.fetchResult,
+    defaultTitle:
+      primary.fetchResult.title ||
+      (primary.title !== primary.url ? primary.title : ''),
+    format: primary.format,
+    candidates,
   };
 }

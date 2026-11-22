@@ -12,6 +12,12 @@
     matchesOfflineVisibility,
     type OfflineArticle,
   } from '#lib/offline/index.ts';
+  import {
+    buildReaderArticleHref,
+    READER_QUEUE_STORAGE_KEY,
+    serializeReaderQueue,
+    validateStreamOrigin,
+  } from '#lib/reader-queue.ts';
 
   type HideReason =
     'preference_model' | 'manual_hide' | 'rejected' | 'hide_on_open';
@@ -122,6 +128,40 @@
 
   function offlineScope(): string {
     return String(pageStore.data.userId || 'admin');
+  }
+
+  const recoverySource = $derived(
+    validateStreamOrigin(`${pageStore.url.pathname}${pageStore.url.search}`) ??
+      '/recovery',
+  );
+
+  function recoveryArticleHref(articleId: string): string {
+    return buildReaderArticleHref(articleId, { from: recoverySource });
+  }
+
+  function writeRecoveryReaderQueue(): void {
+    try {
+      const serialized = serializeReaderQueue({
+        ids: articles.map((item) => item.id),
+        source: recoverySource,
+        pagination:
+          !offlineFallback && nextCursor
+            ? {
+                kind: 'recovery',
+                nextCursor,
+                limit: PAGE_LIMIT,
+                feedId: selectedFeedId || null,
+                reason: selectedReason,
+                query: appliedQuery.trim(),
+              }
+            : null,
+      });
+      if (serialized) {
+        sessionStorage.setItem(READER_QUEUE_STORAGE_KEY, serialized);
+      }
+    } catch {
+      // Direct reader navigation still works without session storage.
+    }
   }
 
   function effectiveHideReason(article: RecoveryArticle): HideReason {
@@ -359,7 +399,6 @@
       if (navigator.onLine === false && !append) {
         if (await loadCachedRecoveryFallback()) return;
       }
-
       const params = new SvelteURLSearchParams({
         limit: String(PAGE_LIMIT),
         reason: selectedReason,
@@ -404,6 +443,9 @@
         articles = incoming;
       }
       nextCursor = payload.nextCursor ?? null;
+      if (append) {
+        writeRecoveryReaderQueue();
+      }
       if (payload.reasonCounts) {
         reasonCounts = {
           actionable: Number(payload.reasonCounts.actionable || 0),
@@ -587,6 +629,7 @@
     event: MouseEvent,
     article: RecoveryArticle,
   ) {
+    writeRecoveryReaderQueue();
     if (
       event.button !== 0 ||
       event.metaKey ||
@@ -1249,7 +1292,10 @@
               <a
                 id="recovery-title-{article.id}"
                 class="block font-semibold text-surface-100 no-underline transition hover:text-primary-300"
-                href="/articles/{article.id}"
+                href={recoveryArticleHref(article.id)}
+                onauxclick={(e) => {
+                  if (e.button === 1) writeRecoveryReaderQueue();
+                }}
                 onclick={(e) => void openRecoveryArticle(e, article)}
                 >{article.title}</a
               >
@@ -1259,7 +1305,10 @@
           <div class="flex shrink-0 items-center gap-2 pl-7 md:pl-0">
             <a
               class="btn preset-tonal no-underline"
-              href="/articles/{article.id}"
+              href={recoveryArticleHref(article.id)}
+              onauxclick={(e) => {
+                if (e.button === 1) writeRecoveryReaderQueue();
+              }}
               onclick={(e) => void openRecoveryArticle(e, article)}
               aria-label="Review {article.title}">Review</a
             >

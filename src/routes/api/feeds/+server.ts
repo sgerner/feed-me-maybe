@@ -174,6 +174,36 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     );
   }
 
+  if (discovered.sourceType === 'rss' && discovered.candidates.length > 1) {
+    const placeholders = discovered.candidates.map(() => '?').join(', ');
+    const existingRows = db
+      .prepare(`SELECT url FROM feeds WHERE url IN (${placeholders})`)
+      .all(
+        ...discovered.candidates.map((candidate) => candidate.url),
+      ) as Array<{
+      url: string;
+    }>;
+    const existingUrls = new Set(existingRows.map((row) => row.url));
+
+    return Response.json(
+      {
+        candidates: discovered.candidates.map((candidate) => ({
+          url: candidate.url,
+          title: candidate.title,
+          type: candidate.type,
+          format: candidate.format,
+          ...(candidate.mimeType ? { mimeType: candidate.mimeType } : {}),
+          ...(candidate.siteUrl ? { siteUrl: candidate.siteUrl } : {}),
+          ...(candidate.description
+            ? { description: candidate.description }
+            : {}),
+          alreadySubscribed: existingUrls.has(candidate.url),
+        })),
+      },
+      { status: 200 },
+    );
+  }
+
   const {
     sourceType,
     normalizedUrl,

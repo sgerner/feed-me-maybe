@@ -476,9 +476,26 @@
           OPML import and export
         </h3>
         <p class="mt-1 text-xs text-surface-300">
-          Move your feed list to or from another reader.
+          Move your feed list to or from another reader, or manage your
+          subscriptions.
         </p>
-        <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+        <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <a href="/feeds" class="action-btn min-h-11 px-3 py-2 no-underline">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+              ><path d="M4 11a9 9 0 0 1 9 9" /><path
+                d="M4 4a16 16 0 0 1 16 16"
+              /><circle cx="5" cy="19" r="1" /></svg
+            >
+            Manage feeds
+          </a>
           <button
             type="button"
             class="action-btn min-h-11 px-3 py-2"

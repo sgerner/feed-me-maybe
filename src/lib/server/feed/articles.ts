@@ -51,7 +51,7 @@ type FeedArticlesQueryOptions = {
   excludeIds?: string[];
 };
 
-function buildAutoHiddenWhereClause(alias: string): string {
+export function buildAutoHiddenWhereClause(alias: string): string {
   return `
     ${alias}.hidden = 1
     AND EXISTS (
