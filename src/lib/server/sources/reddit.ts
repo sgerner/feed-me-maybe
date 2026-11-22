@@ -6,6 +6,7 @@ import {
 } from '#lib/server/feed/fetcher.ts';
 import {
   MAX_JSON_RESPONSE_BYTES,
+  SafeFetchError,
   fetchSafe,
   readResponseText,
 } from '#lib/server/network.ts';
@@ -436,7 +437,14 @@ export async function fetchRedditSource(
     rssResult.notModified ||
     (rssResult.success && rssResult.items.length > 0) ||
     rssResult.httpStatus === 429 ||
-    rssResult.httpStatus === 410
+    rssResult.httpStatus === 410 ||
+    (rssResult.errorCode &&
+      [
+        'invalid_url',
+        'private_network',
+        'unsafe_redirect',
+        'too_many_redirects',
+      ].includes(rssResult.errorCode))
   ) {
     return rssResult;
   }
@@ -520,6 +528,7 @@ export async function fetchRedditSource(
         error: `HTTP error ${response.status}`,
         httpStatus: response.status,
         retryAt: readRetryAt(response.headers.get('retry-after')),
+        ...(response.status === 410 ? { permanentFailure: true } : {}),
       };
     }
 
@@ -578,10 +587,14 @@ export async function fetchRedditSource(
   } catch (err: unknown) {
     const errorMessage =
       err instanceof Error ? err.message : 'Unknown Reddit fetch error';
+    const isPermanentSafeFetch =
+      err instanceof SafeFetchError && err.code !== 'dns_failure';
     return {
       success: false,
       items: [],
       error: errorMessage,
+      ...(err instanceof SafeFetchError ? { errorCode: err.code } : {}),
+      ...(isPermanentSafeFetch ? { permanentFailure: true } : {}),
     };
   }
 }

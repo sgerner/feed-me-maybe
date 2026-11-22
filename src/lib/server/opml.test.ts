@@ -130,7 +130,7 @@ describe('parseOpml', () => {
     const now = Date.now();
     const sourceUrl = 'https://entities.example/rss?first=1&second=two';
     db.prepare(
-      'INSERT INTO feeds (id, url, title, site_url, category, custom_title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO feeds (id, url, title, site_url, category, custom_title, poll_interval_mins, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)',
     ).run(
       'entity-round-trip',
       sourceUrl,
@@ -179,7 +179,7 @@ describe('parseOpml', () => {
     const normalized =
       'https://www.reddit.com/r/selfhosted/search?q=caprover&restrict_sr=1';
     db.prepare(
-      'INSERT INTO feeds (id, url, title, source_type, source_metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO feeds (id, url, title, source_type, source_metadata, poll_interval_mins, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)',
     ).run(
       'reddit-round-trip',
       normalized,
@@ -250,5 +250,50 @@ describe('parseOpml', () => {
     const exported = exportOpml();
     expect(exported).toContain('https://disabled-opml.example/rss');
     expect(exported).toContain('Paused Source');
+  });
+
+  it('preserves fmmUseProxy, fmmOpenMode, fmmEnabled, fmmPollIntervalMins, and fmmCustomTitle across OPML round-trip without locking custom_title on external OPML', () => {
+    const db = getDb();
+    const now = Date.now();
+    const url = 'https://fmm-attrs.example/rss';
+    db.prepare(
+      `INSERT INTO feeds (
+        id, url, title, enabled, use_proxy, open_mode, poll_interval_mins,
+        custom_title, created_at, updated_at
+      ) VALUES (?, ?, ?, 0, 1, 'tab', 45, 1, ?, ?)`,
+    ).run('fmm-attrs-feed', url, 'Custom Paused Proxy Feed', now, now);
+
+    const exported = exportOpml();
+    db.prepare('DELETE FROM feeds WHERE id = ?').run('fmm-attrs-feed');
+    expect(importOpml(exported)).toEqual({ imported: 1, errors: [] });
+
+    const roundTripped = db
+      .prepare(
+        'SELECT enabled, use_proxy, open_mode, poll_interval_mins, custom_title FROM feeds WHERE url = ?',
+      )
+      .get(url);
+    expect(roundTripped).toEqual({
+      enabled: 0,
+      use_proxy: 1,
+      open_mode: 'tab',
+      poll_interval_mins: 45,
+      custom_title: 1,
+    });
+
+    // External OPML without fmmCustomTitle="true" does not lock custom_title = 1
+    const externalUrl = 'https://external-opml.example/feed.xml';
+    expect(
+      importOpml(
+        `<outline text="External Title" type="rss" xmlUrl="${externalUrl}"/>`,
+      ),
+    ).toEqual({ imported: 1, errors: [] });
+    expect(
+      db
+        .prepare('SELECT title, custom_title FROM feeds WHERE url = ?')
+        .get(externalUrl),
+    ).toEqual({
+      title: 'External Title',
+      custom_title: 0,
+    });
   });
 });

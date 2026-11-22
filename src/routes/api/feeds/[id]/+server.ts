@@ -2,17 +2,16 @@ import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { isArticleOpenMode } from '#lib/constants/article-open-modes.ts';
 import {
+  discoverAndValidateFeedSource,
   getFeedHealth,
   normalizeFeedUrl,
 } from '#lib/server/feed-management.ts';
-import { fetchFeed } from '#lib/server/feed/fetcher.ts';
+import type { FetchResult } from '#lib/server/feed/fetcher.ts';
+import { commitFetchedFeedResult } from '#lib/server/feed/ingester.ts';
 import { validatePublicUrl } from '#lib/server/network.ts';
+import { isRedditUrl } from '#lib/server/sources/reddit.ts';
 import {
-  fetchRedditSource,
-  isRedditUrl,
-  normalizeRedditUrl,
-} from '#lib/server/sources/reddit.ts';
-import {
+  cancelQueuedArticleWorkForFeeds,
   deleteJobsForFeeds,
   enqueueFeedFetch,
   FEED_FETCH_JOB_TYPE,
@@ -21,13 +20,23 @@ import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import { scheduleNextPoll, wakePoller } from '#lib/server/poller.ts';
 import { readJsonObject } from '#lib/server/request-body.ts';
 
+function readFeedWithCounts(feedId: string) {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT f.*,
+              (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND COALESCE(a.saved, 0) = 1) AS saved_count
+       FROM feeds f WHERE f.id = ?`,
+    )
+    .get(feedId);
+}
+
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.sessionId) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const db = getDb();
-  const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(params.id);
+  const feed = readFeedWithCounts(params.id);
 
   if (!feed) {
     return Response.json({ error: 'Feed not found' }, { status: 404 });
@@ -161,6 +170,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   let urlChanged = false;
+  let validatedUrlResult: FetchResult | null = null;
   if (body.url !== undefined) {
     let url: string;
     try {
@@ -179,121 +189,67 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
           ? body.use_proxy
           : Boolean(existing.use_proxy);
       const isReddit = isRedditUrl(url);
-      if (existing.source_type === 'reddit' || isReddit) {
-        if (existing.source_type !== 'reddit' || !isReddit) {
-          return Response.json(
-            { error: 'The new URL must use the same source type' },
-            { status: 422 },
-          );
-        }
-        const source = normalizeRedditUrl(url);
-        let validation = await fetchRedditSource(source, {
-          proxyBaseUrl: requestedUseProxy ? proxyBaseUrl : undefined,
-        });
-        let autoEnabledProxy = false;
-        if (
-          !validation.success &&
-          !requestedUseProxy &&
-          proxyBaseUrl &&
-          body.use_proxy === undefined
-        ) {
-          const proxied = await fetchRedditSource(source, { proxyBaseUrl });
-          if (proxied.success) {
-            validation = proxied;
-            autoEnabledProxy = true;
-          }
-        }
-        if (!validation.success) {
-          return Response.json(
-            {
-              error:
-                validation.error ||
-                'This looks like a Reddit URL, but Reddit did not return a readable JSON feed.',
-            },
-            { status: 422 },
-          );
-        }
-        const metadata = JSON.stringify({
-          originalUrl: url,
-          redditKind: source.redditKind,
-          subreddit: source.subreddit,
-          username: source.username,
-          query: source.query,
-        });
-        url = source.normalizedUrl;
+      if (
+        (existing.source_type === 'reddit' || isReddit) &&
+        (existing.source_type !== 'reddit' || !isReddit)
+      ) {
+        return Response.json(
+          { error: 'The new URL must use the same source type' },
+          { status: 422 },
+        );
+      }
+
+      const discovered = await discoverAndValidateFeedSource({
+        url,
+        proxyBaseUrl,
+        requestedUseProxy,
+        allowProxyFallback: !requestedUseProxy && body.use_proxy === undefined,
+      });
+      if (!discovered.ok) {
+        return Response.json({ error: discovered.error }, { status: 422 });
+      }
+
+      url = discovered.normalizedUrl;
+      validatedUrlResult = discovered.fetchResult;
+      if (discovered.sourceType === 'reddit') {
         updates.push('source_metadata = ?');
-        values.push(metadata);
-        if (autoEnabledProxy) {
-          useProxyChanged = !existing.use_proxy;
-          updates.push('use_proxy = 1');
-        }
-        if (url !== existing.url) {
-          urlChanged = true;
-          if (!nextCustomTitle && validation.title) {
-            updates.push('title = ?');
-            values.push(validation.title);
-          }
-        }
-      } else {
-        let result = await fetchFeed(url, {
-          discover: true,
-          proxyBaseUrl: requestedUseProxy ? proxyBaseUrl : undefined,
-        });
-        let autoEnabledProxy = false;
-        if (
-          !result.success &&
-          !requestedUseProxy &&
-          proxyBaseUrl &&
-          body.use_proxy === undefined
-        ) {
-          const proxied = await fetchFeed(url, {
-            discover: true,
-            proxyBaseUrl,
-          });
-          if (proxied.success) {
-            result = proxied;
-            autoEnabledProxy = true;
-          }
-        }
-        if (!result.success || !result.subscriptionUrl) {
-          return Response.json(
-            {
-              error: result.error || 'This URL did not return a readable feed',
-            },
-            { status: 422 },
-          );
-        }
-        url = normalizeFeedUrl(result.subscriptionUrl);
-        if (autoEnabledProxy) {
-          useProxyChanged = !existing.use_proxy;
-          updates.push('use_proxy = 1');
-        }
-        if (url !== existing.url) {
-          urlChanged = true;
+        values.push(discovered.sourceMetadata);
+      }
+      if (discovered.autoEnabledProxy) {
+        useProxyChanged = !existing.use_proxy;
+        updates.push('use_proxy = 1');
+      }
+      if (url !== existing.url) {
+        urlChanged = true;
+        if (discovered.sourceType === 'rss') {
           updates.push('description = ?', 'site_url = ?', 'icon_url = ?');
           values.push(
-            result.description ?? '',
-            result.link ?? '',
-            result.imageUrl ?? '',
+            discovered.fetchResult.description ?? '',
+            discovered.fetchResult.link ?? '',
+            discovered.fetchResult.imageUrl ?? '',
           );
-          if (!nextCustomTitle && result.title) {
-            updates.push('title = ?');
-            values.push(result.title);
-          }
+        }
+        if (!nextCustomTitle && discovered.fetchResult.title) {
+          updates.push('title = ?');
+          values.push(discovered.fetchResult.title);
         }
       }
       if (urlChanged) {
         updates.push(
           'url = ?',
-          'etag = NULL',
-          'last_modified_header = NULL',
+          'etag = ?',
+          'last_modified_header = ?',
           'last_fetch_at = NULL',
           'last_error = NULL',
           "last_fetch_status = 'never'",
           'error_count = 0',
           'fetch_count_since_change = 0',
         );
-        values.push(url);
+        values.push(
+          url,
+          discovered.fetchResult.etag || null,
+          discovered.fetchResult.lastModified || null,
+        );
       }
     }
   }
@@ -314,6 +270,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   }
 
   const now = Date.now();
+  const disabledNow = Boolean(existing.enabled) && !nextEnabled;
   updates.push('updated_at = ?');
   values.push(now);
   values.push(params.id);
@@ -326,20 +283,25 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
             `UPDATE feeds SET ${updates.join(', ')} WHERE id = ? AND url = ?`,
           )
           .run(...values, existing.url);
-        if (result.changes && urlChanged) {
+        if (!result.changes) return 0;
+
+        if (disabledNow) {
+          cancelQueuedArticleWorkForFeeds([params.id], db);
+        }
+
+        if (urlChanged) {
           // Retry delays belong to the previous subscription URL.
           db.prepare(
             `UPDATE jobs SET status = 'completed', completed_at = ?
             WHERE type = ? AND status = 'queued' AND json_extract(payload, '$.feedId') = ?`,
           ).run(now, FEED_FETCH_JOB_TYPE, params.id);
-          if (nextEnabled) {
+          if (
+            nextEnabled &&
+            (!validatedUrlResult || validatedUrlResult.items.length === 0)
+          ) {
             enqueueFeedFetch(params.id, { force: true, now });
           }
-        } else if (
-          result.changes &&
-          (useProxyChanged || reEnabled) &&
-          nextEnabled
-        ) {
+        } else if ((useProxyChanged || reEnabled) && nextEnabled) {
           enqueueFeedFetch(params.id, { force: true, now });
         }
         return result.changes;
@@ -350,6 +312,20 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
         { error: 'This feed changed. Reload and try again.' },
         { status: 409 },
       );
+
+    if (
+      urlChanged &&
+      validatedUrlResult &&
+      validatedUrlResult.items.length > 0
+    ) {
+      commitFetchedFeedResult({
+        feedId: params.id,
+        fetchResult: validatedUrlResult,
+        startedAt: now,
+        customTitle: nextCustomTitle,
+        fetchCountSinceChange: 0,
+      });
+    }
   } catch (error) {
     if (error instanceof Error && error.message.includes('UNIQUE constraint')) {
       return Response.json(
@@ -365,7 +341,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
   } else if (pollIntervalChanged && nextEnabled) {
     scheduleNextPoll();
   }
-  const feed = db.prepare('SELECT * FROM feeds WHERE id = ?').get(params.id);
+  const feed = readFeedWithCounts(params.id);
   return Response.json({ feed, health: getFeedHealth(params.id) });
 };
 

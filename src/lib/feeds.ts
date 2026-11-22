@@ -66,10 +66,29 @@ export async function syncFeed(
     if (!res.ok) throw new Error('Feed sync request failed');
     if (silent) return 'pending';
     const queued = (await res.json()) as {
-      job?: { id?: string; status?: string };
+      job?: {
+        id?: string;
+        status?: string;
+        scheduledAt?: number | null;
+      };
     };
     const jobId = queued.job?.id;
     if (!jobId) throw new Error('Feed sync response did not include a job');
+
+    const isDeferredSchedule = (scheduledAt?: number | null) =>
+      typeof scheduledAt === 'number' &&
+      Number.isFinite(scheduledAt) &&
+      scheduledAt > Date.now() + 1_500;
+
+    if (
+      queued.job?.status === 'queued' &&
+      isDeferredSchedule(queued.job?.scheduledAt)
+    ) {
+      if (!silent) {
+        addToast('Feed sync is deferred by upstream rate limit', 'info');
+      }
+      return 'pending';
+    }
 
     const deadline = Date.now() + 30_000;
     let status = queued.job?.status;
@@ -86,7 +105,7 @@ export async function syncFeed(
         );
         if (!poll.ok) break;
         const detail = (await poll.json()) as {
-          job?: { status?: string } | null;
+          job?: { status?: string; scheduledAt?: number | null } | null;
           fetch?: { errorMessage?: string } | null;
         };
         status = detail.job?.status;
@@ -95,6 +114,19 @@ export async function syncFeed(
             addToast(detail.fetch?.errorMessage || 'Feed sync failed', 'error');
           }
           return 'failed';
+        }
+        if (
+          status === 'queued' &&
+          isDeferredSchedule(detail.job?.scheduledAt)
+        ) {
+          if (!silent) {
+            addToast(
+              detail.fetch?.errorMessage ||
+                'Feed sync is deferred by upstream rate limit',
+              'info',
+            );
+          }
+          return 'pending';
         }
       } catch {
         // Keep polling after a transient connection failure until the bounded wait ends.

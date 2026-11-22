@@ -1,20 +1,17 @@
 import type { RequestHandler } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
-import { fetchFeed } from '#lib/server/feed/fetcher.ts';
-import { enqueueFeedFetch } from '#lib/server/feed/job-queue.ts';
+import { commitFetchedFeedResult } from '#lib/server/feed/ingester.ts';
 import { wakePoller } from '#lib/server/poller.ts';
-import {
-  isRedditUrl,
-  normalizeRedditUrl,
-  fetchRedditSource,
-} from '#lib/server/sources/reddit.ts';
+import { isRedditUrl } from '#lib/server/sources/reddit.ts';
 import { getConfiguredProxyBaseUrl } from '#lib/server/proxy.ts';
 import { recordAppError } from '#lib/server/logging.ts';
 import { validatePublicUrl } from '#lib/server/network.ts';
 import {
-  getFeedHealth,
+  discoverAndValidateFeedSource,
+  getAllFeedHealth,
   normalizeFeedUrl,
 } from '#lib/server/feed-management.ts';
+import { readJsonObject } from '#lib/server/request-body.ts';
 import crypto from 'node:crypto';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -25,15 +22,43 @@ export const GET: RequestHandler = async ({ locals }) => {
   const db = getDb();
   const rows = db
     .prepare(
-      'SELECT id, url, title, description, site_url, category, icon_url, enabled, use_proxy, error_count, last_fetch_status, last_fetch_at, last_error, source_type, source_metadata, created_at, updated_at FROM feeds ORDER BY title ASC',
+      `SELECT f.id, f.url, f.title, f.description, f.site_url, f.category,
+              f.icon_url, f.enabled, f.use_proxy, f.error_count,
+              f.last_fetch_status, f.last_fetch_at, f.last_error,
+              f.source_type, f.source_metadata, f.created_at, f.updated_at,
+              COUNT(CASE WHEN COALESCE(a.read, 0) = 0 AND COALESCE(a.hidden, 0) = 0 AND COALESCE(a.rejected, 0) = 0 AND COALESCE(a.thumbs_down, 0) = 0 THEN 1 END) AS unread_count,
+              COUNT(CASE WHEN COALESCE(a.saved, 0) = 1 THEN 1 END) AS saved_count,
+              COUNT(CASE WHEN COALESCE(a.hidden, 0) = 0 AND COALESCE(a.rejected, 0) = 0 AND COALESCE(a.thumbs_down, 0) = 0 THEN 1 END) AS visible_count,
+              COUNT(a.id) AS article_count
+       FROM feeds f
+       LEFT JOIN articles a ON a.feed_id = f.id
+       GROUP BY f.id
+       ORDER BY f.title ASC`,
     )
-    .all();
+    .all() as Array<{
+    id: string;
+    enabled: number;
+    unread_count: number;
+    saved_count: number;
+    visible_count: number;
+    article_count: number;
+    [key: string]: unknown;
+  }>;
+
+  const healthByFeed = new Map(
+    getAllFeedHealth().map((health) => [health.feedId, health]),
+  );
+  const totalUnread = rows.reduce(
+    (sum, feed) => (feed.enabled ? sum + Number(feed.unread_count || 0) : sum),
+    0,
+  );
 
   return Response.json({
-    feeds: (rows as Array<{ id: string }>).map((feed) => ({
+    feeds: rows.map((feed) => ({
       ...feed,
-      health: getFeedHealth(feed.id),
+      health: healthByFeed.get(feed.id) ?? null,
     })),
+    totalUnread,
   });
 };
 
@@ -42,12 +67,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-    if (!body || typeof body !== 'object' || Array.isArray(body))
-      throw new Error('Invalid body');
-  } catch {
+  const body = await readJsonObject(request);
+  if (!body) {
     return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
@@ -79,130 +100,93 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   const db = getDb();
   const now = new Date();
+  const nowMs = now.getTime();
   const id = crypto.randomUUID();
   const proxyBaseUrl = getConfiguredProxyBaseUrl();
 
-  let sourceType = 'rss';
-  let sourceMetadata = '{}';
-  let normalizedUrl = url;
-  let useProxy = false;
-
-  // Detect and validate Reddit URLs
-  if (isRedditUrl(url)) {
-    const redditSource = normalizeRedditUrl(url);
-    const overallDeadline = AbortSignal.timeout(30_000);
-    let validation = await fetchRedditSource(redditSource, {
-      deadline: AbortSignal.any([overallDeadline, AbortSignal.timeout(15_000)]),
-    });
-    if (!validation.success && proxyBaseUrl && !overallDeadline.aborted) {
-      const proxiedValidation = await fetchRedditSource(redditSource, {
-        proxyBaseUrl,
-        deadline: AbortSignal.any([
-          overallDeadline,
-          AbortSignal.timeout(15_000),
-        ]),
-      });
-      if (proxiedValidation.success) {
-        validation = proxiedValidation;
-        useProxy = true;
-      }
-    }
-    if (!validation.success) {
-      recordAppError({
-        source: 'api.feeds.create',
-        error: new Error(validation.error || 'Reddit validation failed'),
-        details: {
-          url,
-          proxyConfigured: Boolean(proxyBaseUrl),
-          proxyUsed: useProxy,
-        },
-        path: '/api/feeds',
-        method: 'POST',
-      });
-      return Response.json(
-        {
-          error:
-            validation.error ||
-            'This looks like a Reddit URL, but Reddit did not return a readable JSON feed. Check that the subreddit, user, or search URL exists.',
-          field: 'url',
-        },
-        { status: 422 },
-      );
-    }
-    sourceType = 'reddit';
-    sourceMetadata = JSON.stringify({
-      originalUrl: url,
-      redditKind: redditSource.redditKind,
-      subreddit: redditSource.subreddit,
-      username: redditSource.username,
-      query: redditSource.query,
-    });
-    normalizedUrl = redditSource.normalizedUrl;
-    // Use subreddit or username as default title if none provided
-    if (!title) {
-      title =
-        validation.title ||
-        redditSource.subreddit ||
-        redditSource.username ||
-        'Reddit';
-    }
-  } else {
+  if (!isRedditUrl(url)) {
     const existing = db.prepare('SELECT id FROM feeds WHERE url = ?').get(url);
-    if (existing)
+    if (existing) {
       return Response.json(
         { error: 'Feed URL already exists', field: 'url' },
         { status: 409 },
       );
-    const overallDeadline = AbortSignal.timeout(30_000);
-    let result = await fetchFeed(url, {
-      discover: true,
-      deadline: AbortSignal.any([overallDeadline, AbortSignal.timeout(15_000)]),
-    });
-    if (!result.success && proxyBaseUrl && !overallDeadline.aborted) {
-      const throughProxy = await fetchFeed(url, {
-        discover: true,
-        proxyBaseUrl,
-        deadline: AbortSignal.any([
-          overallDeadline,
-          AbortSignal.timeout(15_000),
-        ]),
-      });
-      if (throughProxy.success) {
-        result = throughProxy;
-        useProxy = true;
-      }
     }
-    if (!result.success || !result.subscriptionUrl) {
-      return Response.json(
-        {
-          error: result.error || 'This URL did not return a readable feed',
-          field: 'url',
-        },
-        { status: 422 },
-      );
-    }
-    normalizedUrl = normalizeFeedUrl(result.subscriptionUrl);
-    if (!title) title = result.title ?? '';
   }
+
+  const discovered = await discoverAndValidateFeedSource({
+    url,
+    proxyBaseUrl,
+  });
+  if (!discovered.ok) {
+    if (discovered.sourceType === 'reddit') {
+      recordAppError({
+        source: 'api.feeds.create',
+        error: new Error(discovered.error || 'Reddit validation failed'),
+        details: {
+          url,
+          proxyConfigured: Boolean(proxyBaseUrl),
+          proxyUsed: discovered.useProxy,
+        },
+        path: '/api/feeds',
+        method: 'POST',
+      });
+    }
+    return Response.json(
+      {
+        error: discovered.error,
+        field: 'url',
+      },
+      { status: 422 },
+    );
+  }
+
+  const {
+    sourceType,
+    normalizedUrl,
+    sourceMetadata,
+    useProxy,
+    fetchResult,
+    defaultTitle,
+  } = discovered;
+  if (!title) title = defaultTitle;
 
   try {
     db.transaction(() => {
       db.prepare(
-        'INSERT INTO feeds (id, url, title, custom_title, category, source_type, source_metadata, use_proxy, poll_interval_mins, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
+        `INSERT INTO feeds (
+          id, url, title, custom_title, description, site_url, icon_url,
+          category, source_type, source_metadata, use_proxy,
+          etag, last_modified_header, last_fetch_status, last_fetch_at,
+          poll_interval_mins, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success', ?, NULL, ?, ?)`,
       ).run(
         id,
         normalizedUrl,
         title || '',
         requestedTitle ? 1 : 0,
+        fetchResult.description || '',
+        fetchResult.link || '',
+        fetchResult.imageUrl || '',
         category || '',
         sourceType,
         sourceMetadata,
         useProxy ? 1 : 0,
-        now.getTime(),
-        now.getTime(),
+        fetchResult.etag || null,
+        fetchResult.lastModified || null,
+        nowMs,
+        nowMs,
+        nowMs,
       );
-      enqueueFeedFetch(id, { now: now.getTime() });
     }).immediate();
+
+    commitFetchedFeedResult({
+      feedId: id,
+      fetchResult,
+      startedAt: nowMs,
+      customTitle: Boolean(requestedTitle),
+      fetchCountSinceChange: 0,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     if (msg.includes('UNIQUE constraint')) {

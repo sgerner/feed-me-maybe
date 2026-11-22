@@ -443,4 +443,93 @@ describe('feed settings, refresh, and batch APIs', () => {
     expect(allWake.status).toBe(200);
     expect(pollerMocks.wakePoller).toHaveBeenCalledTimes(2);
   });
+
+  it('cancels queued ai_process, jev_process, and ranking_refresh_queue work when disabling feeds via PATCH or batch disable', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { PATCH } = await import('./[id]/+server');
+    const { POST: batchPost } = await import('./batch/+server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?), (?, ?, 1, ?, ?)',
+    ).run(
+      'disable-one',
+      'https://d1.example/rss',
+      now,
+      now,
+      'disable-two',
+      'https://d2.example/rss',
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'art-d1',
+      'disable-one',
+      'https://d1.example/1',
+      'D1',
+      now,
+      now,
+      now,
+      'art-d2',
+      'disable-two',
+      'https://d2.example/1',
+      'D2',
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO jobs (id, type, status, payload, attempts, max_attempts, created_at)
+       VALUES ('ai-d1', 'ai_process', 'queued', ?, 0, 3, ?),
+              ('jev-d1', 'jev_process', 'queued', ?, 0, 4, ?),
+              ('ai-d2', 'ai_process', 'queued', ?, 0, 3, ?),
+              ('jev-d2', 'jev_process', 'queued', ?, 0, 4, ?)`,
+    ).run(
+      JSON.stringify({ articleId: 'art-d1', feedId: 'disable-one' }),
+      now,
+      JSON.stringify({ articleId: 'art-d1' }),
+      now,
+      JSON.stringify({ articleId: 'art-d2', feedId: 'disable-two' }),
+      now,
+      JSON.stringify({ articleId: 'art-d2' }),
+      now,
+    );
+    db.prepare(
+      `INSERT INTO ranking_refresh_queue (article_id, requested_revision, heuristic_revision, not_before, created_at)
+       VALUES ('art-d1', 1, 1, ?, ?), ('art-d2', 1, 1, ?, ?)`,
+    ).run(now, now, now, now);
+
+    const patchRes = await PATCH(
+      requestEvent('PATCH', { enabled: false }, { id: 'disable-one' }),
+    );
+    expect(patchRes.status).toBe(200);
+    expect(
+      db.prepare("SELECT id FROM jobs WHERE id IN ('ai-d1', 'jev-d1')").all(),
+    ).toEqual([]);
+    expect(
+      db
+        .prepare(
+          "SELECT article_id FROM ranking_refresh_queue WHERE article_id = 'art-d1'",
+        )
+        .all(),
+    ).toEqual([]);
+
+    const batchRes = await batchPost(
+      requestEvent('POST', { feedIds: ['disable-two'], action: 'disable' }),
+    );
+    expect(batchRes.status).toBe(200);
+    expect(
+      db.prepare("SELECT id FROM jobs WHERE id IN ('ai-d2', 'jev-d2')").all(),
+    ).toEqual([]);
+    expect(
+      db
+        .prepare(
+          "SELECT article_id FROM ranking_refresh_queue WHERE article_id = 'art-d2'",
+        )
+        .all(),
+    ).toEqual([]);
+  });
 });

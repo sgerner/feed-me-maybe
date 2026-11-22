@@ -3,6 +3,7 @@ import Parser from 'rss-parser';
 import { sanitizeHtml } from '#lib/utils/format.ts';
 import {
   MAX_FEED_RESPONSE_BYTES,
+  SafeFetchError,
   fetchSafe,
   readResponseText,
 } from '#lib/server/network.ts';
@@ -25,6 +26,8 @@ export interface FetchResult {
   error?: string;
   httpStatus?: number;
   retryAt?: number;
+  permanentFailure?: boolean;
+  errorCode?: SafeFetchError['code'];
   etag?: string;
   lastModified?: string;
   notModified?: boolean;
@@ -41,6 +44,85 @@ export interface FetchedItem {
   externalUrl?: string;
   categories: string[];
   publishedAt?: Date;
+}
+
+const RAW_FETCHED_BODIES = Symbol.for('feed-me-maybe.raw-fetched-bodies');
+
+export type RawFetchedBodies = {
+  rawSummary: string;
+  summaryBase: string;
+  rawContent: string;
+  contentBase: string;
+};
+
+export function getRawFetchedItemBodies(
+  item: FetchedItem,
+): RawFetchedBodies | undefined {
+  return (item as FetchedItem & { [RAW_FETCHED_BODIES]?: RawFetchedBodies })[
+    RAW_FETCHED_BODIES
+  ];
+}
+
+export function attachLazySanitizedBodies(
+  item: Omit<FetchedItem, 'summary' | 'content'>,
+  bodies: RawFetchedBodies,
+): FetchedItem {
+  let sanitizedSummary: string | undefined;
+  let summaryComputed = false;
+  let sanitizedContent: string | undefined;
+  let contentComputed = false;
+
+  const target = { ...item } as FetchedItem & {
+    [RAW_FETCHED_BODIES]?: RawFetchedBodies;
+  };
+  Object.defineProperty(target, RAW_FETCHED_BODIES, {
+    value: bodies,
+    enumerable: false,
+    configurable: true,
+  });
+  Object.defineProperties(target, {
+    summary: {
+      enumerable: true,
+      configurable: true,
+      get() {
+        if (!summaryComputed) {
+          summaryComputed = true;
+          if (bodies.rawSummary) {
+            const clean = sanitizeHtml(bodies.rawSummary, bodies.summaryBase);
+            const bounded =
+              clean.length > 500
+                ? stripHtml(clean).slice(0, 500).trim()
+                : clean;
+            sanitizedSummary = bounded || undefined;
+          }
+        }
+        return sanitizedSummary;
+      },
+      set(value: string | undefined) {
+        summaryComputed = true;
+        sanitizedSummary = value;
+      },
+    },
+    content: {
+      enumerable: true,
+      configurable: true,
+      get() {
+        if (!contentComputed) {
+          contentComputed = true;
+          if (bodies.rawContent) {
+            sanitizedContent =
+              sanitizeHtml(bodies.rawContent, bodies.contentBase) || undefined;
+          }
+        }
+        return sanitizedContent;
+      },
+      set(value: string | undefined) {
+        contentComputed = true;
+        sanitizedContent = value;
+      },
+    },
+  });
+  return target;
 }
 
 const parser: FeedParser = new Parser({
@@ -512,12 +594,25 @@ export async function fetchFeed(
   } = {},
 ): Promise<FetchResult> {
   try {
-    const parsedUrl = new URL(url);
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return {
+        success: false,
+        items: [],
+        error: 'Invalid URL',
+        permanentFailure: true,
+        errorCode: 'invalid_url',
+      };
+    }
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       return {
         success: false,
         items: [],
         error: 'Only http/https URLs are supported',
+        permanentFailure: true,
+        errorCode: 'invalid_url',
       };
     }
 
@@ -576,6 +671,7 @@ export async function fetchFeed(
         error: `HTTP error ${response.status}`,
         httpStatus: response.status,
         retryAt: readRetryAt(response.headers.get('retry-after')),
+        ...(response.status === 410 ? { permanentFailure: true } : {}),
       };
     }
 
@@ -710,34 +806,34 @@ export async function fetchFeed(
         const safeImageUrl = safeHttpUrl(imageUrl, mediaBase);
         const externalUrl = safeHttpUrl(item.externalUrl, finalUrl);
 
-        const cleanSummary = sanitizeHtml(summary, summaryBase);
-        const boundedSummary =
-          cleanSummary.length > 500
-            ? stripHtml(cleanSummary).slice(0, 500).trim()
-            : cleanSummary;
-
-        return {
-          guid: identifier || undefined,
-          url: safeUrl,
-          title: coerceText(item.title) || 'Untitled',
-          author:
-            coerceText(item.creator) ||
-            coerceText(item.author) ||
-            coerceText(item['dc:creator']) ||
-            undefined,
-          summary: boundedSummary || undefined,
-          content: sanitizeHtml(content, contentBase) || undefined,
-          imageUrl: safeImageUrl || undefined,
-          externalUrl:
-            externalUrl && externalUrl !== safeUrl ? externalUrl : undefined,
-          categories: normalizeTextArray(item.categories),
-          publishedAt: parsePublicationDate(
-            item.pubDate,
-            item.isoDate,
-            item.dcDate,
-            item['dc:date'],
-          ),
-        } as FetchedItem;
+        return attachLazySanitizedBodies(
+          {
+            guid: identifier || undefined,
+            url: safeUrl,
+            title: coerceText(item.title) || 'Untitled',
+            author:
+              coerceText(item.creator) ||
+              coerceText(item.author) ||
+              coerceText(item['dc:creator']) ||
+              undefined,
+            imageUrl: safeImageUrl || undefined,
+            externalUrl:
+              externalUrl && externalUrl !== safeUrl ? externalUrl : undefined,
+            categories: normalizeTextArray(item.categories),
+            publishedAt: parsePublicationDate(
+              item.pubDate,
+              item.isoDate,
+              item.dcDate,
+              item['dc:date'],
+            ),
+          },
+          {
+            rawSummary: summary,
+            summaryBase,
+            rawContent: content,
+            contentBase,
+          },
+        );
       })
       .filter((item): item is FetchedItem => Boolean(item));
 
@@ -755,10 +851,14 @@ export async function fetchFeed(
   } catch (err: unknown) {
     const errorMessage =
       err instanceof Error ? err.message : 'Unknown fetch error';
+    const isPermanentSafeFetch =
+      err instanceof SafeFetchError && err.code !== 'dns_failure';
     return {
       success: false,
       items: [],
       error: errorMessage,
+      ...(err instanceof SafeFetchError ? { errorCode: err.code } : {}),
+      ...(isPermanentSafeFetch ? { permanentFailure: true } : {}),
     };
   }
 }

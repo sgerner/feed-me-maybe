@@ -13,6 +13,7 @@ import {
   decryptProviderCredentials,
   hasProviderCredentials,
 } from '#lib/server/ai/credentials.ts';
+import { readJsonObject } from '#lib/server/request-body.ts';
 
 function isValidCustomModelId(value: string): boolean {
   return (
@@ -25,18 +26,18 @@ function isValidCustomModelId(value: string): boolean {
   );
 }
 
+function isLoopbackHttpHost(url: URL): boolean {
+  if (url.protocol !== 'http:') return false;
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  let body: Record<string, unknown>;
-  try {
-    const parsed: unknown = await request.json();
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return Response.json({ error: 'Invalid body' }, { status: 400 });
-    }
-    body = parsed as Record<string, unknown>;
-  } catch {
+  const body = await readJsonObject(request);
+  if (!body) {
     return Response.json({ error: 'Invalid body' }, { status: 400 });
   }
 
@@ -88,9 +89,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       provider = undefined;
     }
     const currentModelAvailable = Boolean(
-      provider &&
-      (activeConfig.custom_base_url ||
-        provider.models.some((model) => model.id === activeConfig.model_id)),
+      (provider || activeConfig.custom_base_url) &&
+      isValidCustomModelId(activeConfig.model_id.trim()),
     );
     if (!currentModelAvailable) {
       return Response.json(
@@ -109,7 +109,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                   COALESCE(am.processed_at, am.created_at) AS failed_at
            FROM article_ai_metadata am
            JOIN articles a ON a.id = am.article_id
+           JOIN feeds f ON f.id = a.feed_id
            WHERE am.analysis_status IN ('failed', 'skipped')
+             AND f.enabled = 1
+             AND a.cleared_at IS NULL
+             AND COALESCE(a.hidden, 0) = 0
+             AND COALESCE(a.rejected, 0) = 0
+             AND COALESCE(a.thumbs_down, 0) = 0
            UNION
            SELECT a.id AS article_id, a.feed_id,
                   COALESCE(j.completed_at, j.created_at) AS failed_at
@@ -118,7 +124,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
              WHEN json_valid(j.payload) = 1
              THEN json_extract(j.payload, '$.articleId')
            END
+           JOIN feeds f ON f.id = a.feed_id
            WHERE j.type = 'ai_process' AND j.status = 'failed'
+             AND f.enabled = 1
+             AND a.cleared_at IS NULL
+             AND COALESCE(a.hidden, 0) = 0
+             AND COALESCE(a.rejected, 0) = 0
+             AND COALESCE(a.thumbs_down, 0) = 0
          )
          GROUP BY article_id, feed_id
          ORDER BY MAX(failed_at) DESC
@@ -128,7 +140,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     let queued = 0;
     for (const article of candidates) {
-      enqueueAiProcess(article.article_id, { feedId: article.feed_id });
+      if (!enqueueAiProcess(article.article_id, { feedId: article.feed_id })) {
+        continue;
+      }
       db.prepare(
         `UPDATE article_ai_metadata
          SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
@@ -136,6 +150,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       ).run(article.article_id);
       queued += 1;
     }
+    if (queued > 0) wakePoller();
     return Response.json({ success: true, queued, limit: 25 });
   }
 
@@ -233,17 +248,49 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
   let validatedBaseUrl: string | null = null;
   if (typeof customBaseUrl === 'string' && customBaseUrl.trim()) {
+    let parsedCustomUrl: URL;
     try {
-      validatedBaseUrl = (await assertPublicNetworkUrl(customBaseUrl.trim()))
-        .href;
-    } catch (err) {
-      if (err instanceof SafeFetchError) {
-        return Response.json(
-          { error: 'Custom base URL must resolve to a public HTTP(S) host' },
-          { status: 400 },
-        );
+      parsedCustomUrl = new URL(customBaseUrl.trim());
+    } catch {
+      return Response.json(
+        { error: 'Custom base URL must be a valid HTTPS or loopback URL' },
+        { status: 400 },
+      );
+    }
+
+    if (
+      parsedCustomUrl.username ||
+      parsedCustomUrl.password ||
+      parsedCustomUrl.search ||
+      parsedCustomUrl.hash ||
+      (parsedCustomUrl.protocol !== 'https:' &&
+        !isLoopbackHttpHost(parsedCustomUrl))
+    ) {
+      return Response.json(
+        {
+          error:
+            'Custom base URL must use HTTPS (or http://localhost / http://127.0.0.1) without query strings or fragments',
+        },
+        { status: 400 },
+      );
+    }
+
+    if (isLoopbackHttpHost(parsedCustomUrl)) {
+      validatedBaseUrl = parsedCustomUrl.href.replace(/\/+$/, '');
+    } else {
+      try {
+        validatedBaseUrl = (
+          await assertPublicNetworkUrl(parsedCustomUrl.href)
+        ).href.replace(/\/+$/, '');
+      } catch (err) {
+        if (err instanceof SafeFetchError) {
+          return Response.json(
+            { error: 'Custom base URL must resolve to a public HTTPS host' },
+            { status: 400 },
+          );
+        }
+        throw err;
       }
-      throw err;
     }
   }
 
@@ -347,7 +394,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     ).run();
   })();
 
-  if (enqueueAiBackfill({ limit: 25 }) > 0) wakePoller();
+  enqueueAiBackfill({ limit: 25 });
+  wakePoller();
 
   return Response.json({ success: true });
 };
@@ -387,9 +435,8 @@ export const GET: RequestHandler = async ({ locals }) => {
     : undefined;
   const activeModelAvailable = Boolean(
     configs[0] &&
-    activeProvider &&
-    (configs[0].custom_base_url ||
-      activeProvider.models.some((model) => model.id === configs[0].model_id)),
+    (activeProvider || configs[0].custom_base_url) &&
+    isValidCustomModelId(configs[0].model_id.trim()),
   );
   if (configs[0]) configs[0].model_available = activeModelAvailable;
 

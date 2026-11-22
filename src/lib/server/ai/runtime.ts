@@ -35,6 +35,9 @@ function getProviderConfig() {
     .get() as ProviderConfigRow | undefined;
 }
 
+const CREDENTIAL_KEY_PATTERN =
+  /(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|(?:^|[_-])(?:TOKEN|PAT|KEY|SECRET))$/i;
+
 export async function getConfiguredAiClient() {
   const config = getProviderConfig();
 
@@ -55,14 +58,10 @@ export async function getConfiguredAiClient() {
 
   const keyVariable = [
     ...providerInfo.requiredEnvVars.filter((name) =>
-      /(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|(?:^|[_-])TOKEN)$/i.test(
-        name,
-      ),
+      CREDENTIAL_KEY_PATTERN.test(name),
     ),
     ...Object.keys(decryptedConfig).filter((name) =>
-      /(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|(?:^|[_-])TOKEN)$/i.test(
-        name,
-      ),
+      CREDENTIAL_KEY_PATTERN.test(name),
     ),
   ].find((name) => decryptedConfig[name]?.trim());
   const apiKey =

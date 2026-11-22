@@ -556,7 +556,41 @@ export function enqueueFeedFetch(
 export function enqueueAiProcess(
   articleId: string,
   options: { feedId?: string; now?: number } = {},
-): JobRecord {
+): JobRecord | null {
+  const db = getDb();
+  if (options.feedId) {
+    const feed = db
+      .prepare('SELECT enabled FROM feeds WHERE id = ?')
+      .get(options.feedId) as { enabled: number } | undefined;
+    if (feed && !feed.enabled) return null;
+  }
+  const article = db
+    .prepare(
+      `SELECT a.hidden, a.rejected, a.thumbs_down, a.cleared_at, f.enabled AS feed_enabled
+       FROM articles a
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE a.id = ?`,
+    )
+    .get(articleId) as
+    | {
+        hidden: number | null;
+        rejected: number | null;
+        thumbs_down: number | null;
+        cleared_at: number | null;
+        feed_enabled: number | null;
+      }
+    | undefined;
+  if (
+    article &&
+    (!article.feed_enabled ||
+      article.cleared_at != null ||
+      article.hidden ||
+      article.rejected ||
+      article.thumbs_down)
+  ) {
+    return null;
+  }
+
   return enqueueJob(
     AI_PROCESS_JOB_TYPE,
     { articleId, feedId: options.feedId },
@@ -581,6 +615,7 @@ export function enqueueJevProcess(
        JOIN feeds f ON f.id = a.feed_id
        WHERE a.id = ?
          AND f.enabled = 1
+         AND a.cleared_at IS NULL
          AND COALESCE(a.hidden, 0) = 0
          AND COALESCE(a.rejected, 0) = 0
          AND COALESCE(a.thumbs_down, 0) = 0`,
@@ -729,6 +764,7 @@ export function enqueueJevBackfill(
          FROM articles a
          JOIN feeds f ON f.id = a.feed_id
          WHERE f.enabled = 1
+           AND a.cleared_at IS NULL
            AND a.jev_score IS NULL
            AND COALESCE(a.hidden, 0) = 0
            AND COALESCE(a.rejected, 0) = 0
@@ -827,6 +863,7 @@ export function enqueueAiBackfill(
            JOIN feeds f ON f.id = a.feed_id
            LEFT JOIN article_ai_metadata am ON am.article_id = a.id
            WHERE f.enabled = 1
+             AND a.cleared_at IS NULL
              AND COALESCE(a.hidden, 0) = 0
              AND COALESCE(a.rejected, 0) = 0
              AND COALESCE(a.thumbs_down, 0) = 0
@@ -930,6 +967,73 @@ export function deleteJobsForFeeds(feedIds: string[], db = getDb()): number {
     )
     .run(...feedIds, ...feedIds);
   return result.changes;
+}
+
+export function cancelQueuedArticleWorkForFeeds(
+  feedIds: string[],
+  db = getDb(),
+): number {
+  if (feedIds.length === 0) return 0;
+  const placeholders = feedIds.map(() => '?').join(', ');
+  const jobResult = db
+    .prepare(
+      `
+        DELETE FROM jobs
+        WHERE status = 'queued'
+          AND type IN (?, ?)
+          AND json_valid(payload) = 1
+          AND (
+            json_extract(payload, '$.feedId') IN (${placeholders})
+            OR json_extract(payload, '$.articleId') IN (
+              SELECT id FROM articles WHERE feed_id IN (${placeholders})
+            )
+          )
+      `,
+    )
+    .run(AI_PROCESS_JOB_TYPE, JEV_PROCESS_JOB_TYPE, ...feedIds, ...feedIds);
+  const refreshResult = db
+    .prepare(
+      `
+        DELETE FROM ranking_refresh_queue
+        WHERE article_id IN (
+          SELECT id FROM articles WHERE feed_id IN (${placeholders})
+        )
+      `,
+    )
+    .run(...feedIds);
+  return jobResult.changes + refreshResult.changes;
+}
+
+export function cancelQueuedWorkForClearedArticles(
+  feedId: string,
+  db = getDb(),
+): number {
+  const jobResult = db
+    .prepare(
+      `
+        DELETE FROM jobs
+        WHERE status = 'queued'
+          AND type IN (?, ?)
+          AND json_valid(payload) = 1
+          AND json_extract(payload, '$.articleId') IN (
+            SELECT id FROM articles
+            WHERE feed_id = ? AND cleared_at IS NOT NULL
+          )
+      `,
+    )
+    .run(AI_PROCESS_JOB_TYPE, JEV_PROCESS_JOB_TYPE, feedId);
+  const refreshResult = db
+    .prepare(
+      `
+        DELETE FROM ranking_refresh_queue
+        WHERE article_id IN (
+          SELECT id FROM articles
+          WHERE feed_id = ? AND cleared_at IS NOT NULL
+        )
+      `,
+    )
+    .run(feedId);
+  return jobResult.changes + refreshResult.changes;
 }
 
 export function getProviderCooldown(type: string, db = getDb()): number {
@@ -1343,7 +1447,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!articleId) throw new Error('AI process job is missing articleId');
     const article = getDb()
       .prepare(
-        `SELECT a.hidden, a.rejected, a.thumbs_down, f.enabled AS feed_enabled
+        `SELECT a.hidden, a.rejected, a.thumbs_down, a.cleared_at, f.enabled AS feed_enabled
          FROM articles a
          JOIN feeds f ON f.id = a.feed_id
          WHERE a.id = ?`,
@@ -1353,12 +1457,14 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
           hidden: number;
           rejected: number;
           thumbs_down: number;
+          cleared_at: number | null;
           feed_enabled: number;
         }
       | undefined;
     if (
       article &&
       (!article.feed_enabled ||
+        article.cleared_at != null ||
         article.hidden ||
         article.rejected ||
         article.thumbs_down)
@@ -1380,7 +1486,7 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
     if (!articleId) throw new Error('Jev process job is missing articleId');
     const article = getDb()
       .prepare(
-        `SELECT a.jev_score, a.hidden, a.rejected, a.thumbs_down, f.enabled AS feed_enabled
+        `SELECT a.jev_score, a.hidden, a.rejected, a.thumbs_down, a.cleared_at, f.enabled AS feed_enabled
          FROM articles a
          JOIN feeds f ON f.id = a.feed_id
          WHERE a.id = ?`,
@@ -1391,12 +1497,14 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
           hidden: number;
           rejected: number;
           thumbs_down: number;
+          cleared_at: number | null;
           feed_enabled: number;
         }
       | undefined;
     if (
       !article ||
       !article.feed_enabled ||
+      article.cleared_at != null ||
       article.hidden ||
       article.rejected ||
       article.thumbs_down ||
@@ -1420,6 +1528,35 @@ async function executeJob(job: JobRecord): Promise<Record<string, unknown>> {
   }
 
   throw new Error(`Unsupported job type: ${job.type}`);
+}
+
+export function isClaimableFeedFetchJob(
+  jobId: string,
+  now = Date.now(),
+): boolean {
+  if (!jobId) return false;
+  const row = getDb()
+    .prepare(
+      `
+        SELECT 1 FROM jobs
+        WHERE id = ?
+          AND type = ?
+          AND status = 'queued'
+          AND (scheduled_at IS NULL OR scheduled_at <= ?)
+          AND attempts < max_attempts
+          AND NOT EXISTS (
+            SELECT 1 FROM jobs active_feed
+            WHERE active_feed.type = ?
+              AND active_feed.status = 'processing'
+              AND json_valid(active_feed.payload) = 1
+              AND json_extract(active_feed.payload, '$.feedId') =
+                  CASE WHEN json_valid(jobs.payload) = 1
+                       THEN json_extract(jobs.payload, '$.feedId') END
+          )
+      `,
+    )
+    .get(jobId, FEED_FETCH_JOB_TYPE, now, FEED_FETCH_JOB_TYPE);
+  return Boolean(row);
 }
 
 let activeRun: Promise<RunJobsResult> | null = null;
@@ -1484,35 +1621,53 @@ async function runDueJobsInternal(
   try {
     while (!workerFailure) {
       let job: JobRecord | null = null;
-      const allowFeed =
+      const canClaimFeed = () =>
         activeFeeds < MAX_CONCURRENT_FEED_FETCHES &&
         control.feedProcessed < control.feedBudget;
-      const canClaimScoring = control.scoringProcessed < control.scoringBudget;
-      const allowAi = !activeAi && canClaimScoring;
-      const allowJev =
+      const canClaimScoring = () =>
+        control.scoringProcessed < control.scoringBudget;
+      const canClaimAi = () => !activeAi && canClaimScoring();
+      const canClaimJev = () =>
         !activeJev &&
-        canClaimScoring &&
+        canClaimScoring() &&
         isRankingProviderConfigured() &&
         jevExecutions < DEFAULT_JEV_JOBS_PER_RUN;
-      if (allowFeed || allowAi || allowJev) {
+      if (canClaimFeed() || canClaimAi() || canClaimJev()) {
         const now = getNow();
-        if (canClaimScoring) {
+        if (canClaimScoring()) {
           await flushRankingRefreshQueue(now, DEFAULT_JEV_QUEUE_CAPACITY);
           if (jevExecutions < DEFAULT_JEV_JOBS_PER_RUN) {
             enqueueJevBackfill({ now });
           }
         }
-        const jobId = allowFeed
-          ? control.targetedFeedJobIds.values().next().value
-          : undefined;
-        job = claimNextJob(now, {
-          allowFeed,
-          allowAi,
-          allowJev,
-          ...(jobId ? { jobId } : {}),
-        });
-        if (job && jobId === job.id) {
-          control.targetedFeedJobIds.delete(job.id);
+        const allowFeed = canClaimFeed();
+        const allowAi = canClaimAi();
+        const allowJev = canClaimJev();
+        let jobId: string | undefined;
+        if (allowFeed) {
+          for (const candidateId of control.targetedFeedJobIds) {
+            if (isClaimableFeedFetchJob(candidateId, now)) {
+              jobId = candidateId;
+              break;
+            }
+            control.targetedFeedJobIds.delete(candidateId);
+          }
+        }
+        if (jobId) {
+          control.targetedFeedJobIds.delete(jobId);
+          job = claimNextJob(now, {
+            allowFeed: true,
+            allowAi: false,
+            allowJev: false,
+            jobId,
+          });
+        }
+        if (!job && (allowFeed || allowAi || allowJev)) {
+          job = claimNextJob(now, {
+            allowFeed,
+            allowAi,
+            allowJev,
+          });
         }
       }
       if (!job) {
@@ -1568,6 +1723,11 @@ export function runDueJobs(
   options: RunJobsOptions = {},
 ): Promise<RunJobsResult> {
   const budget = Math.max(1, Math.floor(options.maxJobs ?? 16));
+  const now = options.now ?? Date.now();
+  const claimableJobId =
+    options.jobId && isClaimableFeedFetchJob(options.jobId, now)
+      ? options.jobId
+      : undefined;
   if (activeRun && runControl) {
     runControl.feedBudget = Math.max(
       runControl.feedBudget,
@@ -1577,7 +1737,7 @@ export function runDueJobs(
       runControl.scoringBudget,
       runControl.scoringProcessed + budget,
     );
-    if (options.jobId) runControl.targetedFeedJobIds.add(options.jobId);
+    if (claimableJobId) runControl.targetedFeedJobIds.add(claimableJobId);
     runControl.wake?.();
     return activeRun;
   }
@@ -1586,7 +1746,7 @@ export function runDueJobs(
     scoringBudget: budget,
     feedProcessed: 0,
     scoringProcessed: 0,
-    targetedFeedJobIds: new Set(options.jobId ? [options.jobId] : []),
+    targetedFeedJobIds: new Set(claimableJobId ? [claimableJobId] : []),
   };
   activeRun = runDueJobsInternal(options, runControl).finally(() => {
     activeRun = null;
