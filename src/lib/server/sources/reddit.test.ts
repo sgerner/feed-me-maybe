@@ -10,7 +10,9 @@ import {
 
 vi.mock('node:dns/promises', () => ({
   default: {
-    lookup: vi.fn().mockResolvedValue([{ address: '8.8.8.8', family: 4 }]),
+    lookup: vi
+      .fn()
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
   },
 }));
 

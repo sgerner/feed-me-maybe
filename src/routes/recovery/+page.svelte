@@ -660,6 +660,11 @@
   async function undoRestoreOperation(
     operationId: string,
     snapshotArticles: RecoveryArticle[],
+    restoreFilters: {
+      reason: RecoveryReasonFilter;
+      feedId: string;
+      query: string;
+    },
   ) {
     try {
       const undoRes = await fetchWithCsrf('/api/article-state/undo', {
@@ -685,26 +690,31 @@
         return;
       }
 
-      const revertedItems = snapshotArticles.filter((item) =>
-        revertedIds.has(item.id),
-      );
-      const matchingItems = revertedItems.filter((item) => {
-        if (selectedFeedId && item.feedId !== selectedFeedId) return false;
-        return matchesActiveReason(effectiveHideReason(item), selectedReason);
-      });
+      const filtersChanged =
+        selectedReason !== restoreFilters.reason ||
+        selectedFeedId !== restoreFilters.feedId ||
+        appliedQuery.trim() !== restoreFilters.query;
+      if (filtersChanged) {
+        selectedIds.clear();
+        await loadRecovery({ silent: true });
+      } else {
+        const revertedItems = snapshotArticles.filter((item) =>
+          revertedIds.has(item.id),
+        );
+        const existingIds = new SvelteSet(articles.map((item) => item.id));
+        const merged = [
+          ...articles,
+          ...revertedItems.filter((item) => !existingIds.has(item.id)),
+        ].sort(compareRecoveryOrder);
+        articles = merged;
+        adjustLocalCounts(revertedItems, 1);
 
-      const existingIds = new SvelteSet(articles.map((item) => item.id));
-      const merged = [
-        ...articles,
-        ...matchingItems.filter((item) => !existingIds.has(item.id)),
-      ].sort(compareRecoveryOrder);
-      articles = merged;
-      adjustLocalCounts(revertedItems, 1);
+        if (!nextCursor) {
+          void loadRecovery({ silent: true });
+        }
+      }
 
       void invalidate('app:reader-counts');
-      if (!nextCursor) {
-        void loadRecovery({ silent: true });
-      }
 
       const count = revertedIds.size;
       statusAnnouncement =
@@ -740,6 +750,11 @@
     if (pendingArticles.length === 0) return;
 
     const targetIds = pendingArticles.map((item) => item.id);
+    const restoreFilters = {
+      reason: selectedReason,
+      feedId: selectedFeedId,
+      query: appliedQuery.trim(),
+    };
     const hadFocusAtStart =
       trigger !== null && document.activeElement === trigger;
 
@@ -847,7 +862,11 @@
         addToast(toastLabel, 'success', 5000, {
           label: 'Undo',
           run: async () => {
-            await undoRestoreOperation(operationId, snapshotArticles);
+            await undoRestoreOperation(
+              operationId,
+              snapshotArticles,
+              restoreFilters,
+            );
           },
         });
       } else {
