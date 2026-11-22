@@ -8,6 +8,14 @@ import {
   fetchRedditSource,
 } from './reddit';
 
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi
+      .fn()
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+  },
+}));
+
 vi.mock('#lib/server/feed/fetcher.ts', async (importOriginal) => {
   const actual = (await importOriginal()) as any;
   return {
