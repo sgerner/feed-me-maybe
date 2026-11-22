@@ -4,7 +4,14 @@ import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, depends }) => {
   if (!locals.sessionId) {
-    return { feeds: [], pinnedSearches: [], userId: 'admin' };
+    return {
+      feeds: [],
+      pinnedSearches: [],
+      totalFeeds: 0,
+      pausedFeeds: 0,
+      feedCategories: [],
+      userId: 'admin',
+    };
   }
 
   depends('app:reader-counts');
@@ -30,6 +37,29 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
   }>;
   const pinnedSearches = listPinnedSavedSearches();
 
+  const feedSummary = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) AS total_feeds,
+        SUM(CASE WHEN COALESCE(enabled, 1) = 0 THEN 1 ELSE 0 END) AS paused_feeds
+      FROM feeds
+    `,
+    )
+    .get() as
+    { total_feeds: number | null; paused_feeds: number | null } | undefined;
+
+  const categoryRows = db
+    .prepare(
+      `
+      SELECT DISTINCT TRIM(category) AS category
+      FROM feeds
+      WHERE category IS NOT NULL AND TRIM(category) != ''
+      ORDER BY category COLLATE NOCASE ASC
+    `,
+    )
+    .all() as Array<{ category: string }>;
+
   const openMode = db
     .prepare("SELECT value FROM app_settings WHERE key = 'article_open_mode'")
     .get() as { value: string } | undefined;
@@ -39,6 +69,9 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
 
   return {
     feeds,
+    totalFeeds: Number(feedSummary?.total_feeds || 0),
+    pausedFeeds: Number(feedSummary?.paused_feeds || 0),
+    feedCategories: categoryRows.map((row) => row.category),
     pinnedSearches,
     sessionId: locals.sessionId,
     // This app currently has one local account. Keep the offline scope stable
