@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import type { PreferenceMemoryDelta } from './preferences';
 
 describe('preference learning model', () => {
   const testDbPath = join(process.cwd(), 'data', 'test-preferences.db');
@@ -595,5 +596,61 @@ describe('preference learning model', () => {
         .prepare('SELECT hidden FROM articles WHERE id = ?')
         .get('manual-hidden-reconcile'),
     ).toEqual({ hidden: 1 });
+  });
+
+  it('retains active preference rows on partial reversals after multiple boosts', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const {
+      updatePreferenceMemoryFromInteraction,
+      reversePreferenceMemoryDeltas,
+      getDecayedStrength,
+    } = await import('./preferences');
+    const db = getDb();
+    db.prepare('DELETE FROM user_preference_memory').run();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-clamp', 'https://example.com/clamp.xml', 'Clamp', now, now);
+
+    for (const id of ['clamp-1', 'clamp-2', 'clamp-3']) {
+      db.prepare(
+        'INSERT OR REPLACE INTO articles (id, feed_id, url, title, author, categories, hidden, heuristic_score, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, 50, ?, ?, ?)',
+      ).run(
+        id,
+        'feed-clamp',
+        `https://example.com/${id}`,
+        `Distributed Systems ${id}`,
+        'Distributed Author',
+        JSON.stringify(['Distributed']),
+        now,
+        now,
+        now,
+      );
+    }
+
+    const deltas1: PreferenceMemoryDelta[] = [];
+    const deltas2: PreferenceMemoryDelta[] = [];
+    const deltas3: PreferenceMemoryDelta[] = [];
+    updatePreferenceMemoryFromInteraction('clamp-1', 'boost', deltas1);
+    updatePreferenceMemoryFromInteraction('clamp-2', 'boost', deltas2);
+    updatePreferenceMemoryFromInteraction('clamp-3', 'boost', deltas3);
+
+    reversePreferenceMemoryDeltas(deltas1, now);
+    reversePreferenceMemoryDeltas(deltas2, now);
+
+    const remaining = db
+      .prepare(
+        "SELECT strength, evidence_count, last_reinforced FROM user_preference_memory WHERE label = 'topic:distributed' AND polarity = 'positive'",
+      )
+      .get() as
+      | { strength: number; evidence_count: number; last_reinforced: number }
+      | undefined;
+
+    expect(remaining).toBeDefined();
+    expect(remaining!.evidence_count).toBe(1);
+    expect(
+      getDecayedStrength(remaining!.strength, remaining!.last_reinforced),
+    ).toBeCloseTo(0.45 * 1.1, 3);
   });
 });

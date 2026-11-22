@@ -81,7 +81,7 @@ function getFeedbackTargets(
   articleIds: string[],
   visibleArticleIds: string[],
   changedFeatureKeys: string[],
-  type: FeedbackType,
+  includeFeedSiblings: boolean,
   now: number,
 ): string[] {
   const db = getDb();
@@ -144,7 +144,7 @@ function getFeedbackTargets(
     ? getPreferenceFeatureKeysForArticles(affectedRows.map((row) => row.id))
     : new Map<string, Set<string>>();
   const feedIds =
-    (type === 'thumbs_down' || type === 'hide') && interactedIds.length
+    includeFeedSiblings && interactedIds.length
       ? new Set(
           (
             db
@@ -245,6 +245,58 @@ export function refreshRankingAfterProfileMutation(articleId: string): void {
   wakePoller();
 }
 
+function refreshCohortTargets(input: {
+  articleIds: string[];
+  changedFeatureKeys: string[];
+  visibleArticleIds?: unknown;
+  includeFeedSiblings: boolean;
+  revision: number;
+  now: number;
+}): string[] {
+  const db = getDb();
+  const targetIds = getFeedbackTargets(
+    input.articleIds,
+    normalizeIds(input.visibleArticleIds, VISIBLE_ARTICLE_LIMIT),
+    input.changedFeatureKeys,
+    input.includeFeedSiblings,
+    input.now,
+  );
+  const enabledTargetIds = getExistingIds(targetIds, true);
+  const refreshTargets = db.transaction(() => {
+    if (enabledTargetIds.length) {
+      db.prepare(
+        `INSERT INTO ranking_refresh_queue
+           (article_id, requested_revision, heuristic_revision, not_before, created_at)
+         SELECT id, ?, NULL, MAX(?, COALESCE(ranking_refreshed_at, 0) + ?), ?
+         FROM articles WHERE id IN (SELECT value FROM json_each(?))
+         ON CONFLICT(article_id) DO UPDATE SET
+           requested_revision = MAX(ranking_refresh_queue.requested_revision, excluded.requested_revision),
+           not_before = MAX(ranking_refresh_queue.not_before, excluded.not_before)`,
+      ).run(
+        input.revision,
+        input.now,
+        RANKING_REFRESH_RATE_LIMIT_MS,
+        input.now,
+        JSON.stringify(enabledTargetIds),
+      );
+      db.prepare(
+        `UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '', combined_score = NULL
+         WHERE id IN (SELECT value FROM json_each(?))`,
+      ).run(JSON.stringify(enabledTargetIds));
+    }
+    for (const articleId of targetIds) updateHeuristicScore(articleId);
+    if (enabledTargetIds.length) {
+      db.prepare(
+        `UPDATE ranking_refresh_queue SET heuristic_revision = ?
+         WHERE requested_revision = ? AND article_id IN (SELECT value FROM json_each(?))`,
+      ).run(input.revision, input.revision, JSON.stringify(enabledTargetIds));
+    }
+  });
+  refreshTargets.immediate();
+  if (enabledTargetIds.length) wakePoller();
+  return targetIds;
+}
+
 /**
  * Learn explicit feedback and refresh a bounded ranking cohort. The only
  * expensive Jev work is durably queued for the background worker.
@@ -256,6 +308,9 @@ export function refreshRankingAfterFeedback(input: {
   interactionAlreadyRecorded?: boolean;
   operationId?: string;
   idempotencyKey?: string;
+  queuedAt?: number;
+  extraFeatureKeys?: string[];
+  includeFeedSiblings?: boolean;
 }): { revision: number; refreshedArticleIds: string[] } {
   const db = getDb();
   const now = Date.now();
@@ -266,7 +321,7 @@ export function refreshRankingAfterFeedback(input: {
     return { revision: getRankingFeedbackRevision(), refreshedArticleIds: [] };
   }
 
-  const learnedFeatures = new Set<string>();
+  const learnedFeatures = new Set<string>(input.extraFeatureKeys || []);
   const updateMemory = db.transaction(() => {
     for (const articleId of articleIds) {
       const preferenceDeltas: PreferenceMemoryDelta[] = [];
@@ -290,6 +345,9 @@ export function refreshRankingAfterFeedback(input: {
             ...(input.idempotencyKey
               ? { idempotency_key: input.idempotencyKey }
               : {}),
+            ...(input.queuedAt !== undefined
+              ? { queued_at: input.queuedAt }
+              : {}),
             preference_deltas: preferenceDeltas,
           }),
         );
@@ -306,48 +364,58 @@ export function refreshRankingAfterFeedback(input: {
     return { revision, refreshedArticleIds: articleIds };
   }
 
-  const targetIds = getFeedbackTargets(
+  const targetIds = refreshCohortTargets({
     articleIds,
-    normalizeIds(input.visibleArticleIds, VISIBLE_ARTICLE_LIMIT),
-    [...learnedFeatures],
-    input.type,
+    changedFeatureKeys: [...learnedFeatures],
+    visibleArticleIds: input.visibleArticleIds,
+    includeFeedSiblings:
+      input.type === 'thumbs_down' ||
+      input.type === 'hide' ||
+      Boolean(input.includeFeedSiblings),
+    revision,
     now,
-  );
-  const enabledTargetIds = getExistingIds(targetIds, true);
-  const refreshTargets = db.transaction(() => {
-    if (enabledTargetIds.length) {
-      db.prepare(
-        `INSERT INTO ranking_refresh_queue
-           (article_id, requested_revision, heuristic_revision, not_before, created_at)
-         SELECT id, ?, NULL, MAX(?, COALESCE(ranking_refreshed_at, 0) + ?), ?
-         FROM articles WHERE id IN (SELECT value FROM json_each(?))
-         ON CONFLICT(article_id) DO UPDATE SET
-           requested_revision = MAX(ranking_refresh_queue.requested_revision, excluded.requested_revision),
-           not_before = MAX(ranking_refresh_queue.not_before, excluded.not_before)`,
-      ).run(
-        revision,
-        now,
-        RANKING_REFRESH_RATE_LIMIT_MS,
-        now,
-        JSON.stringify(enabledTargetIds),
-      );
-      db.prepare(
-        `UPDATE articles SET jev_score = NULL, jev_processed_at = NULL, jev_error = '', combined_score = NULL
-         WHERE id IN (SELECT value FROM json_each(?))`,
-      ).run(JSON.stringify(enabledTargetIds));
-    }
-    for (const articleId of targetIds) updateHeuristicScore(articleId);
-    if (enabledTargetIds.length) {
-      db.prepare(
-        `UPDATE ranking_refresh_queue SET heuristic_revision = ?
-         WHERE requested_revision = ? AND article_id IN (SELECT value FROM json_each(?))`,
-      ).run(revision, revision, JSON.stringify(enabledTargetIds));
-    }
   });
-  refreshTargets.immediate();
-  if (enabledTargetIds.length) wakePoller();
 
   return { revision, refreshedArticleIds: targetIds };
+}
+
+/** Refresh a bounded ranking cohort after preference deltas are reversed. */
+export function refreshRankingAfterReversal(input: {
+  articleIds: string[];
+  changedFeatureKeys: string[];
+  visibleArticleIds?: unknown;
+  includeFeedSiblings?: boolean;
+}): { revision: number; refreshedArticleIds: string[] } {
+  const db = getDb();
+  const now = Date.now();
+  const articleIds = getExistingIds(
+    normalizeIds(input.articleIds, MAX_FEEDBACK_ARTICLES),
+  );
+  if (!articleIds.length) {
+    return { revision: getRankingFeedbackRevision(), refreshedArticleIds: [] };
+  }
+
+  const featureKeys = [...new Set(input.changedFeatureKeys)].filter(Boolean);
+  if (!featureKeys.length && !input.includeFeedSiblings) {
+    for (const articleId of articleIds) updateHeuristicScore(articleId);
+    return {
+      revision: getRankingFeedbackRevision(),
+      refreshedArticleIds: articleIds,
+    };
+  }
+
+  const revision = db
+    .transaction(() => advanceRankingFeedbackRevision(now))
+    .immediate();
+  const refreshedArticleIds = refreshCohortTargets({
+    articleIds,
+    changedFeatureKeys: featureKeys,
+    visibleArticleIds: input.visibleArticleIds,
+    includeFeedSiblings: Boolean(input.includeFeedSiblings),
+    revision,
+    now,
+  });
+  return { revision, refreshedArticleIds };
 }
 
 /** Drain a small batch of durable refresh requests before ordinary backfill. */

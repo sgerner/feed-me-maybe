@@ -356,4 +356,282 @@ describe('article state foundation', () => {
     expect(stateCounts.total).toBe(beforeState.total);
     expect(getArticleStateCounts('feed-paused').total).toBe(0);
   });
+
+  it('reverses save and read preference memory on unsave and unread without inflating scores', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applyArticleState, getArticleState } =
+      await import('./article-state');
+    const db = getDb();
+    db.prepare('UPDATE articles SET author = ? WHERE id = ?').run(
+      'Save Author',
+      'state-a',
+    );
+
+    applyArticleState({ articleIds: ['state-a'], action: 'save' });
+    const afterFirstSave = db
+      .prepare(
+        "SELECT strength, evidence_count FROM user_preference_memory WHERE label = 'author:save_author'",
+      )
+      .get() as { strength: number; evidence_count: number };
+    expect(afterFirstSave.evidence_count).toBe(1);
+
+    applyArticleState({ articleIds: ['state-a'], action: 'unsave' });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM user_preference_memory WHERE label = 'author:save_author'",
+        )
+        .get(),
+    ).toEqual({ c: 0 });
+    expect(getArticleState('state-a')?.saved).toBe(false);
+
+    applyArticleState({ articleIds: ['state-a'], action: 'save' });
+    const afterSecondSave = db
+      .prepare(
+        "SELECT strength, evidence_count FROM user_preference_memory WHERE label = 'author:save_author'",
+      )
+      .get() as { strength: number; evidence_count: number };
+    expect(afterSecondSave.evidence_count).toBe(1);
+    expect(afterSecondSave.strength).toBeCloseTo(afterFirstSave.strength, 5);
+
+    applyArticleState({ articleIds: ['state-a'], action: 'read' });
+    expect(
+      db
+        .prepare(
+          "SELECT evidence_count FROM user_preference_memory WHERE label = 'author:save_author'",
+        )
+        .get(),
+    ).toEqual({ evidence_count: 2 });
+
+    applyArticleState({ articleIds: ['state-a'], action: 'unread' });
+    const readRow = db
+      .prepare(
+        "SELECT metadata FROM user_interactions WHERE article_id = 'state-a' AND interaction_type = 'read'",
+      )
+      .get() as { metadata: string };
+    expect(JSON.parse(readRow.metadata).undone_at).toEqual(expect.any(Number));
+    expect(
+      db
+        .prepare(
+          "SELECT evidence_count FROM user_preference_memory WHERE label = 'author:save_author'",
+        )
+        .get(),
+    ).toEqual({ evidence_count: 1 });
+  });
+
+  it('retracts superseded deltas on reaction switches, supports unthumbs_up, and dispatches thumbs_up webhook', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applyArticleState, getArticleState } =
+      await import('./article-state');
+    const db = getDb();
+    db.prepare('UPDATE articles SET author = ? WHERE id = ?').run(
+      'Reaction Author',
+      'state-a',
+    );
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO webhooks (id, url, name, secret, events, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+    ).run(
+      'wh-like',
+      'https://hooks.example.com/like',
+      'Like Hook',
+      null,
+      JSON.stringify(['article.thumbs_up']),
+      now,
+      now,
+    );
+
+    const liked = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'thumbs_up',
+    });
+    expect(liked.changes[0]?.after.thumbsUp).toBe(true);
+    expect(
+      db
+        .prepare(
+          "SELECT polarity, evidence_count FROM user_preference_memory WHERE label = 'author:reaction_author'",
+        )
+        .all(),
+    ).toEqual([{ polarity: 'positive', evidence_count: 1 }]);
+
+    // Switching to reject retracts positive thumbs_up delta
+    applyArticleState({ articleIds: ['state-a'], action: 'reject' });
+    expect(
+      db
+        .prepare(
+          "SELECT polarity, evidence_count FROM user_preference_memory WHERE label = 'author:reaction_author'",
+        )
+        .all(),
+    ).toEqual([{ polarity: 'negative', evidence_count: 1 }]);
+
+    // Switching to boost retracts negative reject delta and unhides
+    applyArticleState({ articleIds: ['state-a'], action: 'boost' });
+    expect(getArticleState('state-a')).toMatchObject({
+      thumbsUp: true,
+      thumbsDown: false,
+      rejected: false,
+      hidden: false,
+    });
+    expect(
+      db
+        .prepare(
+          "SELECT polarity, evidence_count FROM user_preference_memory WHERE label = 'author:reaction_author'",
+        )
+        .all(),
+    ).toEqual([{ polarity: 'positive', evidence_count: 1 }]);
+
+    // Explicit unthumbs_up clears thumbs_up and retracts boost delta
+    applyArticleState({ articleIds: ['state-a'], action: 'unthumbs_up' });
+    expect(getArticleState('state-a')?.thumbsUp).toBe(false);
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM user_preference_memory WHERE label = 'author:reaction_author'",
+        )
+        .get(),
+    ).toEqual({ c: 0 });
+  });
+
+  it('does not bump state_version on no-op writes and restores visibility on unreject/unhide', async () => {
+    const { applyArticleState, getArticleState, undoArticleState } =
+      await import('./article-state');
+
+    const saved = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'save',
+    });
+    const versionAfterSave = getArticleState('state-a')!.stateVersion;
+
+    const noopSave = applyArticleState({
+      articleIds: ['state-a'],
+      action: 'save',
+    });
+    expect(noopSave.changes[0]?.changed).toBe(false);
+    expect(getArticleState('state-a')!.stateVersion).toBe(versionAfterSave);
+
+    // Earlier undo still succeeds without conflict after no-op write
+    const undone = undoArticleState({ operationId: saved.operationId });
+    expect(undone.restoredArticleIds).toEqual(['state-a']);
+
+    // unreject clears hidden, unhide clears rejected
+    applyArticleState({ articleIds: ['state-a'], action: 'reject' });
+    applyArticleState({ articleIds: ['state-a'], action: 'unreject' });
+    expect(getArticleState('state-a')).toMatchObject({
+      rejected: false,
+      thumbsDown: false,
+      hidden: false,
+    });
+
+    applyArticleState({ articleIds: ['state-a'], action: 'reject' });
+    applyArticleState({ articleIds: ['state-a'], action: 'unhide' });
+    expect(getArticleState('state-a')).toMatchObject({
+      rejected: false,
+      thumbsDown: false,
+      hidden: false,
+    });
+  });
+
+  it('guards stale offline replays with queuedAt and paginates recovery endpoints cleanly', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { applyArticleState, getArticleState, ArticleStateError } =
+      await import('./article-state');
+    const { GET: getArticlesRecovery } =
+      await import('../../routes/api/articles/state/recovery/+server');
+    const { GET: getStateRecovery } =
+      await import('../../routes/api/article-state/recovery/+server');
+    const db = getDb();
+
+    // Multi-action offline batch succeeds in chronological order
+    applyArticleState({
+      articleIds: ['state-a'],
+      action: 'save',
+      idempotencyKey: 'offline:save-1',
+      queuedAt: Date.now() - 2000,
+    });
+    applyArticleState({
+      articleIds: ['state-a'],
+      action: 'read',
+      idempotencyKey: 'offline:read-1',
+      queuedAt: Date.now() - 1000,
+    });
+    expect(getArticleState('state-a')).toMatchObject({
+      saved: true,
+      read: true,
+    });
+
+    // Newer server mutation blocks older offline replay with 409
+    const serverTime = Date.now();
+    applyArticleState({
+      articleIds: ['state-a'],
+      action: 'unsave',
+    });
+    expect(() =>
+      applyArticleState({
+        articleIds: ['state-a'],
+        action: 'hide',
+        idempotencyKey: 'offline:stale-hide',
+        queuedAt: serverTime - 5000,
+      }),
+    ).toThrow(ArticleStateError);
+    expect(getArticleState('state-a')?.hidden).toBe(false);
+
+    // Recovery kind=all excludes visible items and honors cursor pagination
+    const now = Date.now();
+    db.prepare(
+      'INSERT INTO articles (id, feed_id, url, title, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'state-c',
+      'feed-state',
+      'https://example.com/c',
+      'State C',
+      now + 10,
+      now + 10,
+      now + 10,
+    );
+    applyArticleState({ articleIds: ['state-a'], action: 'hide' });
+    applyArticleState({ articleIds: ['state-b'], action: 'reject' });
+    // state-c remains visible
+
+    const page1Res = await getArticlesRecovery({
+      url: new URL(
+        'http://localhost/api/articles/state/recovery?kind=all&limit=1',
+      ),
+      locals: { sessionId: 'sess' },
+    } as never);
+    const page1 = (await page1Res.json()) as {
+      articles: Array<{ id: string }>;
+      nextCursor: string | null;
+      total: number;
+    };
+    expect(page1.total).toBe(2);
+    expect(page1.articles).toHaveLength(1);
+    expect(page1.nextCursor).toBeTruthy();
+
+    const page2Res = await getArticlesRecovery({
+      url: new URL(
+        `http://localhost/api/articles/state/recovery?kind=all&limit=1&cursor=${encodeURIComponent(page1.nextCursor!)}`,
+      ),
+      locals: { sessionId: 'sess' },
+    } as never);
+    const page2 = (await page2Res.json()) as {
+      articles: Array<{ id: string }>;
+      nextCursor: string | null;
+    };
+    expect(page2.articles).toHaveLength(1);
+    expect(
+      new Set([...page1.articles, ...page2.articles].map((a) => a.id)),
+    ).toEqual(new Set(['state-a', 'state-b']));
+    expect(page2.nextCursor).toBeNull();
+
+    const altRecoveryRes = await getStateRecovery({
+      url: new URL(
+        'http://localhost/api/article-state/recovery?kind=rejected&limit=10',
+      ),
+      locals: { sessionId: 'sess' },
+    } as never);
+    const altRecovery = (await altRecoveryRes.json()) as {
+      articles: Array<{ id: string }>;
+    };
+    expect(altRecovery.articles.map((a) => a.id)).toEqual(['state-b']);
+  });
 });

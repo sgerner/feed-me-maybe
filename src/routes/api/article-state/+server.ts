@@ -36,6 +36,8 @@ function actionFromBody(body: Record<string, unknown>): ArticleStateAction {
     saved: value ? 'save' : 'unsave',
     hidden: value ? 'hide' : 'unhide',
     rejected: value ? 'reject' : 'unreject',
+    thumbsUp: value ? 'thumbs_up' : 'unthumbs_up',
+    thumbs_up: value ? 'thumbs_up' : 'unthumbs_up',
   };
   const action = actions[field];
   if (!action) throw new ArticleStateError(`Unsupported state field: ${field}`);

@@ -743,4 +743,70 @@ describe('ranking freshness after explicit feedback', () => {
       .get('old-saved-art') as { heuristic_score: number };
     expect(savedRow.heuristic_score).toBeGreaterThan(60);
   });
+
+  it('refreshes sibling cohort heuristic scores on undo, restore, and unreject', async () => {
+    await article('rev-source');
+    await article('rev-sibling');
+    const { applyArticleState, undoArticleState } =
+      await import('./article-state');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+
+    const rejected = applyArticleState({
+      articleIds: ['rev-source'],
+      action: 'reject',
+      idempotencyKey: 'cohort-reject-1',
+    });
+    const siblingAfterReject = (
+      db
+        .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+        .get('rev-sibling') as { heuristic_score: number }
+    ).heuristic_score;
+    expect(siblingAfterReject).toBeLessThan(50);
+
+    undoArticleState({ operationId: rejected.operationId });
+    expect(
+      (
+        db
+          .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+          .get('rev-sibling') as { heuristic_score: number }
+      ).heuristic_score,
+    ).toBe(50);
+
+    applyArticleState({
+      articleIds: ['rev-source'],
+      action: 'reject',
+      idempotencyKey: 'cohort-reject-2',
+    });
+    applyArticleState({
+      articleIds: ['rev-source'],
+      action: 'restore',
+      idempotencyKey: 'cohort-restore-2',
+    });
+    expect(
+      (
+        db
+          .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+          .get('rev-sibling') as { heuristic_score: number }
+      ).heuristic_score,
+    ).toBe(50);
+
+    applyArticleState({
+      articleIds: ['rev-source'],
+      action: 'reject',
+      idempotencyKey: 'cohort-reject-3',
+    });
+    applyArticleState({
+      articleIds: ['rev-source'],
+      action: 'unreject',
+      idempotencyKey: 'cohort-unreject-3',
+    });
+    expect(
+      (
+        db
+          .prepare('SELECT heuristic_score FROM articles WHERE id = ?')
+          .get('rev-sibling') as { heuristic_score: number }
+      ).heuristic_score,
+    ).toBe(50);
+  });
 });

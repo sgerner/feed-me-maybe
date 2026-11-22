@@ -339,13 +339,14 @@ export async function processArticle(
 
       const readerState = db
         .prepare(
-          'SELECT read, saved, hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+          'SELECT read, saved, hidden, rejected, thumbs_up, thumbs_down FROM articles WHERE id = ?',
         )
         .get(articleId) as {
         read: number;
         saved: number;
         hidden: number;
         rejected: number;
+        thumbs_up: number;
         thumbs_down: number;
       };
       const visible =
@@ -359,7 +360,12 @@ export async function processArticle(
         ).run(articleId);
       }
 
-      if (visible && !readerState.read && !readerState.saved) {
+      if (
+        visible &&
+        !readerState.read &&
+        !readerState.saved &&
+        !readerState.thumbs_up
+      ) {
         applyPreferenceModelToArticle(articleId);
       } else {
         updateHeuristicScore(articleId);

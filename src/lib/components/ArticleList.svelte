@@ -3,33 +3,28 @@
   import { formatContent, sanitizeHtml } from '#lib/utils/format.ts';
   import { getContext, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { afterNavigate, goto, invalidate, refreshAll } from '$app/navigation';
+  import { afterNavigate, goto, refreshAll } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
+  import {
+    executeArticleTriage,
+    shareArticleLink,
+    type TriageAction,
+  } from '#lib/client/triage.ts';
   import {
     getSingleKeyShortcutsEnabled,
     SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
   } from '#lib/utils/keyboard-shortcuts.ts';
   import {
-    applyMutationToCachedArticle,
     cacheArticles,
     enqueueOfflineMutation,
     getCachedArticles,
     matchesOfflineVisibility,
-    type OfflineMutationType,
     type OfflineArticle,
   } from '#lib/offline/index.ts';
 
-  type InteractionType =
-    | 'open'
-    | 'read'
-    | 'hide'
-    | 'save'
-    | 'unsave'
-    | 'thumbs_up'
-    | 'thumbs_down'
-    | 'boost';
-  type ReactionType = 'thumbs_up' | 'thumbs_down' | 'boost';
+  type InteractionType = TriageAction;
+  type ReactionType = 'thumbs_up' | 'unthumbs_up' | 'thumbs_down' | 'boost';
   const MAX_VISIBLE_ARTICLE_IDS = 30;
   const VISIBLE_ARTICLE_RECENCY_MS = 10 * 60 * 1000;
 
@@ -99,30 +94,6 @@
     getContext<(article: OfflineArticle) => Promise<void>>('openCachedArticle');
 
   const RETURNING_FROM_ARTICLE_KEY = 'feed-me-maybe:returning-from-article';
-  const INTERACTION_LABELS: Partial<Record<InteractionType, string>> = {
-    hide: 'Hidden',
-    save: 'Saved',
-    unsave: 'Removed from Saved',
-    thumbs_up: 'Liked',
-    thumbs_down: 'Disliked and hidden',
-    boost: 'Boosted and restored',
-    read: 'Marked as read',
-  };
-
-  function getOfflineMutationType(
-    type: InteractionType,
-  ): OfflineMutationType | null {
-    switch (type) {
-      case 'read':
-      case 'hide':
-      case 'save':
-      case 'unsave':
-      case 'thumbs_down':
-        return type;
-      default:
-        return null;
-    }
-  }
 
   function offlineScope(): string {
     return String(pageStore.data.userId || 'admin');
@@ -527,15 +498,22 @@
     if (pendingArticleIds[articleId]) return;
     const articleIndex = articles.findIndex((a: Article) => a.id === articleId);
     const previousArticle = articleIndex >= 0 ? articles[articleIndex] : null;
-    const type =
+    const type: InteractionType =
       requestedType === 'save' && (savedOnly || previousArticle?.saved)
         ? 'unsave'
-        : requestedType;
+        : requestedType === 'thumbs_up' && previousArticle?.thumbs_up
+          ? 'unthumbs_up'
+          : requestedType;
     pendingArticleIds = { ...pendingArticleIds, [articleId]: true };
 
     const isReaction =
-      type === 'thumbs_up' || type === 'thumbs_down' || type === 'boost';
-    const visibleArticleIds = isReaction
+      type === 'thumbs_up' ||
+      type === 'unthumbs_up' ||
+      type === 'thumbs_down' ||
+      type === 'boost';
+    const needsVisibilityContext =
+      isReaction || type === 'save' || type === 'hide';
+    const visibleArticleIds = needsVisibilityContext
       ? getVisibleArticleContext(articleId)
       : undefined;
     const shouldRemove =
@@ -576,7 +554,8 @@
         a.id === articleId
           ? {
               ...a,
-              thumbs_up: reactionType === 'thumbs_up',
+              thumbs_up:
+                reactionType === 'thumbs_up' || reactionType === 'boost',
               thumbs_down: reactionType === 'thumbs_down',
               hidden: reactionType === 'boost' ? false : a.hidden,
             }
@@ -584,9 +563,9 @@
       );
     }
 
-    if (type === 'read' && previousArticle) {
+    if ((type === 'read' || type === 'unread') && previousArticle) {
       articles = articles.map((a: Article) =>
-        a.id === articleId ? { ...a, read: true } : a,
+        a.id === articleId ? { ...a, read: type === 'read' } : a,
       );
     }
 
@@ -597,124 +576,60 @@
     }
 
     try {
-      const offlineType = getOfflineMutationType(type);
-      if (navigator.onLine === false) {
-        if (!offlineType) throw new Error('This action needs a connection');
-        await enqueueOfflineMutation(offlineScope(), {
-          articleId,
-          type: offlineType,
-          ...(type === 'thumbs_down' && visibleArticleIds
-            ? { visibleArticleIds }
-            : {}),
-        });
-        addToast('Action queued — will sync when you’re online', 'info');
-        return;
-      }
-
-      const stateAction =
-        type === 'thumbs_down'
-          ? 'reject'
-          : type === 'read' ||
-              type === 'hide' ||
-              type === 'save' ||
-              type === 'unsave'
-            ? type
-            : null;
-      const res = await fetchWithCsrf(
-        stateAction ? '/api/article-state' : '/api/interactions',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            articleId,
-            ...(stateAction ? { action: stateAction } : { type }),
-            ...(visibleArticleIds ? { visibleArticleIds } : {}),
-          }),
-        },
-      );
-      if (res.ok) {
-        if (type === 'save' && previousArticle) {
-          void cacheArticles(offlineScope(), [
-            { ...previousArticle, saved: true },
-          ]).catch(() => undefined);
-        } else if (offlineType) {
-          void applyMutationToCachedArticle(
-            offlineScope(),
-            articleId,
-            offlineType,
-          ).catch(() => undefined);
-        }
-        if (shouldRemove) {
-          if (liveOnlyArticleIds.has(articleId)) {
-            onLiveArticleVisibilityChanged?.(articleId, false);
-          } else {
-            removedFromPage++;
-          }
-        }
-        void invalidate('app:reader-counts');
-        const message = INTERACTION_LABELS[type] || type;
-        if (stateAction && previousArticle) {
-          const result = (await res.json()) as {
-            operationId: string;
-            changes: Array<{ changed: boolean }>;
-          };
-          if (result.changes.some((change) => change.changed)) {
-            addToast(message, 'success', 3000, {
-              label: 'Undo',
-              run: async () => {
-                try {
-                  const response = await fetchWithCsrf(
-                    '/api/article-state/undo',
-                    {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ operationId: result.operationId }),
-                    },
-                  );
-                  if (!response.ok) throw new Error('Undo failed');
-                  const undo = (await response.json()) as {
-                    restoredArticleIds: string[];
-                    conflicts: string[];
-                  };
-                  if (undo.conflicts.length) {
-                    addToast('Article changed since this action', 'warning');
-                  } else if (undo.restoredArticleIds.includes(articleId)) {
-                    void cacheArticles(offlineScope(), [previousArticle]).catch(
-                      () => undefined,
-                    );
-                    const currentIndex = articles.findIndex(
-                      (item: Article) => item.id === articleId,
-                    );
-                    const next = [...articles];
-                    if (currentIndex >= 0) next[currentIndex] = previousArticle;
-                    else
-                      next.splice(
-                        Math.min(articleIndex, next.length),
-                        0,
-                        previousArticle,
-                      );
-                    articles = next;
-                    if (shouldRemove) {
-                      if (liveOnlyArticleIds.has(articleId)) {
-                        onLiveArticleVisibilityChanged?.(articleId, true);
-                      } else {
-                        removedFromPage = Math.max(0, removedFromPage - 1);
-                      }
-                    }
-                    void invalidate('app:reader-counts');
-                    addToast('Action undone', 'success');
-                  }
-                } catch {
-                  addToast('Could not undo this action', 'error');
+      const cacheSnapshot =
+        previousArticle &&
+        (type === 'save' || type === 'thumbs_up' || type === 'boost')
+          ? {
+              ...previousArticle,
+              ...(type === 'save' ? { saved: true } : {}),
+              ...(type === 'thumbs_up'
+                ? { thumbs_up: true, thumbs_down: false }
+                : {}),
+              ...(type === 'boost'
+                ? { thumbs_up: true, thumbs_down: false, hidden: false }
+                : {}),
+            }
+          : undefined;
+      const result = await executeArticleTriage({
+        articleId,
+        action: type,
+        scope: offlineScope(),
+        visibleArticleIds,
+        cacheSnapshot,
+        onUndo: previousArticle
+          ? () => {
+              void cacheArticles(offlineScope(), [previousArticle]).catch(
+                () => undefined,
+              );
+              const currentIndex = articles.findIndex(
+                (item: Article) => item.id === articleId,
+              );
+              const next = [...articles];
+              if (currentIndex >= 0) next[currentIndex] = previousArticle;
+              else
+                next.splice(
+                  Math.min(articleIndex, next.length),
+                  0,
+                  previousArticle,
+                );
+              articles = next;
+              if (shouldRemove) {
+                if (liveOnlyArticleIds.has(articleId)) {
+                  onLiveArticleVisibilityChanged?.(articleId, true);
+                } else {
+                  removedFromPage = Math.max(0, removedFromPage - 1);
                 }
-              },
-            });
-            return;
-          }
+              }
+            }
+          : undefined,
+      });
+
+      if (result.mode === 'online' && shouldRemove) {
+        if (liveOnlyArticleIds.has(articleId)) {
+          onLiveArticleVisibilityChanged?.(articleId, false);
+        } else {
+          removedFromPage++;
         }
-        addToast(message, 'success');
-      } else {
-        throw new Error('Request failed');
       }
     } catch (err) {
       if (
@@ -739,7 +654,7 @@
         );
       }
 
-      if (type === 'read' && previousArticle) {
+      if ((type === 'read' || type === 'unread') && previousArticle) {
         articles = articles.map((a: Article) =>
           a.id === articleId ? { ...a, read: previousRead } : a,
         );
@@ -820,23 +735,15 @@
     }
     if (e.key === 'm' || e.key === 'M') {
       e.preventDefault();
-      if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'read');
+      const focused = articles[focusedIndex];
+      if (focused) {
+        interact(focused.id, focused.read ? 'unread' : 'read');
+      }
     }
   }
 
   async function shareArticle(article: Article) {
-    const shareData = { title: article.title, url: article.url };
-    try {
-      if (navigator.share) {
-        await navigator.share(shareData);
-      } else {
-        await navigator.clipboard.writeText(article.url);
-        addToast('Link copied', 'success');
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
-      addToast('Could not share this article', 'error');
-    }
+    await shareArticleLink(article, 'Link copied');
   }
 
   function articleMode(article: Article): string {
@@ -1726,35 +1633,40 @@
                         >
                         Share
                       </button>
-                      {#if !article.read}
-                        <button
-                          type="button"
-                          class="article-menu-item"
-                          aria-label="Mark article as read"
-                          title="Mark as read (m)"
-                          disabled={isPending}
-                          onclick={(e) => {
-                            (e.currentTarget as HTMLElement)
-                              .closest('details')
-                              ?.removeAttribute('open');
-                            interact(article.id, 'read');
-                          }}
+                      <button
+                        type="button"
+                        class="article-menu-item"
+                        aria-label={article.read
+                          ? 'Mark article as unread'
+                          : 'Mark article as read'}
+                        title={article.read
+                          ? 'Mark as unread (m)'
+                          : 'Mark as read (m)'}
+                        disabled={isPending}
+                        onclick={(e) => {
+                          (e.currentTarget as HTMLElement)
+                            .closest('details')
+                            ?.removeAttribute('open');
+                          interact(
+                            article.id,
+                            article.read ? 'unread' : 'read',
+                          );
+                        }}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
                         >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            width="16"
-                            height="16"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg
-                          >
-                          Read
-                        </button>
-                      {/if}
+                        {article.read ? 'Mark as unread' : 'Mark as read'}
+                      </button>
                       <div
                         class="article-menu-reaction-divider my-1 h-px bg-surface-100/10"
                         aria-hidden="true"

@@ -3,6 +3,7 @@ import { getDb } from '#lib/server/db/index.ts';
 import {
   refreshRankingAfterFeedback,
   refreshRankingAfterProfileMutation,
+  refreshRankingAfterReversal,
 } from '#lib/server/ranking-freshness.ts';
 import {
   hasExplicitHide,
@@ -12,6 +13,7 @@ import {
   type PreferenceMemoryDelta,
 } from '#lib/server/preferences.ts';
 import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
+import type { SearchArticle } from '#lib/server/search.ts';
 
 export const ARTICLE_STATE_ACTIONS = [
   'read',
@@ -24,6 +26,7 @@ export const ARTICLE_STATE_ACTIONS = [
   'unreject',
   'restore',
   'thumbs_up',
+  'unthumbs_up',
   'boost',
 ] as const;
 
@@ -142,9 +145,44 @@ function parseInteractionMetadata(
   }
 }
 
+type ReversibleAction =
+  'hide' | 'reject' | 'save' | 'read' | 'thumbs_up' | 'boost';
+
+function interactionTypeForAction(action: ReversibleAction): string {
+  return action === 'reject' ? 'thumbs_down' : action;
+}
+
+function actionChangedState(
+  action: ReversibleAction,
+  before: ArticleState,
+  after: ArticleState,
+): boolean {
+  switch (action) {
+    case 'hide':
+      return (
+        (!before.hidden && after.hidden) ||
+        (before.hidden && after.hidden && before.hiddenAt !== after.hiddenAt)
+      );
+    case 'reject':
+      return !before.rejected && after.rejected;
+    case 'save':
+      return !before.saved && after.saved;
+    case 'read':
+      return !before.read && after.read;
+    case 'thumbs_up':
+      return !before.thumbsUp && after.thumbsUp;
+    case 'boost':
+      return (
+        (!before.thumbsUp && after.thumbsUp) ||
+        (before.hidden && !after.hidden) ||
+        (before.rejected && !after.rejected)
+      );
+  }
+}
+
 function activeOperationForAction(
   articleId: string,
-  action: 'hide' | 'reject',
+  action: ReversibleAction,
 ): string | null {
   const db = getDb();
   const rows = db
@@ -168,16 +206,11 @@ function activeOperationForAction(
      LIMIT 1`,
   );
 
+  const interactionType = interactionTypeForAction(action);
   for (const row of rows) {
     const before = parseState(row.before_state);
     const after = parseState(row.after_state);
-    const changedFlag =
-      action === 'hide'
-        ? (!before.hidden && after.hidden) ||
-          (before.hidden && after.hidden && before.hiddenAt !== after.hiddenAt)
-        : !before.rejected && after.rejected;
-    if (!changedFlag) continue;
-    const interactionType = action === 'hide' ? 'hide' : 'thumbs_down';
+    if (!actionChangedState(action, before, after)) continue;
     if (
       hasActiveInteraction.get(articleId, row.operation_id, interactionType)
     ) {
@@ -192,7 +225,7 @@ function markOperationInteractionsUndone(
   operationId: string,
   undoOperationId: string,
   now: number,
-): boolean {
+): string[] {
   const db = getDb();
   const events = db
     .prepare(
@@ -202,8 +235,9 @@ function markOperationInteractionsUndone(
          AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.undone_at') IS NULL`,
     )
     .all(articleId, operationId) as InteractionFeedbackRow[];
-  if (!events.length) return false;
+  if (!events.length) return [];
 
+  const reversedKeys = new Set<string>();
   const update = db.prepare(
     `UPDATE user_interactions
      SET metadata = json_set(
@@ -213,13 +247,86 @@ function markOperationInteractionsUndone(
   );
   for (const event of events) {
     const metadata = parseInteractionMetadata(event.metadata);
-    reversePreferenceMemoryDeltas(
+    for (const key of reversePreferenceMemoryDeltas(
       metadata.preference_deltas,
       Number(event.timestamp),
-    );
+    )) {
+      reversedKeys.add(key);
+    }
     update.run(now, undoOperationId, event.id);
   }
-  return true;
+  return [...reversedKeys];
+}
+
+function markUnscopedInteractionsUndone(
+  articleId: string,
+  actions: ReversibleAction[],
+  undoOperationId: string,
+  now: number,
+): string[] {
+  if (!actions.length) return [];
+  const interactionTypes = [
+    ...new Set(actions.map((action) => interactionTypeForAction(action))),
+  ];
+  const db = getDb();
+  const placeholders = interactionTypes.map(() => '?').join(', ');
+  const events = db
+    .prepare(
+      `SELECT id, timestamp, metadata FROM user_interactions
+       WHERE article_id = ?
+         AND interaction_type IN (${placeholders})
+         AND COALESCE(json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.operation_id'), '') = ''
+         AND COALESCE(json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.auto'), 0) = 0
+         AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.undone_at') IS NULL`,
+    )
+    .all(articleId, ...interactionTypes) as InteractionFeedbackRow[];
+  if (!events.length) return [];
+
+  const reversedKeys = new Set<string>();
+  const update = db.prepare(
+    `UPDATE user_interactions
+     SET metadata = json_set(
+       CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+       '$.undone_at', ?, '$.undo_operation_id', ?
+     ) WHERE id = ?`,
+  );
+  for (const event of events) {
+    const metadata = parseInteractionMetadata(event.metadata);
+    for (const key of reversePreferenceMemoryDeltas(
+      metadata.preference_deltas,
+      Number(event.timestamp),
+    )) {
+      reversedKeys.add(key);
+    }
+    update.run(now, undoOperationId, event.id);
+  }
+  return [...reversedKeys];
+}
+
+function actionsSupersededByAction(
+  action: ArticleStateAction,
+  before: ArticleState,
+): ReversibleAction[] {
+  const actions: ReversibleAction[] = [];
+  if (action === 'unhide' || action === 'unreject' || action === 'restore') {
+    if (before.hidden) actions.push('hide');
+    if (before.rejected || before.thumbsDown) actions.push('reject');
+  } else if (action === 'unsave' && before.saved) {
+    actions.push('save');
+  } else if (action === 'unread' && before.read) {
+    actions.push('read');
+  } else if (action === 'unthumbs_up' && before.thumbsUp) {
+    actions.push('thumbs_up', 'boost');
+  } else if (action === 'thumbs_up' && (before.rejected || before.thumbsDown)) {
+    actions.push('reject');
+  } else if (action === 'boost') {
+    if (before.rejected || before.thumbsDown) actions.push('reject');
+    if (before.hidden) actions.push('hide');
+    if (before.thumbsUp) actions.push('thumbs_up');
+  } else if (action === 'reject' && before.thumbsUp) {
+    actions.push('thumbs_up', 'boost');
+  }
+  return [...new Set(actions)];
 }
 
 function undoOperationsForAction(
@@ -227,16 +334,14 @@ function undoOperationsForAction(
   action: ArticleStateAction,
   before: ArticleState,
 ): string[] {
-  const actions: Array<'hide' | 'reject'> = [];
-  if ((action === 'unhide' || action === 'restore') && before.hidden) {
-    actions.push('hide');
-  }
-  if ((action === 'unreject' || action === 'restore') && before.rejected) {
-    actions.push('reject');
-  }
-  return actions
-    .map((priorAction) => activeOperationForAction(articleId, priorAction))
-    .filter((operationId): operationId is string => Boolean(operationId));
+  const actions = actionsSupersededByAction(action, before);
+  return [
+    ...new Set(
+      actions
+        .map((priorAction) => activeOperationForAction(articleId, priorAction))
+        .filter((operationId): operationId is string => Boolean(operationId)),
+    ),
+  ];
 }
 
 function toState(row: RawArticleState): ArticleState {
@@ -325,6 +430,9 @@ function stateAfterAction(
     case 'unhide':
       after.hidden = false;
       after.hiddenAt = null;
+      after.thumbsDown = false;
+      after.rejected = false;
+      after.rejectedAt = null;
       break;
     case 'reject':
       after.thumbsUp = false;
@@ -338,6 +446,8 @@ function stateAfterAction(
       after.thumbsDown = false;
       after.rejected = false;
       after.rejectedAt = null;
+      after.hidden = false;
+      after.hiddenAt = null;
       break;
     case 'restore':
       after.hidden = false;
@@ -351,6 +461,9 @@ function stateAfterAction(
       after.thumbsDown = false;
       after.rejected = false;
       after.rejectedAt = null;
+      break;
+    case 'unthumbs_up':
+      after.thumbsUp = false;
       break;
     case 'boost':
       after.thumbsUp = true;
@@ -492,7 +605,56 @@ type ArticleStateMutationInput = {
   action: ArticleStateAction;
   idempotencyKey?: string;
   visibleArticleIds?: unknown;
+  queuedAt?: number;
+  expectedStateVersion?: number;
 };
+
+function latestServerStateMutationAt(articleId: string): number {
+  const db = getDb();
+  const historyRow = db
+    .prepare(
+      `SELECT MAX(
+                MAX(
+                  CASE WHEN idempotency_key NOT LIKE 'offline:%' THEN created_at ELSE 0 END,
+                  COALESCE(undone_at, 0)
+                )
+              ) AS latest
+       FROM article_state_history
+       WHERE article_id = ?`,
+    )
+    .get(articleId) as { latest: number | null } | undefined;
+  const interactionRow = db
+    .prepare(
+      `SELECT MAX(
+                COALESCE(
+                  json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.queued_at'),
+                  timestamp
+                )
+              ) AS latest
+       FROM user_interactions
+       WHERE article_id = ?
+         AND interaction_type != 'open'
+         AND COALESCE(json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.auto'), 0) = 0`,
+    )
+    .get(articleId) as { latest: number | null } | undefined;
+  const articleRow = db
+    .prepare(
+      `SELECT MAX(
+                COALESCE(read_at, 0),
+                COALESCE(saved_at, 0),
+                COALESCE(hidden_at, 0),
+                COALESCE(rejected_at, 0)
+              ) AS latest
+       FROM articles
+       WHERE id = ?`,
+    )
+    .get(articleId) as { latest: number | null } | undefined;
+  return Math.max(
+    Number(historyRow?.latest || 0),
+    Number(interactionRow?.latest || 0),
+    Number(articleRow?.latest || 0),
+  );
+}
 
 export function applyArticleState(
   input: ArticleStateMutationInput,
@@ -520,6 +682,8 @@ export function applyArticleState(
     action: HistoryAction;
     idempotencyKey?: string;
     visibleArticleIds?: unknown;
+    queuedAt?: number;
+    expectedStateVersion?: number;
     patch?: ArticleStatePatch;
   } = Array.isArray(inputOrArticleIds)
     ? {
@@ -552,6 +716,10 @@ export function applyArticleState(
   const db = getDb();
   const operationId = crypto.randomUUID();
   const now = Date.now();
+  const stateTimestamp =
+    input.queuedAt !== undefined && Number.isFinite(input.queuedAt)
+      ? Math.min(now, input.queuedAt)
+      : now;
   const changes = db.transaction(() => {
     const output: StateChange[] = [];
     const update = db.prepare(`
@@ -570,7 +738,28 @@ export function applyArticleState(
 
     for (const articleId of articleIds) {
       const before = getState(articleId);
-      const next = stateAfterAction(before, input.action, now, input.patch);
+      if (
+        input.expectedStateVersion !== undefined &&
+        before.stateVersion !== input.expectedStateVersion
+      ) {
+        throw new ArticleStateError('Article state version conflict', 409);
+      }
+      if (
+        input.queuedAt !== undefined &&
+        Number.isFinite(input.queuedAt) &&
+        latestServerStateMutationAt(articleId) > input.queuedAt
+      ) {
+        throw new ArticleStateError(
+          'Article state changed more recently on the server',
+          409,
+        );
+      }
+      const next = stateAfterAction(
+        before,
+        input.action,
+        stateTimestamp,
+        input.patch,
+      );
       // A model or hide-on-open may already have set hidden=1. A user's
       // explicit Hide still needs a reversible state change so its preference
       // delta and heuristic penalty are recorded independently.
@@ -579,25 +768,28 @@ export function applyArticleState(
         before.hidden &&
         !hasExplicitHide(articleId)
       ) {
-        next.hiddenAt = Math.max(now, (before.hiddenAt ?? 0) + 1);
+        next.hiddenAt = Math.max(stateTimestamp, (before.hiddenAt ?? 0) + 1);
       }
-      update.run(
-        next.read ? 1 : 0,
-        next.readAt,
-        next.saved ? 1 : 0,
-        next.savedAt,
-        next.hidden ? 1 : 0,
-        next.hiddenAt,
-        next.thumbsUp ? 1 : 0,
-        next.thumbsDown ? 1 : 0,
-        next.rejected ? 1 : 0,
-        next.rejectedAt,
-        !next.hidden || input.action === 'reject' ? 1 : 0,
-        now,
-        articleId,
-      );
+      const changed = !sameState(before, next);
+      if (changed) {
+        update.run(
+          next.read ? 1 : 0,
+          next.readAt,
+          next.saved ? 1 : 0,
+          next.savedAt,
+          next.hidden ? 1 : 0,
+          next.hiddenAt,
+          next.thumbsUp ? 1 : 0,
+          next.thumbsDown ? 1 : 0,
+          next.rejected ? 1 : 0,
+          next.rejectedAt,
+          !next.hidden || input.action === 'reject' ? 1 : 0,
+          now,
+          articleId,
+        );
+      }
       // Compatibility triggers can fill missing timestamps on older rows.
-      const after = getState(articleId);
+      const after = changed ? getState(articleId) : before;
       insertHistory.run(
         crypto.randomUUID(),
         operationId,
@@ -622,6 +814,8 @@ export function applyArticleState(
     }
 
     const undoneOperations = new Map<string, string[]>();
+    const reversedFeatures = new Set<string>();
+    let reversedNegativeFeedback = false;
     for (const change of output) {
       if (
         !change.changed ||
@@ -629,18 +823,33 @@ export function applyArticleState(
       ) {
         continue;
       }
+      const actionName = change.action as ArticleStateAction;
+      const superseded = actionsSupersededByAction(actionName, change.before);
+      if (superseded.includes('reject') || superseded.includes('hide')) {
+        reversedNegativeFeedback = true;
+      }
       const undoOperationIds = undoOperationsForAction(
         change.articleId,
-        change.action as ArticleStateAction,
+        actionName,
         change.before,
       );
       for (const priorOperationId of undoOperationIds) {
-        markOperationInteractionsUndone(
+        for (const key of markOperationInteractionsUndone(
           change.articleId,
           priorOperationId,
           operationId,
           now,
-        );
+        )) {
+          reversedFeatures.add(key);
+        }
+      }
+      for (const key of markUnscopedInteractionsUndone(
+        change.articleId,
+        superseded,
+        operationId,
+        now,
+      )) {
+        reversedFeatures.add(key);
       }
       if (undoOperationIds.length) {
         undoneOperations.set(change.articleId, undoOperationIds);
@@ -669,6 +878,9 @@ export function applyArticleState(
           visibleArticleIds: input.visibleArticleIds,
           operationId,
           idempotencyKey,
+          queuedAt: input.queuedAt,
+          extraFeatureKeys: [...reversedFeatures],
+          includeFeedSiblings: reversedNegativeFeedback,
         });
       }
     }
@@ -690,6 +902,9 @@ export function applyArticleState(
           input.action,
           now,
           interactionMetadata(operationId, idempotencyKey, {
+            ...(input.queuedAt !== undefined
+              ? { queued_at: input.queuedAt }
+              : {}),
             preference_deltas: preferenceDeltas,
           }),
         );
@@ -700,84 +915,145 @@ export function applyArticleState(
       input.action === 'unsave' ||
       input.action === 'unhide' ||
       input.action === 'unreject' ||
-      input.action === 'restore'
+      input.action === 'restore' ||
+      input.action === 'unthumbs_up'
     ) {
       const insertInteraction = db.prepare(
         'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
       );
+      const changedArticleIds: string[] = [];
       for (const change of output) {
         if (!change.changed) continue;
+        changedArticleIds.push(change.articleId);
         insertInteraction.run(
           crypto.randomUUID(),
           change.articleId,
           input.action,
           now,
           interactionMetadata(operationId, idempotencyKey, {
+            ...(input.queuedAt !== undefined
+              ? { queued_at: input.queuedAt }
+              : {}),
             undo_of_operation_ids: undoneOperations.get(change.articleId) || [],
           }),
         );
-        if (
+      }
+      if (changedArticleIds.length) {
+        if (reversedFeatures.size > 0) {
+          refreshRankingAfterReversal({
+            articleIds: changedArticleIds,
+            changedFeatureKeys: [...reversedFeatures],
+            visibleArticleIds: input.visibleArticleIds,
+            includeFeedSiblings: reversedNegativeFeedback,
+          });
+        } else if (
           input.action === 'unhide' ||
           input.action === 'unreject' ||
           input.action === 'restore'
         ) {
-          refreshRankingAfterProfileMutation(change.articleId);
+          for (const id of changedArticleIds) {
+            refreshRankingAfterProfileMutation(id);
+          }
         } else {
-          updateHeuristicScore(change.articleId);
+          for (const id of changedArticleIds) {
+            updateHeuristicScore(id);
+          }
         }
       }
     } else if (input.action === 'state_change') {
+      const changedArticleIds: string[] = [];
       for (const change of output) {
         if (!change.changed) continue;
-        if (change.before.hidden && !change.after.hidden) {
-          for (const priorOperationId of undoOperationsForAction(
+        changedArticleIds.push(change.articleId);
+        const patchActions: ReversibleAction[] = [];
+        if (change.before.hidden && !change.after.hidden)
+          patchActions.push('hide');
+        if (change.before.rejected && !change.after.rejected)
+          patchActions.push('reject');
+        if (change.before.saved && !change.after.saved)
+          patchActions.push('save');
+        if (change.before.read && !change.after.read) patchActions.push('read');
+        if (change.before.thumbsUp && !change.after.thumbsUp) {
+          patchActions.push('thumbs_up', 'boost');
+        }
+        if (patchActions.includes('hide') || patchActions.includes('reject')) {
+          reversedNegativeFeedback = true;
+        }
+        for (const priorAction of patchActions) {
+          const priorOperationId = activeOperationForAction(
             change.articleId,
-            'unhide',
-            change.before,
-          )) {
-            markOperationInteractionsUndone(
+            priorAction,
+          );
+          if (priorOperationId) {
+            for (const key of markOperationInteractionsUndone(
               change.articleId,
               priorOperationId,
               operationId,
               now,
-            );
+            )) {
+              reversedFeatures.add(key);
+            }
           }
         }
-        if (change.before.rejected && !change.after.rejected) {
-          for (const priorOperationId of undoOperationsForAction(
-            change.articleId,
-            'unreject',
-            change.before,
-          )) {
-            markOperationInteractionsUndone(
-              change.articleId,
-              priorOperationId,
-              operationId,
-              now,
-            );
-          }
+        for (const key of markUnscopedInteractionsUndone(
+          change.articleId,
+          patchActions,
+          operationId,
+          now,
+        )) {
+          reversedFeatures.add(key);
         }
-        if (
-          (change.before.hidden && !change.after.hidden) ||
-          (change.before.rejected && !change.after.rejected)
-        ) {
-          refreshRankingAfterProfileMutation(change.articleId);
+      }
+      if (changedArticleIds.length) {
+        if (reversedFeatures.size > 0) {
+          refreshRankingAfterReversal({
+            articleIds: changedArticleIds,
+            changedFeatureKeys: [...reversedFeatures],
+            visibleArticleIds: input.visibleArticleIds,
+            includeFeedSiblings: reversedNegativeFeedback,
+          });
         } else {
-          updateHeuristicScore(change.articleId);
+          for (const change of output) {
+            if (!change.changed) continue;
+            if (
+              (change.before.hidden && !change.after.hidden) ||
+              (change.before.rejected && !change.after.rejected)
+            ) {
+              refreshRankingAfterProfileMutation(change.articleId);
+            } else {
+              updateHeuristicScore(change.articleId);
+            }
+          }
         }
       }
     }
     return output;
   })();
 
-  if (input.action === 'read' || input.action === 'save') {
+  if (
+    input.action === 'read' ||
+    input.action === 'save' ||
+    input.action === 'thumbs_up' ||
+    input.action === 'boost'
+  ) {
     const selectArticle = db.prepare('SELECT * FROM articles WHERE id = ?');
     for (const change of changes) {
       if (!change.changed) continue;
+      if (
+        (input.action === 'thumbs_up' || input.action === 'boost') &&
+        !change.after.thumbsUp
+      ) {
+        continue;
+      }
       const article = selectArticle.get(change.articleId);
       if (article) {
         dispatchWebhookEvent({
-          type: input.action === 'read' ? 'article.read' : 'article.saved',
+          type:
+            input.action === 'read'
+              ? 'article.read'
+              : input.action === 'save'
+                ? 'article.saved'
+                : 'article.thumbs_up',
           timestamp: now,
           payload: { article },
         });
@@ -785,6 +1061,57 @@ export function applyArticleState(
     }
   }
   return { operationId, idempotencyKey, idempotent: false, changes };
+}
+
+function restoreInteractionsUndoneBy(
+  articleId: string,
+  undoOperationId: string,
+): string[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT id, interaction_type, metadata
+       FROM user_interactions
+       WHERE article_id = ?
+         AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.undo_operation_id') = ?`,
+    )
+    .all(articleId, undoOperationId) as Array<{
+    id: string;
+    interaction_type: string;
+    metadata: string | null;
+  }>;
+  if (!rows.length) return [];
+
+  const restoredKeys = new Set<string>();
+  const update = db.prepare(
+    'UPDATE user_interactions SET metadata = ? WHERE id = ?',
+  );
+  for (const row of rows) {
+    const metadata = parseInteractionMetadata(row.metadata);
+    delete metadata.undone_at;
+    delete metadata.undo_operation_id;
+    const type = row.interaction_type;
+    if (
+      type === 'hide' ||
+      type === 'thumbs_down' ||
+      type === 'save' ||
+      type === 'read' ||
+      type === 'thumbs_up' ||
+      type === 'boost'
+    ) {
+      const deltas: PreferenceMemoryDelta[] = [];
+      for (const key of updatePreferenceMemoryFromInteraction(
+        articleId,
+        type,
+        deltas,
+      )) {
+        restoredKeys.add(key);
+      }
+      metadata.preference_deltas = deltas;
+    }
+    update.run(JSON.stringify(metadata), row.id);
+  }
+  return [...restoredKeys];
 }
 
 export function undoArticleState(input: {
@@ -829,8 +1156,12 @@ export function undoArticleState(
   }
 
   const undoOperationId = crypto.randomUUID();
+  const now = Date.now();
   const restoredArticleIds = db.transaction(() => {
     const restored: string[] = [];
+    const changedRestored: string[] = [];
+    const reversedFeatures = new Set<string>();
+    let includeFeedSiblings = false;
     const markUndone = db.prepare(
       'UPDATE article_state_history SET undone_at = ? WHERE id = ?',
     );
@@ -852,6 +1183,11 @@ export function undoArticleState(
         !sameState(current, after)
       )
         continue;
+      if (sameState(before, after)) {
+        markUndone.run(now, row.id);
+        restored.push(row.article_id);
+        continue;
+      }
       restore.run(
         before.read ? 1 : 0,
         before.readAt,
@@ -864,18 +1200,42 @@ export function undoArticleState(
         before.rejected ? 1 : 0,
         before.rejectedAt,
         before.hidden ? 0 : 1,
-        Date.now(),
+        now,
         row.article_id,
       );
-      markUndone.run(Date.now(), row.id);
-      markOperationInteractionsUndone(
+      markUndone.run(now, row.id);
+      if (row.action === 'reject' || row.action === 'hide') {
+        includeFeedSiblings = true;
+      }
+      for (const key of markOperationInteractionsUndone(
         row.article_id,
         row.operation_id,
         undoOperationId,
-        Date.now(),
-      );
-      refreshRankingAfterProfileMutation(row.article_id);
+        now,
+      )) {
+        reversedFeatures.add(key);
+      }
+      for (const key of restoreInteractionsUndoneBy(
+        row.article_id,
+        row.operation_id,
+      )) {
+        reversedFeatures.add(key);
+      }
       restored.push(row.article_id);
+      changedRestored.push(row.article_id);
+    }
+    if (changedRestored.length) {
+      if (reversedFeatures.size > 0 || includeFeedSiblings) {
+        refreshRankingAfterReversal({
+          articleIds: changedRestored,
+          changedFeatureKeys: [...reversedFeatures],
+          includeFeedSiblings,
+        });
+      } else {
+        for (const id of changedRestored) {
+          refreshRankingAfterProfileMutation(id);
+        }
+      }
     }
     return restored;
   })();
@@ -1054,17 +1414,26 @@ function decodeRecoveryCursor(value: string): RecoveryCursor {
   }
 }
 
+export type RecoveryKind = 'all' | 'hidden' | 'rejected';
+
+function recoveryKindClause(kind: RecoveryKind): string {
+  if (kind === 'hidden') return 'a.hidden = 1';
+  if (kind === 'rejected') return '(a.rejected = 1 OR a.thumbs_down = 1)';
+  return '(a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)';
+}
+
 export function listRecoveryArticles(
   options: {
     limit?: number;
     cursor?: string;
     feedId?: string;
+    kind?: RecoveryKind;
   } = {},
 ): { articles: RecoveryArticle[]; nextCursor: string | null } {
   const limit = Math.min(100, Math.max(1, Math.floor(options.limit || 25)));
+  const kind = options.kind ?? 'all';
   const params: Array<string | number> = [];
-  let where =
-    'WHERE a.cleared_at IS NULL AND (a.hidden = 1 OR a.rejected = 1 OR a.thumbs_down = 1)';
+  let where = `WHERE a.cleared_at IS NULL AND ${recoveryKindClause(kind)}`;
   if (options.feedId) {
     where += ' AND a.feed_id = ?';
     params.push(options.feedId);
@@ -1121,6 +1490,115 @@ export function listRecoveryArticles(
         ).toString('base64url')
       : null;
   return { articles, nextCursor };
+}
+
+export function listRecoverySearchArticles(
+  options: {
+    limit?: number;
+    cursor?: string;
+    kind?: RecoveryKind;
+  } = {},
+): {
+  query: string;
+  sort: 'recent';
+  limit: number;
+  total: number;
+  articles: SearchArticle[];
+  nextCursor: string | null;
+} {
+  const limit = Math.min(100, Math.max(1, Math.floor(options.limit || 50)));
+  const kind = options.kind ?? 'all';
+  const db = getDb();
+  const baseWhere = `a.cleared_at IS NULL AND ${recoveryKindClause(kind)}`;
+  const expression = 'COALESCE(a.published_at, a.fetched_at, a.created_at)';
+  const params: Array<string | number> = [];
+  let cursorWhere = '';
+  if (options.cursor) {
+    const cursor = decodeRecoveryCursor(options.cursor);
+    cursorWhere = ` AND (${expression} < ? OR (${expression} = ? AND a.id < ?))`;
+    params.push(cursor.timestamp, cursor.timestamp, cursor.id);
+  }
+
+  const totalRow = db
+    .prepare(
+      `SELECT COUNT(*) AS total FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE ${baseWhere}`,
+    )
+    .get() as { total: number };
+  const rows = db
+    .prepare(
+      `
+      SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url,
+             a.categories, a.published_at, a.fetched_at, a.read, a.saved,
+             a.hidden, a.thumbs_up, a.thumbs_down, a.rejected,
+             a.read_at, a.saved_at, a.hidden_at, a.rejected_at, a.state_version,
+             a.heuristic_score, a.combined_score,
+             f.title AS feed_title, f.url AS feed_url, f.category AS feed_category,
+             f.open_mode AS feed_open_mode
+      FROM articles a JOIN feeds f ON f.id = a.feed_id
+      WHERE ${baseWhere}${cursorWhere}
+      ORDER BY ${expression} DESC, a.id DESC
+      LIMIT ?
+    `,
+    )
+    .all(...params, limit + 1) as Array<Record<string, unknown>>;
+
+  const hasMore = rows.length > limit;
+  const resultRows = hasMore ? rows.slice(0, limit) : rows;
+  const articles: SearchArticle[] = resultRows.map((row) => ({
+    id: String(row.id),
+    feedId: String(row.feed_id),
+    url: String(row.url),
+    title: String(row.title || ''),
+    author: (row.author as string | null) ?? null,
+    summary: (row.summary as string | null) ?? null,
+    imageUrl: (row.image_url as string | null) ?? null,
+    categories: (row.categories as string | null) ?? null,
+    publishedAt: (row.published_at as number | null) ?? null,
+    fetchedAt: Number(row.fetched_at),
+    read: Number(row.read),
+    saved: Number(row.saved),
+    hidden: Number(row.hidden),
+    thumbsUp: Number(row.thumbs_up),
+    thumbsDown: Number(row.thumbs_down),
+    rejected: Number(row.rejected || row.thumbs_down),
+    readAt: (row.read_at as number | null) ?? null,
+    savedAt: (row.saved_at as number | null) ?? null,
+    hiddenAt: (row.hidden_at as number | null) ?? null,
+    rejectedAt: (row.rejected_at as number | null) ?? null,
+    stateVersion: Number(row.state_version || 0),
+    heuristicScore: (row.heuristic_score as number | null) ?? null,
+    combinedScore: (row.combined_score as number | null) ?? null,
+    feedTitle: (row.feed_title as string | null) ?? null,
+    feedUrl: (row.feed_url as string | null) ?? null,
+    feedCategory: (row.feed_category as string | null) ?? null,
+    feedOpenMode: (row.feed_open_mode as string | null) ?? null,
+    relevance: null,
+    titleHighlight: null,
+    authorHighlight: null,
+    summaryHighlight: null,
+    contentHighlight: null,
+    feedTitleHighlight: null,
+    categoryHighlight: null,
+  }));
+  const last = resultRows.at(-1);
+  const nextCursor =
+    hasMore && last
+      ? Buffer.from(
+          JSON.stringify({
+            timestamp: Number(last.published_at ?? last.fetched_at ?? 0),
+            id: String(last.id),
+          }),
+        ).toString('base64url')
+      : null;
+
+  return {
+    query: '',
+    sort: 'recent',
+    limit,
+    total: totalRow.total,
+    articles,
+    nextCursor,
+  };
 }
 
 export function listStateHistory(

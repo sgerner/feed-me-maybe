@@ -275,4 +275,51 @@ describe('feed article queries', () => {
       'a-3',
     ]);
   });
+
+  it('keeps preference_model auto-hidden articles in showHidden=1 after undone explicit hides', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { getFeedArticles } = await import('./articles');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT OR REPLACE INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-undone-hide', 'https://example.com/uh', 'Undone', now, now);
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, hidden, published_at, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)',
+    ).run(
+      'auto-after-undo',
+      'feed-undone-hide',
+      'https://example.com/auto-after-undo',
+      'Auto after undo',
+      now,
+      now,
+      now,
+      now,
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'auto-hide-1',
+      'auto-after-undo',
+      'hide',
+      now - 1000,
+      '{"auto":true,"reason":"preference_model"}',
+    );
+    db.prepare(
+      'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'undone-explicit-hide',
+      'auto-after-undo',
+      'hide',
+      now,
+      JSON.stringify({ operation_id: 'op-1', undone_at: now + 100 }),
+    );
+
+    const result = getFeedArticles({
+      feedId: 'feed-undone-hide',
+      showHiddenContent: true,
+    });
+    expect(result.articles.map((a) => a.id)).toEqual(['auto-after-undo']);
+  });
 });

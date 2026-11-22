@@ -345,10 +345,12 @@ export function buildInteractionRequest(
       'X-Offline-Mutation-Id': mutation.id,
       'X-Offline-Idempotency-Key': mutation.idempotencyKey,
       'X-Offline-Protocol': OFFLINE_CACHE_VERSION,
+      'X-Offline-Queued-At': String(mutation.queuedAt),
     },
     body: JSON.stringify({
       articleId: mutation.articleId,
       type: mutation.type,
+      queuedAt: mutation.queuedAt,
       ...(mutation.visibleArticleIds?.length
         ? { visibleArticleIds: mutation.visibleArticleIds }
         : {}),

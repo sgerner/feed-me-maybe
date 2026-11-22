@@ -113,4 +113,41 @@ describe('interaction API freshness context', () => {
     });
     expect(recordInteractionMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['thumbs_up', 'thumbs_up'],
+    ['unthumbs_up', 'unthumbs_up'],
+    ['boost', 'boost'],
+    ['unread', 'unread'],
+    ['restore', 'restore'],
+  ] as const)(
+    'forwards offline %s with queuedAt timestamp guard through article-state',
+    async (type, expectedAction) => {
+      const response = await post(
+        {
+          articleId: 'article-1',
+          type,
+          queuedAt: 987654,
+          visibleArticleIds: ['article-2'],
+        },
+        'session-1',
+        {
+          'x-offline-idempotency-key': `key-${type}`,
+          [OFFLINE_PROTOCOL_HEADER]: OFFLINE_PROTOCOL_VERSION,
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(applyArticleStateMock).toHaveBeenCalledWith({
+        articleIds: ['article-1'],
+        action: expectedAction,
+        idempotencyKey: `offline:key-${type}`,
+        queuedAt: 987654,
+        ...(type === 'thumbs_up' || type === 'boost'
+          ? { visibleArticleIds: ['article-2'] }
+          : {}),
+      });
+      expect(recordInteractionMock).not.toHaveBeenCalled();
+    },
+  );
 });

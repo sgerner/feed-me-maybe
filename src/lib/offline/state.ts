@@ -20,9 +20,12 @@ export function mutationDedupeKey(
       ? 'read'
       : type === 'save' || type === 'unsave'
         ? 'save'
-        : type === 'hide' || type === 'unhide'
+        : type === 'hide' ||
+            type === 'unhide' ||
+            type === 'restore' ||
+            type === 'thumbs_down'
           ? 'hide'
-          : 'thumbs_down';
+          : 'thumbs_up';
   return `${articleId}:${group}`;
 }
 
@@ -42,7 +45,18 @@ export function applyMutationToArticle(
     case 'hide':
       return { ...article, hidden: true };
     case 'unhide':
-      return { ...article, hidden: false };
+      return { ...article, hidden: false, thumbs_down: false };
+    case 'thumbs_up':
+      return { ...article, thumbs_up: true, thumbs_down: false };
+    case 'unthumbs_up':
+      return { ...article, thumbs_up: false };
+    case 'boost':
+      return {
+        ...article,
+        thumbs_up: true,
+        thumbs_down: false,
+        hidden: false,
+      };
     case 'thumbs_down':
       return {
         ...article,

@@ -22,7 +22,10 @@ export type OfflineMutationType =
   | 'unsave'
   | 'hide'
   | 'unhide'
+  | 'thumbs_up'
+  | 'unthumbs_up'
   | 'thumbs_down'
+  | 'boost'
   | 'restore';
 
 export type OfflineMutationState =
