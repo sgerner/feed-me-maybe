@@ -8,7 +8,11 @@ import {
   normalizeRedditUrl,
   fetchRedditSource,
 } from '#lib/server/sources/reddit.ts';
-import { applyPreferenceModelToArticle } from '#lib/server/preferences.ts';
+import {
+  applyPreferenceModelToArticle,
+  updateHeuristicScore,
+} from '#lib/server/preferences.ts';
+import { parseJsonTextArray } from '#lib/server/normalization.ts';
 import { refreshCombinedScore } from '#lib/server/scoring.ts';
 import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
 import { broadcast } from '#lib/server/realtime.ts';
@@ -103,11 +107,12 @@ export async function ingestFeed(
 
   const feedRecord = db
     .prepare(
-      'SELECT url, etag, last_modified_header, fetch_count_since_change, custom_title, source_type, source_metadata, use_proxy FROM feeds WHERE id = ?',
+      'SELECT url, enabled, etag, last_modified_header, fetch_count_since_change, custom_title, source_type, source_metadata, use_proxy FROM feeds WHERE id = ?',
     )
     .get(feedId) as
     | {
         url: string;
+        enabled: number | null;
         etag: string | null;
         last_modified_header: string | null;
         fetch_count_since_change: number;
@@ -130,6 +135,17 @@ export async function ingestFeed(
       articlesNew: 0,
       error: 'Feed not found',
       permanentFailure: true,
+    };
+  }
+
+  if (!feedRecord.enabled) {
+    return {
+      success: true,
+      articlesFound: 0,
+      articlesNew: 0,
+      skipped: true,
+      status: 'completed',
+      error: 'Feed is disabled',
     };
   }
 
@@ -182,366 +198,502 @@ export async function ingestFeed(
   }
 
   const sourceType = feedRecord.source_type || 'rss';
-  const sourceMetadata = parseSourceMetadata(feedRecord.source_metadata);
-  const canonicalUrl =
-    sourceType === 'reddit'
-      ? sourceMetadata.originalUrl || feedRecord.url
-      : normalizeFeedUrl(feedRecord.url);
-  const proxyBaseUrl = getConfiguredProxyBaseUrl();
-  const proxyEnabled =
-    Boolean(feedRecord.use_proxy && proxyBaseUrl) &&
-    (sourceType !== 'reddit' ||
-      Boolean(sourceMetadata.originalUrl) ||
-      isRedditUrl(feedRecord.url));
+  try {
+    const sourceMetadata = parseSourceMetadata(feedRecord.source_metadata);
+    const canonicalUrl =
+      sourceType === 'reddit'
+        ? sourceMetadata.originalUrl || feedRecord.url
+        : normalizeFeedUrl(feedRecord.url);
+    const proxyBaseUrl = getConfiguredProxyBaseUrl();
+    const proxyEnabled =
+      Boolean(feedRecord.use_proxy && proxyBaseUrl) &&
+      (sourceType !== 'reddit' ||
+        Boolean(sourceMetadata.originalUrl) ||
+        isRedditUrl(feedRecord.url));
 
-  let fetchResult;
-  if (sourceType === 'reddit') {
-    const shouldNormalizeReddit = Boolean(
-      sourceMetadata.originalUrl || isRedditUrl(feedRecord.url),
-    );
-    const redditSource = shouldNormalizeReddit
-      ? normalizeRedditUrl(canonicalUrl)
-      : {
-          originalUrl: canonicalUrl,
-          normalizedUrl: canonicalUrl,
-          redditKind: 'unknown' as const,
-          fetchUrl: canonicalUrl,
-        };
-    fetchResult = await fetchRedditSource(redditSource, {
-      proxyBaseUrl: proxyEnabled ? proxyBaseUrl : undefined,
-      etag: options.force ? undefined : feedRecord.etag || undefined,
-      lastModified: options.force
-        ? undefined
-        : feedRecord.last_modified_header || undefined,
-    });
-  } else {
-    fetchResult = await fetchFeed(canonicalUrl, {
-      etag: options.force ? undefined : feedRecord.etag || undefined,
-      lastModified: options.force
-        ? undefined
-        : feedRecord.last_modified_header || undefined,
-      proxyBaseUrl: feedRecord.use_proxy ? proxyBaseUrl : undefined,
-    });
-  }
-
-  const current = db
-    .prepare('SELECT url FROM feeds WHERE id = ?')
-    .get(feedId) as { url: string } | undefined;
-  if (current?.url !== feedRecord.url) {
-    db.prepare(
-      'UPDATE feed_fetch_logs SET status = ?, completed_at = ? WHERE id = ?',
-    ).run('success', Date.now(), logId);
-    return {
-      success: true,
-      articlesFound: 0,
-      articlesNew: 0,
-      status: 'completed',
-    };
-  }
-
-  if (sourceType === 'reddit') {
-    const normalizedUrl = normalizeRedditUrl(canonicalUrl).normalizedUrl;
-    if (feedRecord.url !== normalizedUrl) {
-      db.prepare('UPDATE feeds SET url = ?, updated_at = ? WHERE id = ?').run(
-        normalizedUrl,
-        Date.now(),
-        feedId,
+    let fetchResult: Awaited<ReturnType<typeof fetchFeed>>;
+    if (sourceType === 'reddit') {
+      const shouldNormalizeReddit = Boolean(
+        sourceMetadata.originalUrl || isRedditUrl(feedRecord.url),
       );
+      const redditSource = shouldNormalizeReddit
+        ? normalizeRedditUrl(canonicalUrl)
+        : {
+            originalUrl: canonicalUrl,
+            normalizedUrl: canonicalUrl,
+            redditKind: 'unknown' as const,
+            fetchUrl: canonicalUrl,
+          };
+      fetchResult = await fetchRedditSource(redditSource, {
+        proxyBaseUrl: proxyEnabled ? proxyBaseUrl : undefined,
+        etag: options.force ? undefined : feedRecord.etag || undefined,
+        lastModified: options.force
+          ? undefined
+          : feedRecord.last_modified_header || undefined,
+      });
+    } else {
+      fetchResult = await fetchFeed(canonicalUrl, {
+        etag: options.force ? undefined : feedRecord.etag || undefined,
+        lastModified: options.force
+          ? undefined
+          : feedRecord.last_modified_header || undefined,
+        proxyBaseUrl: feedRecord.use_proxy ? proxyBaseUrl : undefined,
+      });
     }
-  } else if (feedRecord.url !== canonicalUrl) {
-    const duplicateFeed = db
-      .prepare('SELECT id FROM feeds WHERE url = ? AND id != ?')
-      .get(canonicalUrl, feedId) as { id: string } | undefined;
-    if (!duplicateFeed) {
-      db.prepare('UPDATE feeds SET url = ?, updated_at = ? WHERE id = ?').run(
-        canonicalUrl,
-        Date.now(),
-        feedId,
-      );
+
+    const current = db
+      .prepare('SELECT url, enabled FROM feeds WHERE id = ?')
+      .get(feedId) as { url: string; enabled: number | null } | undefined;
+    if (!current || !current.enabled || current.url !== feedRecord.url) {
+      db.prepare(
+        'UPDATE feed_fetch_logs SET status = ?, completed_at = ? WHERE id = ?',
+      ).run('success', Date.now(), logId);
+      return {
+        success: true,
+        articlesFound: 0,
+        articlesNew: 0,
+        ...(!current?.enabled ? { skipped: true } : {}),
+        status: 'completed',
+      };
     }
-  }
 
-  if (fetchResult.notModified) {
-    db.prepare(
-      'UPDATE feed_fetch_logs SET status = ?, articles_found = 0, articles_new = 0, completed_at = ? WHERE id = ?',
-    ).run('success', Date.now(), logId);
-    db.prepare(
-      "UPDATE feeds SET last_fetch_status = 'success', error_count = 0, last_error = '', fetch_count_since_change = ?, updated_at = ? WHERE id = ?",
-    ).run((feedRecord?.fetch_count_since_change || 0) + 1, Date.now(), feedId);
-    return {
-      success: true,
-      articlesFound: 0,
-      articlesNew: 0,
-      status: 'completed',
-    };
-  }
-
-  if (!fetchResult.success) {
-    db.prepare(
-      'UPDATE feed_fetch_logs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?',
-    ).run('error', fetchResult.error || 'Unknown error', Date.now(), logId);
-    db.prepare(
-      "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, error_count = COALESCE(error_count, 0) + ?, updated_at = ? WHERE id = ?",
-    ).run(
-      fetchResult.error || 'Unknown error',
-      options.countFailure === false ? 0 : 1,
-      Date.now(),
-      feedId,
-    );
-    recordAppError({
-      source: 'feed.ingester.fetch',
-      error: fetchResult.error || 'Unknown error',
-      details: {
-        feedId,
-        sourceType,
-        proxyEnabled,
-        proxyConfigured: Boolean(proxyBaseUrl),
-        canonicalUrl,
-        httpStatus: fetchResult.httpStatus ?? null,
-      },
-    });
-    return {
-      success: false,
-      articlesFound: 0,
-      articlesNew: 0,
-      error: fetchResult.error,
-      retryAt: fetchResult.retryAt,
-      permanentFailure: fetchResult.httpStatus === 410,
-    };
-  }
-
-  // Prepare feed metadata and cache headers with the article batch. If any
-  // article write rolls back, the next fetch must still use the prior ETag.
-  const updates: string[] = [];
-  const values: (string | number | null)[] = [];
-  if (fetchResult.title && !feedRecord?.custom_title) {
-    updates.push('title = ?');
-    values.push(fetchResult.title);
-  }
-  if (fetchResult.description) {
-    updates.push('description = ?');
-    values.push(fetchResult.description);
-  }
-  if (fetchResult.link) {
-    updates.push('site_url = ?');
-    values.push(fetchResult.link);
-  }
-  if (fetchResult.imageUrl) {
-    updates.push('icon_url = ?');
-    values.push(fetchResult.imageUrl);
-  }
-
-  updates.push('etag = ?', 'last_modified_header = ?');
-  values.push(fetchResult.etag || null, fetchResult.lastModified || null);
-
-  // Process articles in a transaction for atomicity
-  const newArticleIds: string[] = [];
-  const webhookArticles: Record<string, unknown>[] = [];
-  const aiQueuedArticleIds = new Set<string>();
-  const rankingArticleIds = new Set<string>();
-  const queueAi = fetchResult.items.length > 0 && isAiProcessingConfigured();
-  // Older databases created before the additive external_url migration may
-  // not have this optional column. Keep ingestion compatible without changing
-  // schema or losing the rest of the article row.
-  const supportsExternalUrl = hasArticleColumn('external_url');
-  const ingestTx = db.transaction(() => {
-    let articlesNew = 0;
-    type ExistingArticle = {
-      id: string;
-      url: string;
-      guid: string | null;
-      title: string | null;
-      image_url: string | null;
-      content_length_lower: number | null;
-      content_length_upper: number | null;
-      has_content: number;
-      has_summary: number;
-      hidden: number;
-      rejected: number;
-      thumbs_down: number;
-      author: string | null;
-      categories: string | null;
-      external_url: string | null;
-    };
-
-    // Build a per-feed identity index once. This catches older rows whose URL
-    // still contains tracking parameters and prevents duplicate rows when a
-    // provider changes its GUID or returns the same entry twice in one fetch.
-    const existingRows = db
-      .prepare(
-        `
-          SELECT id, url, guid, title, image_url,
-                 length(content) AS content_length_lower,
-                 length(CAST(content AS BLOB)) AS content_length_upper,
-                 CASE WHEN content IS NOT NULL
-                            AND length(CAST(content AS BLOB)) > 0
-                      THEN 1 ELSE 0 END AS has_content,
-                 CASE WHEN summary IS NOT NULL
-                            AND length(CAST(summary AS BLOB)) > 0
-                      THEN 1 ELSE 0 END AS has_summary,
-                 COALESCE(hidden, 0) AS hidden,
-                 COALESCE(rejected, 0) AS rejected,
-                 COALESCE(thumbs_down, 0) AS thumbs_down,
-                 author, categories,
-                 ${supportsExternalUrl ? 'external_url' : "'' AS external_url"}
-          FROM articles WHERE feed_id = ?
-        `,
-      )
-      .all(feedId) as ExistingArticle[];
-    const readExistingContent = db.prepare(
-      'SELECT content FROM articles WHERE id = ?',
-    );
-    const existingByUrl = new Map<string, ExistingArticle>();
-    const existingByGuid = new Map<string, ExistingArticle>();
-    const existingById = new Map<string, ExistingArticle>();
-    for (const row of existingRows) {
-      existingById.set(row.id, row);
-      const normalizedExistingUrl = normalizeArticleUrl(row.url);
-      if (normalizedExistingUrl && !existingByUrl.has(normalizedExistingUrl)) {
-        existingByUrl.set(normalizedExistingUrl, row);
+    if (sourceType === 'reddit') {
+      const normalizedUrl = normalizeRedditUrl(canonicalUrl).normalizedUrl;
+      if (feedRecord.url !== normalizedUrl) {
+        const duplicateFeed = db
+          .prepare('SELECT id FROM feeds WHERE url = ? AND id != ?')
+          .get(normalizedUrl, feedId) as { id: string } | undefined;
+        if (!duplicateFeed) {
+          db.prepare(
+            'UPDATE feeds SET url = ?, updated_at = ? WHERE id = ?',
+          ).run(normalizedUrl, Date.now(), feedId);
+        }
       }
-      const guid = normalizeGuid(row.guid || undefined);
-      if (guid && !existingByGuid.has(guid)) existingByGuid.set(guid, row);
+    } else if (feedRecord.url !== canonicalUrl) {
+      const duplicateFeed = db
+        .prepare('SELECT id FROM feeds WHERE url = ? AND id != ?')
+        .get(canonicalUrl, feedId) as { id: string } | undefined;
+      if (!duplicateFeed) {
+        db.prepare('UPDATE feeds SET url = ?, updated_at = ? WHERE id = ?').run(
+          canonicalUrl,
+          Date.now(),
+          feedId,
+        );
+      }
     }
 
-    const seenInFetch = new Set<string>();
-    for (const item of fetchResult.items) {
-      // Skip items without URL
-      if (!item.url) continue;
-
-      const normalizedUrl = normalizeArticleUrl(item.url);
-      const guid = normalizeGuid(item.guid);
-      const articleId = generateArticleId(
+    if (fetchResult.notModified) {
+      db.prepare(
+        'UPDATE feed_fetch_logs SET status = ?, articles_found = 0, articles_new = 0, completed_at = ? WHERE id = ?',
+      ).run('success', Date.now(), logId);
+      db.prepare(
+        "UPDATE feeds SET last_fetch_status = 'success', error_count = 0, last_error = '', fetch_count_since_change = ?, updated_at = ? WHERE id = ?",
+      ).run(
+        (feedRecord?.fetch_count_since_change || 0) + 1,
+        Date.now(),
         feedId,
-        normalizedUrl,
-        item.title,
-        guid,
       );
-      const legacyId = legacyArticleId(item.url, item.title, guid);
-      const urlIdentity = normalizedUrl ? `url:${normalizedUrl}` : '';
-      const guidIdentity = guid ? `guid:${guid}` : '';
+      return {
+        success: true,
+        articlesFound: 0,
+        articlesNew: 0,
+        status: 'completed',
+      };
+    }
 
-      if (
-        (urlIdentity && seenInFetch.has(urlIdentity)) ||
-        (guidIdentity && seenInFetch.has(guidIdentity))
+    if (!fetchResult.success) {
+      db.prepare(
+        'UPDATE feed_fetch_logs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?',
+      ).run('error', fetchResult.error || 'Unknown error', Date.now(), logId);
+      db.prepare(
+        "UPDATE feeds SET last_fetch_status = 'error', last_error = ?, error_count = COALESCE(error_count, 0) + ?, updated_at = ? WHERE id = ?",
+      ).run(
+        fetchResult.error || 'Unknown error',
+        options.countFailure === false ? 0 : 1,
+        Date.now(),
+        feedId,
+      );
+      recordAppError({
+        source: 'feed.ingester.fetch',
+        error: fetchResult.error || 'Unknown error',
+        details: {
+          feedId,
+          sourceType,
+          proxyEnabled,
+          proxyConfigured: Boolean(proxyBaseUrl),
+          canonicalUrl,
+          httpStatus: fetchResult.httpStatus ?? null,
+        },
+      });
+      return {
+        success: false,
+        articlesFound: 0,
+        articlesNew: 0,
+        error: fetchResult.error,
+        retryAt: fetchResult.retryAt,
+        permanentFailure: fetchResult.httpStatus === 410,
+      };
+    }
+
+    // Prepare feed metadata and cache headers with the article batch. If any
+    // article write rolls back, the next fetch must still use the prior ETag.
+    const updates: string[] = [];
+    const values: (string | number | null)[] = [];
+    if (fetchResult.title && !feedRecord?.custom_title) {
+      updates.push('title = ?');
+      values.push(fetchResult.title);
+    }
+    if (fetchResult.description) {
+      updates.push('description = ?');
+      values.push(fetchResult.description);
+    }
+    if (fetchResult.link) {
+      updates.push('site_url = ?');
+      values.push(fetchResult.link);
+    }
+    if (fetchResult.imageUrl) {
+      updates.push('icon_url = ?');
+      values.push(fetchResult.imageUrl);
+    }
+
+    updates.push('etag = ?', 'last_modified_header = ?');
+    values.push(fetchResult.etag || null, fetchResult.lastModified || null);
+
+    // Process articles in a transaction for atomicity
+    const newArticleIds: string[] = [];
+    const webhookArticles: Record<string, unknown>[] = [];
+    const aiQueuedArticleIds = new Set<string>();
+    const rankingArticleIds = new Set<string>();
+    const queueAi = fetchResult.items.length > 0 && isAiProcessingConfigured();
+    // Older databases created before the additive external_url migration may
+    // not have this optional column. Keep ingestion compatible without changing
+    // schema or losing the rest of the article row.
+    const supportsExternalUrl = hasArticleColumn('external_url');
+    const ingestTx = db.transaction(() => {
+      let articlesNew = 0;
+      const batchFetchedAt = Date.now();
+      type ExistingArticle = {
+        id: string;
+        url: string;
+        guid: string | null;
+        title: string | null;
+        summary: string | null;
+        image_url: string | null;
+        content_length_lower: number | null;
+        content_length_upper: number | null;
+        has_content: number;
+        has_summary: number;
+        read: number;
+        saved: number;
+        hidden: number;
+        rejected: number;
+        thumbs_down: number;
+        author: string | null;
+        categories: string | null;
+        external_url: string | null;
+      };
+
+      const existingRows = db
+        .prepare(
+          `
+            SELECT id, url, guid, title, summary, image_url,
+                   length(content) AS content_length_lower,
+                   length(CAST(content AS BLOB)) AS content_length_upper,
+                   CASE WHEN content IS NOT NULL
+                              AND length(CAST(content AS BLOB)) > 0
+                        THEN 1 ELSE 0 END AS has_content,
+                   CASE WHEN summary IS NOT NULL
+                              AND length(CAST(summary AS BLOB)) > 0
+                        THEN 1 ELSE 0 END AS has_summary,
+                   COALESCE(read, 0) AS read,
+                   COALESCE(saved, 0) AS saved,
+                   COALESCE(hidden, 0) AS hidden,
+                   COALESCE(rejected, 0) AS rejected,
+                   COALESCE(thumbs_down, 0) AS thumbs_down,
+                   author, categories,
+                   ${supportsExternalUrl ? 'external_url' : "'' AS external_url"}
+            FROM articles WHERE feed_id = ?
+          `,
+        )
+        .all(feedId) as ExistingArticle[];
+      const readExistingContent = db.prepare(
+        'SELECT content FROM articles WHERE id = ?',
+      );
+      const existingByUrl = new Map<string, ExistingArticle[]>();
+      const existingByGuid = new Map<string, ExistingArticle>();
+      const existingById = new Map<string, ExistingArticle>();
+      const addToUrlIndex = (normalizedUrl: string, row: ExistingArticle) => {
+        if (!normalizedUrl) return;
+        const list = existingByUrl.get(normalizedUrl);
+        if (list) {
+          if (!list.includes(row)) list.push(row);
+        } else {
+          existingByUrl.set(normalizedUrl, [row]);
+        }
+      };
+      const removeFromUrlIndex = (
+        normalizedUrl: string,
+        row: ExistingArticle,
+      ) => {
+        if (!normalizedUrl) return;
+        const list = existingByUrl.get(normalizedUrl);
+        if (!list) return;
+        const next = list.filter((candidate) => candidate !== row);
+        if (next.length) existingByUrl.set(normalizedUrl, next);
+        else existingByUrl.delete(normalizedUrl);
+      };
+
+      for (const row of existingRows) {
+        existingById.set(row.id, row);
+        addToUrlIndex(normalizeArticleUrl(row.url), row);
+        const guid = normalizeGuid(row.guid || undefined);
+        if (guid && !existingByGuid.has(guid)) existingByGuid.set(guid, row);
+      }
+
+      // Pre-scan batch GUIDs to detect feeds reusing one GUID across distinct URLs.
+      const guidToUrls = new Map<string, Set<string>>();
+      for (const item of fetchResult.items) {
+        if (!item.url) continue;
+        const rawGuid = normalizeGuid(item.guid);
+        const normalizedUrl = normalizeArticleUrl(item.url);
+        if (!rawGuid || !normalizedUrl) continue;
+        let urls = guidToUrls.get(rawGuid);
+        if (!urls) {
+          urls = new Set();
+          guidToUrls.set(rawGuid, urls);
+        }
+        urls.add(normalizedUrl);
+      }
+      const nonUniqueGuids = new Set<string>();
+      for (const [candidateGuid, urls] of guidToUrls) {
+        if (urls.size > 1) nonUniqueGuids.add(candidateGuid);
+      }
+
+      type PreparedItem = {
+        item: (typeof fetchResult.items)[number];
+        itemIndex: number;
+        normalizedUrl: string;
+        guid: string;
+        articleId: string;
+        legacyId: string;
+      };
+
+      const seenGuidsInFetch = new Set<string>();
+      const preparedItems: PreparedItem[] = [];
+      for (
+        let itemIndex = 0;
+        itemIndex < fetchResult.items.length;
+        itemIndex++
       ) {
-        continue;
+        const item = fetchResult.items[itemIndex];
+        if (!item.url) continue;
+        const normalizedUrl = normalizeArticleUrl(item.url);
+        const rawGuid = normalizeGuid(item.guid);
+        const guid = rawGuid && !nonUniqueGuids.has(rawGuid) ? rawGuid : '';
+        if (guid) {
+          if (seenGuidsInFetch.has(guid)) continue;
+          seenGuidsInFetch.add(guid);
+        }
+        const articleId = generateArticleId(
+          feedId,
+          normalizedUrl,
+          item.title,
+          guid,
+        );
+        const legacyId = legacyArticleId(item.url, item.title, guid);
+        preparedItems.push({
+          item,
+          itemIndex,
+          normalizedUrl,
+          guid,
+          articleId,
+          legacyId,
+        });
       }
-      if (urlIdentity) seenInFetch.add(urlIdentity);
-      if (guidIdentity) seenInFetch.add(guidIdentity);
 
-      // Skip duplicate or update missing data. Prefer canonical URL and GUID
-      // matches, then recognize IDs created by the previous global-GUID
-      // strategy for backward compatibility. Never merge across feeds.
-      const existing =
-        existingByUrl.get(normalizedUrl) ||
-        (guid ? existingByGuid.get(guid) : undefined) ||
-        existingById.get(articleId) ||
-        existingById.get(legacyId);
-      if (existing) {
+      const titlesMatch = (
+        a: string | null | undefined,
+        b: string | undefined,
+      ) => (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+
+      const findUrlMatch = (
+        normalizedUrl: string,
+        title: string,
+        guid: string,
+      ): ExistingArticle | undefined => {
+        const candidates = existingByUrl.get(normalizedUrl);
+        if (!candidates?.length) return undefined;
+        if (guid) {
+          return (
+            candidates.find(
+              (candidate) =>
+                !normalizeGuid(candidate.guid || undefined) &&
+                titlesMatch(candidate.title, title),
+            ) ||
+            candidates.find(
+              (candidate) =>
+                normalizeGuid(candidate.guid || undefined) !== guid &&
+                titlesMatch(candidate.title, title),
+            )
+          );
+        }
+        return (
+          candidates.find(
+            (candidate) => !normalizeGuid(candidate.guid || undefined),
+          ) ||
+          candidates.find((candidate) => titlesMatch(candidate.title, title))
+        );
+      };
+
+      const reconcileExisting = (
+        existing: ExistingArticle,
+        prepared: PreparedItem,
+      ) => {
+        const { item, normalizedUrl, guid } = prepared;
         let needsUpdate = false;
         let rankingInputChanged = false;
-        const updates: string[] = [];
-        const params: any[] = [];
+        const articleUpdates: string[] = [];
+        const params: unknown[] = [];
 
+        const effectiveGuid = normalizeGuid(existing.guid || undefined) || guid;
         if (existing.url !== normalizedUrl) {
-          const urlCollision = db
-            .prepare(
-              'SELECT id FROM articles WHERE feed_id = ? AND url = ? AND id != ?',
-            )
-            .get(feedId, normalizedUrl, existing.id) as
-            { id: string } | undefined;
+          const urlCollision = effectiveGuid
+            ? undefined
+            : (db
+                .prepare(
+                  "SELECT id FROM articles WHERE feed_id = ? AND url = ? AND id != ? AND (guid IS NULL OR guid = '')",
+                )
+                .get(feedId, normalizedUrl, existing.id) as
+                { id: string } | undefined);
           if (!urlCollision) {
-            updates.push('url = ?');
+            const oldNormalizedUrl = normalizeArticleUrl(existing.url);
+            articleUpdates.push('url = ?');
             params.push(normalizedUrl);
             needsUpdate = true;
+            removeFromUrlIndex(oldNormalizedUrl, existing);
+            existing.url = normalizedUrl;
+            addToUrlIndex(normalizedUrl, existing);
           }
         }
 
-        if (!existing.guid && guid) {
-          updates.push('guid = ?');
+        if (!normalizeGuid(existing.guid || undefined) && guid) {
+          articleUpdates.push('guid = ?');
           params.push(guid);
           needsUpdate = true;
+          existing.guid = guid;
+          existingByGuid.set(guid, existing);
         }
 
-        if ((!existing.title || existing.title === 'Untitled') && item.title) {
-          updates.push('title = ?');
+        const isPopulatedGuidMatch =
+          Boolean(guid) && normalizeGuid(existing.guid || undefined) === guid;
+
+        if (
+          ((!existing.title || existing.title === 'Untitled') && item.title) ||
+          (isPopulatedGuidMatch &&
+            Boolean(item.title) &&
+            item.title !== existing.title)
+        ) {
+          articleUpdates.push('title = ?');
           params.push(item.title);
+          existing.title = item.title;
           needsUpdate = true;
           rankingInputChanged = true;
         }
 
         if (!existing.author && item.author) {
-          updates.push('author = ?');
+          articleUpdates.push('author = ?');
           params.push(item.author);
+          existing.author = item.author;
           needsUpdate = true;
           rankingInputChanged = true;
         }
 
         const newLen = item.content?.length || 0;
         let shouldUpgradeContent = false;
-        if (newLen > 0 && !existing.has_content) {
-          shouldUpgradeContent = true;
-        } else if (newLen > Number(existing.content_length_lower || 0) + 50) {
-          const upperLength = Number(existing.content_length_upper || 0);
-          if (newLen > upperLength + 50) {
+        if (!(existing.saved && existing.has_content)) {
+          if (newLen > 0 && !existing.has_content) {
             shouldUpgradeContent = true;
-          } else {
-            // SQLite counts code points or bytes. Read the body only when
-            // those bounds disagree about the JavaScript UTF-16 threshold.
-            const exactRow = readExistingContent.get(existing.id) as
+          } else if (newLen > Number(existing.content_length_lower || 0) + 50) {
+            const upperLength = Number(existing.content_length_upper || 0);
+            if (newLen > upperLength + 50) {
+              shouldUpgradeContent = true;
+            } else {
+              // SQLite counts code points or bytes. Read the body only when
+              // those bounds disagree about the JavaScript UTF-16 threshold.
+              const exactRow = readExistingContent.get(existing.id) as
+                { content: string | null } | undefined;
+              const exactLength = exactRow?.content?.length || 0;
+              shouldUpgradeContent = newLen > exactLength + 50;
+            }
+          }
+
+          if (
+            !shouldUpgradeContent &&
+            newLen > 0 &&
+            newLen !== existing.content_length_lower &&
+            hasArticleAnalysisText(null, item.content)
+          ) {
+            const stored = readExistingContent.get(existing.id) as
               { content: string | null } | undefined;
-            const exactLength = exactRow?.content?.length || 0;
-            shouldUpgradeContent = newLen > exactLength + 50;
+            shouldUpgradeContent = !hasArticleAnalysisText(
+              null,
+              stored?.content,
+            );
           }
         }
 
-        if (
-          !shouldUpgradeContent &&
-          newLen > 0 &&
-          newLen !== existing.content_length_lower &&
-          hasArticleAnalysisText(null, item.content)
-        ) {
-          const stored = readExistingContent.get(existing.id) as
-            { content: string | null } | undefined;
-          shouldUpgradeContent = !hasArticleAnalysisText(null, stored?.content);
-        }
-
         const addsSummary = !existing.has_summary && Boolean(item.summary);
-        if (addsSummary && !shouldUpgradeContent) {
-          updates.push('summary = ?');
+        const updatesGuidSummary =
+          isPopulatedGuidMatch &&
+          Boolean(item.summary) &&
+          item.summary !== (existing.summary || '');
+        if ((addsSummary || updatesGuidSummary) && !shouldUpgradeContent) {
+          articleUpdates.push('summary = ?');
           params.push(item.summary);
+          existing.summary = item.summary || '';
+          existing.has_summary = 1;
           needsUpdate = true;
           rankingInputChanged = true;
         }
 
-        if (!existing.categories && item.categories.length > 0) {
-          updates.push('categories = ?');
-          params.push(JSON.stringify(item.categories));
+        const hasExistingCategories =
+          parseJsonTextArray(existing.categories).length > 0;
+        if (!hasExistingCategories && item.categories.length > 0) {
+          const serializedCategories = JSON.stringify(item.categories);
+          articleUpdates.push('categories = ?');
+          params.push(serializedCategories);
+          existing.categories = serializedCategories;
           needsUpdate = true;
           rankingInputChanged = true;
         }
 
         if (!existing.image_url && item.imageUrl) {
-          updates.push('image_url = ?');
+          articleUpdates.push('image_url = ?');
           params.push(item.imageUrl);
+          existing.image_url = item.imageUrl;
           needsUpdate = true;
         }
 
         if (supportsExternalUrl && !existing.external_url && item.externalUrl) {
-          updates.push('external_url = ?');
+          articleUpdates.push('external_url = ?');
           params.push(item.externalUrl);
+          existing.external_url = item.externalUrl;
           needsUpdate = true;
         }
 
         // If the new content is significantly longer, it is likely a
         // transition from a snippet to full content.
         if (shouldUpgradeContent) {
-          updates.push('content = ?');
+          articleUpdates.push('content = ?');
           params.push(item.content);
+          existing.has_content = item.content ? 1 : 0;
+          existing.content_length_lower = item.content?.length || 0;
+          existing.content_length_upper = item.content?.length || 0;
           if (item.summary) {
-            updates.push('summary = ?');
+            articleUpdates.push('summary = ?');
             params.push(item.summary);
+            existing.summary = item.summary;
+            existing.has_summary = 1;
           }
           needsUpdate = true;
           rankingInputChanged = true;
@@ -550,11 +702,11 @@ export async function ingestFeed(
         if (needsUpdate) {
           params.push(existing.id);
           db.prepare(
-            `UPDATE articles SET ${updates.join(', ')}, updated_at = ? WHERE id = ?`,
+            `UPDATE articles SET ${articleUpdates.join(', ')}, updated_at = ? WHERE id = ?`,
           ).run(...params.slice(0, -1), Date.now(), params.at(-1));
         }
 
-        const existingVisible =
+        let existingVisible =
           !existing.hidden && !existing.rejected && !existing.thumbs_down;
 
         if (rankingInputChanged) {
@@ -576,6 +728,31 @@ export async function ingestFeed(
                WHERE article_id = ?`,
             ).run(existing.id);
           }
+          if (
+            shouldUpgradeContent &&
+            existingVisible &&
+            !existing.read &&
+            !existing.saved
+          ) {
+            applyPreferenceModelToArticle(existing.id);
+            const refreshedVisibility = db
+              .prepare(
+                'SELECT hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+              )
+              .get(existing.id) as
+              | { hidden: number; rejected: number; thumbs_down: number }
+              | undefined;
+            existingVisible =
+              Boolean(refreshedVisibility) &&
+              !refreshedVisibility?.hidden &&
+              !refreshedVisibility?.rejected &&
+              !refreshedVisibility?.thumbs_down;
+            existing.hidden = refreshedVisibility?.hidden ? 1 : 0;
+            existing.rejected = refreshedVisibility?.rejected ? 1 : 0;
+            existing.thumbs_down = refreshedVisibility?.thumbs_down ? 1 : 0;
+          } else {
+            updateHeuristicScore(existing.id);
+          }
           refreshCombinedScore(existing.id);
           if (existingVisible) rankingArticleIds.add(existing.id);
         }
@@ -591,143 +768,180 @@ export async function ingestFeed(
           enqueueAiProcess(existing.id, { feedId });
           aiQueuedArticleIds.add(existing.id);
         }
-        continue;
-      }
-
-      // Use fetch time for invalid or future publisher timestamps.
-      const fetchedAt = Date.now();
-      const publishedAt = item.publishedAt?.getTime();
-      const storedPublishedAt =
-        publishedAt != null &&
-        Number.isFinite(publishedAt) &&
-        publishedAt <= fetchedAt
-          ? publishedAt
-          : null;
-
-      // Insert new article
-      const articleColumns = supportsExternalUrl
-        ? 'id, feed_id, guid, url, title, author, summary, content, image_url, external_url, categories, published_at, fetched_at, created_at, updated_at'
-        : 'id, feed_id, guid, url, title, author, summary, content, image_url, categories, published_at, fetched_at, created_at, updated_at';
-      const articleValues = supportsExternalUrl
-        ? [
-            articleId,
-            feedId,
-            item.guid || '',
-            normalizedUrl,
-            item.title,
-            item.author || '',
-            item.summary || '',
-            item.content || '',
-            item.imageUrl || '',
-            item.externalUrl || '',
-            JSON.stringify(item.categories),
-            storedPublishedAt,
-            fetchedAt,
-            fetchedAt,
-            fetchedAt,
-          ]
-        : [
-            articleId,
-            feedId,
-            item.guid || '',
-            normalizedUrl,
-            item.title,
-            item.author || '',
-            item.summary || '',
-            item.content || '',
-            item.imageUrl || '',
-            JSON.stringify(item.categories),
-            storedPublishedAt,
-            fetchedAt,
-            fetchedAt,
-            fetchedAt,
-          ];
-      db.prepare(
-        `INSERT INTO articles (${articleColumns}) VALUES (${articleValues.map(() => '?').join(', ')})`,
-      ).run(...articleValues);
-      applyPreferenceModelToArticle(articleId);
-      const visibility = db
-        .prepare(
-          'SELECT hidden, rejected, thumbs_down FROM articles WHERE id = ?',
-        )
-        .get(articleId) as
-        { hidden: number; rejected: number; thumbs_down: number } | undefined;
-      const isVisible =
-        Boolean(visibility) &&
-        !visibility?.hidden &&
-        !visibility?.rejected &&
-        !visibility?.thumbs_down;
-      if (
-        isVisible &&
-        queueAi &&
-        hasArticleAnalysisText(item.summary, item.content)
-      ) {
-        enqueueAiProcess(articleId, { feedId });
-        aiQueuedArticleIds.add(articleId);
-      }
-
-      const newArticle = db
-        .prepare('SELECT * FROM articles WHERE id = ?')
-        .get(articleId) as Record<string, unknown> | undefined;
-      if (newArticle) webhookArticles.push(newArticle);
-
-      newArticleIds.push(articleId);
-      if (isVisible) rankingArticleIds.add(articleId);
-      const inserted: ExistingArticle = {
-        id: articleId,
-        url: normalizedUrl,
-        guid: guid || null,
-        title: item.title,
-        image_url: item.imageUrl || null,
-        content_length_lower: item.content?.length || 0,
-        content_length_upper: item.content?.length || 0,
-        has_content: item.content ? 1 : 0,
-        has_summary: item.summary ? 1 : 0,
-        hidden: visibility?.hidden ? 1 : 0,
-        rejected: visibility?.rejected ? 1 : 0,
-        thumbs_down: visibility?.thumbs_down ? 1 : 0,
-        author: item.author || null,
-        categories: item.categories.length
-          ? JSON.stringify(item.categories)
-          : null,
-        external_url: item.externalUrl || null,
       };
-      existingById.set(articleId, inserted);
-      existingByUrl.set(normalizedUrl, inserted);
-      if (guid) existingByGuid.set(guid, inserted);
-      articlesNew++;
-    }
 
-    // Update fetch log
-    db.prepare(
-      'UPDATE feed_fetch_logs SET status = ?, articles_found = ?, articles_new = ?, completed_at = ? WHERE id = ?',
-    ).run('success', fetchResult.items.length, articlesNew, Date.now(), logId);
+      // Pass 1: reconcile populated GUIDs first so moved URLs free up rotating paths.
+      const deferredItems: PreparedItem[] = [];
+      for (const prepared of preparedItems) {
+        if (!prepared.guid) {
+          deferredItems.push(prepared);
+          continue;
+        }
+        const guidMatch =
+          existingByGuid.get(prepared.guid) ||
+          existingById.get(prepared.articleId) ||
+          existingById.get(prepared.legacyId);
+        if (guidMatch) {
+          reconcileExisting(guidMatch, prepared);
+        } else {
+          deferredItems.push(prepared);
+        }
+      }
 
-    // Update feed status and adaptive polling info
-    if (articlesNew > 0) {
+      // Pass 2: reconcile remaining items by URL/ID or insert new articles.
+      for (const prepared of deferredItems) {
+        const { item, itemIndex, normalizedUrl, guid, articleId, legacyId } =
+          prepared;
+        const existing =
+          findUrlMatch(normalizedUrl, item.title, guid) ||
+          existingById.get(articleId) ||
+          existingById.get(legacyId);
+        if (existing) {
+          reconcileExisting(existing, prepared);
+          continue;
+        }
+
+        // Preserve feed ordering (newest-first) for undated items via descending fetched_at.
+        const fetchedAt = batchFetchedAt - itemIndex;
+        const publishedAt = item.publishedAt?.getTime();
+        const storedPublishedAt =
+          publishedAt != null &&
+          Number.isFinite(publishedAt) &&
+          publishedAt <= batchFetchedAt
+            ? publishedAt
+            : null;
+
+        const articleColumns = supportsExternalUrl
+          ? 'id, feed_id, guid, url, title, author, summary, content, image_url, external_url, categories, published_at, fetched_at, created_at, updated_at'
+          : 'id, feed_id, guid, url, title, author, summary, content, image_url, categories, published_at, fetched_at, created_at, updated_at';
+        const articleValues = supportsExternalUrl
+          ? [
+              articleId,
+              feedId,
+              guid,
+              normalizedUrl,
+              item.title,
+              item.author || '',
+              item.summary || '',
+              item.content || '',
+              item.imageUrl || '',
+              item.externalUrl || '',
+              JSON.stringify(item.categories),
+              storedPublishedAt,
+              fetchedAt,
+              batchFetchedAt,
+              batchFetchedAt,
+            ]
+          : [
+              articleId,
+              feedId,
+              guid,
+              normalizedUrl,
+              item.title,
+              item.author || '',
+              item.summary || '',
+              item.content || '',
+              item.imageUrl || '',
+              JSON.stringify(item.categories),
+              storedPublishedAt,
+              fetchedAt,
+              batchFetchedAt,
+              batchFetchedAt,
+            ];
+        db.prepare(
+          `INSERT INTO articles (${articleColumns}) VALUES (${articleValues.map(() => '?').join(', ')})`,
+        ).run(...articleValues);
+        applyPreferenceModelToArticle(articleId);
+        const visibility = db
+          .prepare(
+            'SELECT hidden, rejected, thumbs_down FROM articles WHERE id = ?',
+          )
+          .get(articleId) as
+          { hidden: number; rejected: number; thumbs_down: number } | undefined;
+        const isVisible =
+          Boolean(visibility) &&
+          !visibility?.hidden &&
+          !visibility?.rejected &&
+          !visibility?.thumbs_down;
+        if (
+          isVisible &&
+          queueAi &&
+          hasArticleAnalysisText(item.summary, item.content)
+        ) {
+          enqueueAiProcess(articleId, { feedId });
+          aiQueuedArticleIds.add(articleId);
+        }
+
+        const newArticle = db
+          .prepare('SELECT * FROM articles WHERE id = ?')
+          .get(articleId) as Record<string, unknown> | undefined;
+        if (newArticle) webhookArticles.push(newArticle);
+
+        newArticleIds.push(articleId);
+        if (isVisible) rankingArticleIds.add(articleId);
+        const inserted: ExistingArticle = {
+          id: articleId,
+          url: normalizedUrl,
+          guid: guid || null,
+          title: item.title,
+          summary: item.summary || null,
+          image_url: item.imageUrl || null,
+          content_length_lower: item.content?.length || 0,
+          content_length_upper: item.content?.length || 0,
+          has_content: item.content ? 1 : 0,
+          has_summary: item.summary ? 1 : 0,
+          read: 0,
+          saved: 0,
+          hidden: visibility?.hidden ? 1 : 0,
+          rejected: visibility?.rejected ? 1 : 0,
+          thumbs_down: visibility?.thumbs_down ? 1 : 0,
+          author: item.author || null,
+          categories: item.categories.length
+            ? JSON.stringify(item.categories)
+            : '[]',
+          external_url: item.externalUrl || null,
+        };
+        existingById.set(articleId, inserted);
+        addToUrlIndex(normalizedUrl, inserted);
+        if (guid) existingByGuid.set(guid, inserted);
+        articlesNew++;
+      }
+
+      // Update fetch log
       db.prepare(
-        "UPDATE feeds SET last_fetch_status = 'success', error_count = 0, last_error = '', last_changed_at = ?, fetch_count_since_change = 0, updated_at = ? WHERE id = ?",
-      ).run(Date.now(), Date.now(), feedId);
-    } else {
-      db.prepare(
-        "UPDATE feeds SET last_fetch_status = 'success', error_count = 0, last_error = '', fetch_count_since_change = ?, updated_at = ? WHERE id = ?",
+        'UPDATE feed_fetch_logs SET status = ?, articles_found = ?, articles_new = ?, completed_at = ? WHERE id = ?',
       ).run(
-        (feedRecord?.fetch_count_since_change || 0) + 1,
+        'success',
+        fetchResult.items.length,
+        articlesNew,
         Date.now(),
-        feedId,
+        logId,
       );
-    }
 
-    updates.push('updated_at = ?');
-    values.push(Date.now(), feedId);
-    db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(
-      ...values,
-    );
+      // Update feed status and adaptive polling info
+      if (articlesNew > 0) {
+        db.prepare(
+          "UPDATE feeds SET last_fetch_status = 'success', error_count = 0, last_error = '', last_changed_at = ?, fetch_count_since_change = 0, updated_at = ? WHERE id = ?",
+        ).run(Date.now(), Date.now(), feedId);
+      } else {
+        db.prepare(
+          "UPDATE feeds SET last_fetch_status = 'success', error_count = 0, last_error = '', fetch_count_since_change = ?, updated_at = ? WHERE id = ?",
+        ).run(
+          (feedRecord?.fetch_count_since_change || 0) + 1,
+          Date.now(),
+          feedId,
+        );
+      }
 
-    return articlesNew;
-  });
+      updates.push('updated_at = ?');
+      values.push(Date.now(), feedId);
+      db.prepare(`UPDATE feeds SET ${updates.join(', ')} WHERE id = ?`).run(
+        ...values,
+      );
 
-  try {
+      return articlesNew;
+    });
+
     const articlesNew = ingestTx();
 
     for (const article of webhookArticles) {
@@ -780,7 +994,7 @@ export async function ingestFeed(
     };
   } catch (err) {
     const errorMessage =
-      err instanceof Error ? err.message : 'Transaction failed';
+      err instanceof Error ? err.message : 'Feed ingestion failed';
     db.prepare(
       'UPDATE feed_fetch_logs SET status = ?, error_message = ?, completed_at = ? WHERE id = ?',
     ).run('error', errorMessage, Date.now(), logId);

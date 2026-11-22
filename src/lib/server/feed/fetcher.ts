@@ -47,8 +47,8 @@ const parser: FeedParser = new Parser({
   timeout: 15000,
   customFields: {
     item: [
-      ['media:content', 'mediaContent', { keepArray: false }],
-      ['media:thumbnail', 'mediaThumbnail', { keepArray: false }],
+      ['media:content', 'mediaContent', { keepArray: true }],
+      ['media:thumbnail', 'mediaThumbnail', { keepArray: true }],
       ['dc:creator', 'dcCreator'],
       ['dc:date', 'dcDate'],
     ],
@@ -56,28 +56,172 @@ const parser: FeedParser = new Parser({
 });
 
 const RSS_TIMEZONE_OFFSETS: Record<string, string> = {
+  ACDT: '+1030',
+  ACST: '+0930',
+  ADT: '-0300',
+  AEDT: '+1100',
+  AEST: '+1000',
+  AKDT: '-0800',
+  AKST: '-0900',
+  AST: '-0400',
+  AWST: '+0800',
   BST: '+0100',
-  CET: '+0100',
+  CAT: '+0200',
   CEST: '+0200',
-  EET: '+0200',
+  CET: '+0100',
+  EAT: '+0300',
   EEST: '+0300',
+  EET: '+0200',
+  HKT: '+0800',
+  HST: '-1000',
+  IST: '+0530',
   JST: '+0900',
   KST: '+0900',
+  MSK: '+0300',
+  NDT: '-0230',
+  NST: '-0330',
+  NZDT: '+1300',
+  NZST: '+1200',
+  PKT: '+0500',
+  SAST: '+0200',
+  SGT: '+0800',
+  WAT: '+0100',
+  WEST: '+0100',
+  WET: '+0000',
 };
 
 function parsePublicationDate(...candidates: unknown[]): Date | undefined {
   for (const candidate of candidates) {
-    if (typeof candidate !== 'string' || !candidate.trim()) continue;
-    const value = candidate
-      .trim()
-      .replace(/\s([A-Z]{3,4})$/i, (full, zone: string) =>
+    const raw = coerceText(candidate);
+    if (!raw) continue;
+    const value = raw.replace(
+      /\s+\(?([A-Z]{2,5})\)?$/i,
+      (full, zone: string) =>
         RSS_TIMEZONE_OFFSETS[zone.toUpperCase()]
           ? ' ' + RSS_TIMEZONE_OFFSETS[zone.toUpperCase()]
           : full,
-      );
+    );
     const date = new Date(value);
     if (Number.isFinite(date.getTime())) return date;
   }
+}
+
+function escapeBareAmpersands(xml: string): string {
+  return xml.replace(
+    /(<!\[CDATA\[[\s\S]*?\]\]>)|&(?!#(?:\d+|x[0-9a-fA-F]+);|[a-zA-Z][\w.-]*;)/g,
+    (_match, cdata: string | undefined) => (cdata ? cdata : '&amp;'),
+  );
+}
+
+async function parseRssXml(xml: string) {
+  try {
+    return await parser.parseString(xml);
+  } catch (firstError) {
+    const escaped = escapeBareAmpersands(xml);
+    if (escaped !== xml) {
+      return await parser.parseString(escaped);
+    }
+    throw firstError;
+  }
+}
+
+type MediaEntry = {
+  $?: { url?: string; medium?: string; type?: string };
+  url?: string;
+  medium?: string;
+  type?: string;
+  baseUrl?: string;
+};
+
+function toMediaArray(value: unknown): MediaEntry[] {
+  if (!value) return [];
+  return (Array.isArray(value) ? value : [value]).filter(
+    (entry): entry is MediaEntry => Boolean(entry && typeof entry === 'object'),
+  );
+}
+
+function getMediaUrl(entry: MediaEntry): string {
+  if (typeof entry.$?.url === 'string' && entry.$.url.trim()) {
+    return entry.$.url.trim();
+  }
+  if (typeof entry.url === 'string' && entry.url.trim()) {
+    return entry.url.trim();
+  }
+  return '';
+}
+
+function getMediaKind(entry: MediaEntry): { medium: string; type: string } {
+  return {
+    medium: String(entry.$?.medium ?? entry.medium ?? '')
+      .trim()
+      .toLowerCase(),
+    type: String(entry.$?.type ?? entry.type ?? '')
+      .trim()
+      .toLowerCase(),
+  };
+}
+
+function isExplicitImageMedia(entry: MediaEntry): boolean {
+  const { medium, type } = getMediaKind(entry);
+  return medium === 'image' || type.startsWith('image/');
+}
+
+function isNonImageMedia(entry: MediaEntry, url: string): boolean {
+  const { medium, type } = getMediaKind(entry);
+  if (
+    medium === 'audio' ||
+    medium === 'video' ||
+    type.startsWith('audio/') ||
+    type.startsWith('video/') ||
+    (type !== '' && !type.startsWith('image/'))
+  ) {
+    return true;
+  }
+  return /\.(?:mp3|m4a|ogg|opus|wav|aac|flac|mp4|webm|mov|m4v)(?:[?#]|$)/i.test(
+    url,
+  );
+}
+
+function pickMediaImage(
+  mediaContent: unknown,
+  mediaThumbnail: unknown,
+  enclosure: unknown,
+): { url: string; baseUrl?: string } {
+  const contents = toMediaArray(mediaContent);
+  const thumbnails = toMediaArray(mediaThumbnail);
+
+  for (const entry of contents) {
+    const url = getMediaUrl(entry);
+    if (url && isExplicitImageMedia(entry)) {
+      return { url, baseUrl: entry.baseUrl };
+    }
+  }
+
+  for (const entry of thumbnails) {
+    const url = getMediaUrl(entry);
+    if (url) {
+      return { url, baseUrl: entry.baseUrl };
+    }
+  }
+
+  const enc = enclosure as { url?: unknown; type?: unknown } | undefined;
+  if (
+    typeof enc?.url === 'string' &&
+    enc.url.trim() &&
+    typeof enc.type === 'string' &&
+    enc.type.toLowerCase().startsWith('image/')
+  ) {
+    return { url: enc.url.trim() };
+  }
+
+  for (const entry of contents) {
+    const url = getMediaUrl(entry);
+    if (url && !isNonImageMedia(entry, url)) {
+      return { url, baseUrl: entry.baseUrl };
+    }
+  }
+
+  return { url: '' };
 }
 
 function safeHttpUrl(value: unknown, baseUrl: string): string {
@@ -132,64 +276,164 @@ function parseAtom(xml: string, baseUrl: string) {
   const root = new DOMParser().parseFromString(xml, 'text/xml')
     .documentElement as unknown as Element | null;
   if (root?.localName.split(':').at(-1) !== 'feed') return null;
+
+  const hasClosingFeed =
+    /<\/(?:[\w.-]+:)?feed\s*>/i.test(xml) ||
+    /<(?:[\w.-]+:)?feed\b[^>]*\/>/i.test(xml);
+  if (!hasClosingFeed) {
+    throw new Error('Truncated Atom feed: missing closing </feed> tag');
+  }
+
+  const isMediaElement = (element: Element) =>
+    element.prefix === 'media' ||
+    element.tagName.toLowerCase().startsWith('media:') ||
+    element.namespaceURI === 'http://search.yahoo.com/mrss/';
   const children = (node: Element, name: string) =>
     Array.from(node.children).filter(
-      (child) => child.localName.split(':').at(-1) === name,
+      (child) =>
+        !isMediaElement(child) && child.localName.split(':').at(-1) === name,
     );
+  const mediaChildren = (node: Element, name: string) =>
+    Array.from(node.children).filter(
+      (child) =>
+        isMediaElement(child) && child.localName.split(':').at(-1) === name,
+    );
+  const resolveDeclaredXmlBase = (
+    element: Element,
+    fallbackBase: string,
+  ): string | undefined => {
+    let resolved = fallbackBase;
+    let hasDeclaredBase = false;
+    const chain: Element[] = [];
+    for (
+      let ancestor: Element | null = element;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      chain.unshift(ancestor);
+    }
+    for (const ancestor of chain) {
+      const declared = ancestor.getAttribute('xml:base');
+      if (declared) {
+        const next = safeHttpUrl(declared, resolved);
+        if (next) {
+          resolved = next;
+          hasDeclaredBase = true;
+        }
+      }
+    }
+    return hasDeclaredBase ? resolved : undefined;
+  };
+  const escapeTextForHtml = (value: string) =>
+    value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const text = (node: Element, name: string) =>
     children(node, name)[0]?.textContent?.trim();
-  const atomText = (node: Element, name: string) => {
+  const atomPlainText = (node: Element, name: string) => {
     const element = children(node, name)[0];
     if (!element) return undefined;
-    const type = element.getAttribute('type');
-    if (type === 'xhtml') return element.innerHTML;
+    const type = element.getAttribute('type')?.toLowerCase();
+    if (type === 'xhtml') {
+      return stripHtml(element.innerHTML) || undefined;
+    }
     const content = element.textContent?.trim() || '';
-    return type === 'html'
-      ? content
-      : content
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
+    if (!content) return undefined;
+    if (type === 'html') {
+      return stripHtml(content) || undefined;
+    }
+    return content;
+  };
+  const atomText = (
+    node: Element,
+    name: string,
+  ): { value?: string; base?: string } => {
+    const element = children(node, name)[0];
+    if (!element) return {};
+    const declaredBase = resolveDeclaredXmlBase(element, baseUrl);
+    const type = element.getAttribute('type')?.toLowerCase();
+    if (type === 'xhtml') {
+      return { value: element.innerHTML, base: declaredBase };
+    }
+    const content = element.textContent?.trim() || '';
+    return {
+      value: type === 'html' ? content : escapeTextForHtml(content),
+      base: declaredBase,
+    };
   };
   const link = (node: Element) => {
     for (const element of children(node, 'link')) {
       const relation = element.getAttribute('rel');
       if (relation && relation !== 'alternate') continue;
-      let resolvedBase = baseUrl;
-      const chain = [];
-      for (
-        let ancestor: Element | null = element;
-        ancestor;
-        ancestor = ancestor.parentElement
-      )
-        chain.unshift(ancestor);
-      for (const ancestor of chain) {
-        const declared = ancestor.getAttribute('xml:base');
-        if (declared)
-          resolvedBase = safeHttpUrl(declared, resolvedBase) || resolvedBase;
-      }
+      const resolvedBase = resolveDeclaredXmlBase(element, baseUrl) || baseUrl;
       const href = safeHttpUrl(element.getAttribute('href'), resolvedBase);
       if (href) return href;
     }
     return '';
   };
+  const feedDeclaredBase = resolveDeclaredXmlBase(root, baseUrl) || baseUrl;
   return {
-    title: text(root, 'title'),
-    description: text(root, 'subtitle'),
+    title: atomPlainText(root, 'title'),
+    description: atomPlainText(root, 'subtitle'),
     link: link(root),
-    image: { url: text(root, 'logo') || text(root, 'icon') },
+    image: {
+      url:
+        safeHttpUrl(
+          text(root, 'logo') || text(root, 'icon'),
+          feedDeclaredBase,
+        ) ||
+        text(root, 'logo') ||
+        text(root, 'icon'),
+    },
     items: children(root, 'entry').map((entry): Record<string, unknown> => {
       const authors = [
         ...children(entry, 'author'),
         ...children(root, 'author'),
       ];
+      const summary = atomText(entry, 'summary');
+      const content = atomText(entry, 'content');
+      const mediaGroups = mediaChildren(entry, 'group');
+      const mediaScope = [entry, ...mediaGroups];
+      const mediaContent = mediaScope.flatMap((scope) =>
+        mediaChildren(scope, 'content').map((el) => ({
+          $: {
+            url: el.getAttribute('url') || '',
+            medium: el.getAttribute('medium') || '',
+            type: el.getAttribute('type') || '',
+          },
+          baseUrl: resolveDeclaredXmlBase(el, baseUrl),
+        })),
+      );
+      const mediaThumbnail = mediaScope.flatMap((scope) =>
+        mediaChildren(scope, 'thumbnail').map((el) => ({
+          $: { url: el.getAttribute('url') || '' },
+          baseUrl: resolveDeclaredXmlBase(el, baseUrl),
+        })),
+      );
+      const mediaDescriptionEl = mediaScope
+        .flatMap((scope) => mediaChildren(scope, 'description'))
+        .find((el) => Boolean(el.textContent?.trim()));
+      const summaryValue =
+        summary.value ||
+        (mediaDescriptionEl
+          ? escapeTextForHtml(mediaDescriptionEl.textContent!.trim())
+          : undefined);
+      const summaryBase =
+        summary.base ||
+        (mediaDescriptionEl
+          ? resolveDeclaredXmlBase(mediaDescriptionEl, baseUrl)
+          : undefined);
+      const entryDeclaredBase = resolveDeclaredXmlBase(entry, baseUrl);
       return {
         id: text(entry, 'id'),
-        title: text(entry, 'title'),
+        title: atomPlainText(entry, 'title'),
         link: link(entry),
+        baseUrl: entryDeclaredBase,
         author: authors.map((author) => text(author, 'name')).find(Boolean),
-        summary: atomText(entry, 'summary'),
-        content: atomText(entry, 'content'),
+        summary: summaryValue,
+        summaryBase,
+        content: content.value,
+        contentBase: content.base,
+        mediaContent,
+        mediaThumbnail,
         categories: children(entry, 'category').map((category) =>
           category.getAttribute('term'),
         ),
@@ -231,6 +475,14 @@ function parseJsonFeed(source: string) {
         (value) =>
           typeof value === 'string' && Number.isFinite(Date.parse(value)),
       );
+      const summaryRaw = coerceText(item.summary);
+      const contentTextRaw = coerceText(item.content_text);
+      const contentHtmlRaw = coerceText(item.content_html);
+      const derivedSummary = summaryRaw
+        ? htmlText(summaryRaw)
+        : contentTextRaw
+          ? htmlText(contentTextRaw)
+          : contentHtmlRaw || '';
       return [
         {
           guid: item.id,
@@ -238,8 +490,8 @@ function parseJsonFeed(source: string) {
           externalUrl: item.external_url,
           title: item.title,
           author: author?.name,
-          summary: htmlText(item.summary),
-          content: coerceText(item.content_html) || htmlText(item.content_text),
+          summary: derivedSummary,
+          content: contentHtmlRaw || htmlText(contentTextRaw),
           mediaContent: { url: item.image || item.banner_image },
           categories: item.tags,
           pubDate: date,
@@ -390,40 +642,30 @@ export async function fetchFeed(
       };
     }
     const isAtom =
-      /^\s*(?:<\?xml[^?]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:[\w.-]+:)?feed[\s>]/i.test(
+      /^(?:\s|\uFEFF)*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\b(?:\[[\s\S]*?\]|[^>])*>)*(?:<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\b(?:\[[\s\S]*?\]|[^>])*>|\s)*<(?:[\w.-]+:)?feed[\s>]/i.test(
         xml,
       );
     const result = xml.trimStart().startsWith('{')
       ? parseJsonFeed(xml)
       : ((isAtom ? parseAtom(xml, finalUrl) : null) ??
-        (await parser.parseString(xml)));
+        (await parseRssXml(xml)));
 
     const newEtag = response.headers.get('etag') || undefined;
     const newLastModified = response.headers.get('last-modified') || undefined;
 
     const items: FetchedItem[] = (result.items || [])
       .map((item: Record<string, unknown>) => {
-        // Extract image from various possible sources
-        let imageUrl = '';
-
-        const mediaContent = item.mediaContent as any;
-        const mediaThumbnail = item.mediaThumbnail as any;
-        const enclosure = item.enclosure as any;
-
-        if (mediaContent?.$?.url) {
-          imageUrl = mediaContent.$.url;
-        } else if (mediaThumbnail?.$?.url) {
-          imageUrl = mediaThumbnail.$.url;
-        } else if (enclosure?.url && enclosure?.type?.startsWith('image/')) {
-          imageUrl = enclosure.url;
-        } else if (typeof mediaContent?.url === 'string') {
-          imageUrl = mediaContent.url;
-        } else if (typeof mediaThumbnail?.url === 'string') {
-          imageUrl = mediaThumbnail.url;
-        }
+        const pickedMedia = pickMediaImage(
+          item.mediaContent,
+          item.mediaThumbnail,
+          item.enclosure,
+        );
+        let imageUrl = pickedMedia.url;
 
         const summary =
-          coerceText(item.summary) || coerceText(item.contentSnippet);
+          coerceText(item.summary) ||
+          coerceText(item.content) ||
+          coerceText(item.contentSnippet);
         const content =
           coerceText(item['content:encoded']) ||
           coerceText(item.content) ||
@@ -444,7 +686,8 @@ export async function fetchFeed(
           }
         }
 
-        const identifier = coerceText(item.guid || item.id);
+        const identifier = coerceText(item.guid) || coerceText(item.id);
+        const enclosure = item.enclosure as { url?: unknown } | undefined;
         const safeUrl =
           safeHttpUrl(item.link, finalUrl) ||
           safeHttpUrl(item['rdf:about'], finalUrl) ||
@@ -453,17 +696,28 @@ export async function fetchFeed(
             ? safeHttpUrl(identifier, finalUrl)
             : '');
         if (!safeUrl) return null;
-        const safeImageUrl = safeHttpUrl(imageUrl, safeUrl);
+        const itemBase =
+          (typeof item.baseUrl === 'string' && item.baseUrl) ||
+          safeUrl ||
+          finalUrl;
+        const summaryBase =
+          (typeof item.summaryBase === 'string' && item.summaryBase) ||
+          itemBase;
+        const contentBase =
+          (typeof item.contentBase === 'string' && item.contentBase) ||
+          itemBase;
+        const mediaBase = pickedMedia.baseUrl || itemBase;
+        const safeImageUrl = safeHttpUrl(imageUrl, mediaBase);
         const externalUrl = safeHttpUrl(item.externalUrl, finalUrl);
 
-        const cleanSummary = sanitizeHtml(summary, safeUrl);
+        const cleanSummary = sanitizeHtml(summary, summaryBase);
         const boundedSummary =
           cleanSummary.length > 500
             ? stripHtml(cleanSummary).slice(0, 500).trim()
             : cleanSummary;
 
         return {
-          guid: coerceText(item.guid || item.id || item.link),
+          guid: identifier || undefined,
           url: safeUrl,
           title: coerceText(item.title) || 'Untitled',
           author:
@@ -472,7 +726,7 @@ export async function fetchFeed(
             coerceText(item['dc:creator']) ||
             undefined,
           summary: boundedSummary || undefined,
-          content: sanitizeHtml(content, safeUrl) || undefined,
+          content: sanitizeHtml(content, contentBase) || undefined,
           imageUrl: safeImageUrl || undefined,
           externalUrl:
             externalUrl && externalUrl !== safeUrl ? externalUrl : undefined,
@@ -481,6 +735,7 @@ export async function fetchFeed(
             item.pubDate,
             item.isoDate,
             item.dcDate,
+            item['dc:date'],
           ),
         } as FetchedItem;
       })

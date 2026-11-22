@@ -90,10 +90,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   // Detect and validate Reddit URLs
   if (isRedditUrl(url)) {
     const redditSource = normalizeRedditUrl(url);
-    let validation = await fetchRedditSource(redditSource);
-    if (!validation.success && proxyBaseUrl) {
+    const overallDeadline = AbortSignal.timeout(30_000);
+    let validation = await fetchRedditSource(redditSource, {
+      deadline: AbortSignal.any([overallDeadline, AbortSignal.timeout(15_000)]),
+    });
+    if (!validation.success && proxyBaseUrl && !overallDeadline.aborted) {
       const proxiedValidation = await fetchRedditSource(redditSource, {
         proxyBaseUrl,
+        deadline: AbortSignal.any([
+          overallDeadline,
+          AbortSignal.timeout(15_000),
+        ]),
       });
       if (proxiedValidation.success) {
         validation = proxiedValidation;
@@ -146,13 +153,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         { error: 'Feed URL already exists', field: 'url' },
         { status: 409 },
       );
-    const deadline = AbortSignal.timeout(15_000);
-    let result = await fetchFeed(url, { discover: true, deadline });
-    if (!result.success && proxyBaseUrl && !deadline.aborted) {
+    const overallDeadline = AbortSignal.timeout(30_000);
+    let result = await fetchFeed(url, {
+      discover: true,
+      deadline: AbortSignal.any([overallDeadline, AbortSignal.timeout(15_000)]),
+    });
+    if (!result.success && proxyBaseUrl && !overallDeadline.aborted) {
       const throughProxy = await fetchFeed(url, {
         discover: true,
         proxyBaseUrl,
-        deadline,
+        deadline: AbortSignal.any([
+          overallDeadline,
+          AbortSignal.timeout(15_000),
+        ]),
       });
       if (throughProxy.success) {
         result = throughProxy;

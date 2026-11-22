@@ -109,7 +109,16 @@ describe('Database initialization', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .pluck()
         .all();
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      const articleIndexes = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'articles'",
+        )
+        .pluck()
+        .all();
+      expect(articleIndexes).toContain('idx_articles_feed_url_noguid');
+      expect(articleIndexes).toContain('idx_articles_feed_url_lookup');
+      expect(articleIndexes).not.toContain('idx_articles_feed_url');
       initializeDatabase();
       expect(
         db

@@ -1298,6 +1298,7 @@
           <div class="prose-glass overflow-x-auto">
             {@html renderContent(
               cachedArticle.content || cachedArticle.summary,
+              cachedArticle.url,
             )}
           </div>
         {:else}

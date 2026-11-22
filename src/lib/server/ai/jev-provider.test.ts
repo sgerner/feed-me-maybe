@@ -586,4 +586,76 @@ describe('selected ranking provider', () => {
       { source: 'https://blank.example.com/rss', interactions: 1 },
     ]);
   });
+
+  it('rejects in-flight scores after stub content upgrades while allowing read/save updated_at bumps', async () => {
+    await insertArticle('stub-upgrade-race');
+    await insertArticle('read-bump-ok');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { scoreArticleWithJev } = await import('./jev');
+    const db = getDb();
+
+    let resolveUpgradeFetch!: (response: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveUpgradeFetch = resolve;
+        }),
+    );
+
+    const upgradePromise = scoreArticleWithJev('stub-upgrade-race');
+    await vi.waitFor(() => expect(resolveUpgradeFetch).toBeTypeOf('function'));
+    db.prepare(
+      'UPDATE articles SET content = ?, updated_at = ? WHERE id = ?',
+    ).run(
+      'Much longer full article body arrived mid-flight.',
+      Date.now(),
+      'stub-upgrade-race',
+    );
+    resolveUpgradeFetch(
+      new Response(
+        JSON.stringify({ answers: { would_open: { noul: 0.12 } } }),
+        { status: 200 },
+      ),
+    );
+    expect(await upgradePromise).toBeNull();
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .pluck()
+        .get('stub-upgrade-race'),
+    ).toBeNull();
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('stub-upgrade-race'),
+    ).toEqual({ article_id: 'stub-upgrade-race' });
+
+    let resolveReadFetch!: (response: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveReadFetch = resolve;
+        }),
+    );
+    const readPromise = scoreArticleWithJev('read-bump-ok');
+    await vi.waitFor(() => expect(resolveReadFetch).toBeTypeOf('function'));
+    db.prepare(
+      'UPDATE articles SET read = 1, saved = 1, updated_at = ? WHERE id = ?',
+    ).run(Date.now() + 5000, 'read-bump-ok');
+    resolveReadFetch(
+      new Response(
+        JSON.stringify({ answers: { would_open: { noul: 0.88 } } }),
+        { status: 200 },
+      ),
+    );
+    expect(await readPromise).toBe(0.88);
+    expect(
+      db
+        .prepare('SELECT jev_score FROM articles WHERE id = ?')
+        .pluck()
+        .get('read-bump-ok'),
+    ).toBe(0.88);
+  });
 });

@@ -1,4 +1,4 @@
-import { normalizeSourceUrl } from '#lib/server/source-url.ts';
+import { normalizeFeedSourceUrl } from '#lib/server/source-url.ts';
 import { getDb } from '#lib/server/db/index.ts';
 
 const MIN_POLL_INTERVAL_MINS = 1;
@@ -69,7 +69,7 @@ function parsePollInterval(
 }
 
 export function normalizeFeedUrl(value: string): string {
-  return normalizeSourceUrl(value);
+  return normalizeFeedSourceUrl(value);
 }
 export function getGlobalPollIntervalMins(): number {
   try {

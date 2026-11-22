@@ -113,12 +113,15 @@ describe('feed management', () => {
     expect(pref.c).toBe(1);
   });
 
-  it('normalizes feed URLs without changing meaningful query parameters', async () => {
+  it('normalizes feed URLs without changing trailing slashes or query strings', async () => {
     const { normalizeFeedUrl } = await import('./feed-management');
 
     expect(
       normalizeFeedUrl('HTTPS://EXAMPLE.COM:443/rss/?b=2&a=1#tracking'),
-    ).toBe('https://example.com/rss?a=1&b=2');
+    ).toBe('https://example.com/rss/?b=2&a=1');
+    expect(normalizeFeedUrl('https://example.com/feed/?rss')).toBe(
+      'https://example.com/feed/?rss',
+    );
   });
 
   it('calculates adaptive polling intervals', async () => {

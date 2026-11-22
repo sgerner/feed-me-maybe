@@ -120,7 +120,10 @@ export const articles = sqliteTable(
     index('idx_articles_saved_published')
       .on(sql`${table.publishedAt} DESC`)
       .where(sql`${table.saved} = 1`),
-    uniqueIndex('idx_articles_feed_url').on(table.feedId, table.url),
+    uniqueIndex('idx_articles_feed_url_noguid')
+      .on(table.feedId, table.url)
+      .where(sql`${table.guid} IS NULL OR ${table.guid} = ''`),
+    index('idx_articles_feed_url_lookup').on(table.feedId, table.url),
   ],
 );
 

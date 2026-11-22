@@ -73,13 +73,13 @@ export const POST: RequestHandler = async ({ locals, params }) => {
         article.content,
       );
     if (!update.changes) return false;
+    db.prepare(
+      `UPDATE article_ai_metadata
+       SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
+       WHERE article_id = ?`,
+    ).run(params.id);
     refreshRankingAfterProfileMutation(params.id);
     if (isAiProcessingConfigured()) {
-      db.prepare(
-        `UPDATE article_ai_metadata
-         SET analysis_status = 'pending', analysis_error = '', processed_at = NULL
-         WHERE article_id = ? AND analysis_status IN ('failed', 'skipped')`,
-      ).run(params.id);
       enqueueAiProcess(params.id);
     }
     return true;

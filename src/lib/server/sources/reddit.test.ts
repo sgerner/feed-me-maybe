@@ -17,12 +17,14 @@ vi.mock('#lib/server/feed/fetcher.ts', async (importOriginal) => {
 });
 
 describe('isRedditUrl', () => {
-  it('matches common Reddit hosts', () => {
+  it('matches common Reddit hosts including sh.reddit.com and np.reddit.com', () => {
     expect(isRedditUrl('https://reddit.com/r/codex')).toBe(true);
     expect(isRedditUrl('https://www.reddit.com/r/codex')).toBe(true);
     expect(isRedditUrl('https://old.reddit.com/r/codex')).toBe(true);
     expect(isRedditUrl('https://new.reddit.com/r/codex')).toBe(true);
     expect(isRedditUrl('https://m.reddit.com/r/codex')).toBe(true);
+    expect(isRedditUrl('https://sh.reddit.com/r/codex')).toBe(true);
+    expect(isRedditUrl('https://np.reddit.com/r/codex')).toBe(true);
   });
 
   it('rejects non-Reddit URLs', () => {
@@ -116,6 +118,25 @@ describe('normalizeRedditUrl', () => {
       'https://www.reddit.com/r/codex/comments/abc123/example_post_title.rss',
     );
     expect(r.subreddit).toBe('codex');
+  });
+
+  it('preserves multireddits and controversial/best/case-insensitive listings', () => {
+    expect(
+      normalizeRedditUrl('https://www.reddit.com/user/alice/m/tech').fetchUrl,
+    ).toBe('https://www.reddit.com/user/alice/m/tech.rss?limit=25');
+    expect(
+      normalizeRedditUrl('https://www.reddit.com/u/alice/m/tech/top').fetchUrl,
+    ).toBe('https://www.reddit.com/u/alice/m/tech/top.rss?limit=25');
+    expect(
+      normalizeRedditUrl('https://sh.reddit.com/r/codex/controversial')
+        .fetchUrl,
+    ).toBe('https://www.reddit.com/r/codex/controversial.rss?limit=25');
+    expect(
+      normalizeRedditUrl('https://np.reddit.com/r/codex/BEST').fetchUrl,
+    ).toBe('https://www.reddit.com/r/codex/best.rss?limit=25');
+    expect(
+      normalizeRedditUrl('https://www.reddit.com/r/codex/Top?t=week').fetchUrl,
+    ).toBe('https://www.reddit.com/r/codex/top.rss?t=week&limit=25');
   });
 });
 
@@ -244,6 +265,39 @@ describe('parseRedditPost', () => {
     expect(item.author).toBeUndefined();
     expect(item.publishedAt).toBeUndefined();
     expect(item.categories).toEqual([]);
+  });
+
+  it('maps t1 comments meaningfully, absolutizes crosspost URLs, sanitizes HTML, and caps summary at 500 chars', () => {
+    const comment = parseRedditPost(
+      {
+        id: 'com1',
+        author: 'carol',
+        subreddit: 'rust',
+        link_title: 'Async Rust 2026',
+        permalink: '/r/rust/comments/abc/async_rust/com1/',
+        body:
+          '<p>Great <b>insight</b></p><script>alert(1)</script> ' +
+          'x'.repeat(550),
+        created_utc: 1710000000,
+      },
+      't1',
+    );
+    expect(comment.title).toBe('Comment on: Async Rust 2026');
+    expect(comment.content).toContain('<b>insight</b>');
+    expect(comment.content).not.toContain('script');
+    expect(comment.summary?.length).toBeLessThanOrEqual(500);
+
+    const crosspost = parseRedditPost({
+      id: 'xp1',
+      title: 'Crosspost',
+      permalink: '/r/b/comments/xp1/crosspost/',
+      url: '/r/a/comments/orig/original_post/',
+      is_self: false,
+      selftext: '',
+    });
+    expect(crosspost.externalUrl).toBe(
+      'https://www.reddit.com/r/a/comments/orig/original_post/',
+    );
   });
 });
 
@@ -512,5 +566,23 @@ describe('fetchRedditSource', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Network error');
+  });
+
+  it('skips JSON fallback when shared deadline aborts during RSS fetch', async () => {
+    const controller = new AbortController();
+    vi.mocked(fetchFeed).mockImplementationOnce(async () => {
+      controller.abort();
+      return { success: false, items: [], error: 'Timed out' };
+    });
+    const mockFetch = vi.fn();
+    vi.stubGlobal('fetch', mockFetch);
+
+    const source = normalizeRedditUrl('https://reddit.com/r/test');
+    const result = await fetchRedditSource(source, {
+      deadline: controller.signal,
+    });
+
+    expect(result.success).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

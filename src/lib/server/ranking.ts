@@ -21,9 +21,10 @@ export function rankingScoreExpression(alias = 'a'): string {
   const effective = effectiveScoreExpression(alias);
   const ageDays = articleAgeDaysExpression(alias);
   const recentBoost = `CASE
-    WHEN COALESCE(${alias}.published_at, ${alias}.fetched_at) >= strftime('%s', 'now') * 1000 - 86400000 THEN 8
-    WHEN COALESCE(${alias}.published_at, ${alias}.fetched_at) >= strftime('%s', 'now') * 1000 - 259200000 THEN 4
-    WHEN COALESCE(${alias}.published_at, ${alias}.fetched_at) >= strftime('%s', 'now') * 1000 - 604800000 THEN 2
+    WHEN ${alias}.published_at IS NULL THEN 0
+    WHEN ${alias}.published_at >= strftime('%s', 'now') * 1000 - 86400000 THEN 8
+    WHEN ${alias}.published_at >= strftime('%s', 'now') * 1000 - 259200000 THEN 4
+    WHEN ${alias}.published_at >= strftime('%s', 'now') * 1000 - 604800000 THEN 2
     ELSE 0
   END`;
   const agePenalty = `MIN(${ageDays} / 45.0, 10.0)`;

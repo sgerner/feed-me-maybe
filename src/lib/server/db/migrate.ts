@@ -530,6 +530,19 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: 'conditional_article_url_uniqueness',
+    apply: (db) => {
+      db.prepare('DROP INDEX IF EXISTS idx_articles_feed_url').run();
+      db.prepare(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_feed_url_noguid ON articles(feed_id, url) WHERE guid IS NULL OR guid = ''",
+      ).run();
+      db.prepare(
+        'CREATE INDEX IF NOT EXISTS idx_articles_feed_url_lookup ON articles(feed_id, url)',
+      ).run();
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {
@@ -674,7 +687,10 @@ export function initializeDatabase(): void {
     'CREATE INDEX IF NOT EXISTS idx_articles_saved_published ON articles(published_at DESC) WHERE saved = 1',
   ).run();
   db.prepare(
-    'CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_feed_url ON articles(feed_id, url)',
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_feed_url_noguid ON articles(feed_id, url) WHERE guid IS NULL OR guid = ''",
+  ).run();
+  db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_articles_feed_url_lookup ON articles(feed_id, url)',
   ).run();
   db.prepare(
     'CREATE INDEX IF NOT EXISTS idx_fetch_logs_feed_id ON feed_fetch_logs(feed_id)',

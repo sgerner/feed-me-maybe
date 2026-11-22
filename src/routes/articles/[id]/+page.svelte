@@ -114,7 +114,7 @@
     ),
   );
   const renderedArticleContent = $derived(
-    articleContent ? renderContent(articleContent) : '',
+    articleContent ? renderContent(articleContent, article.url) : '',
   );
   const articleImages = $derived(
     extractArticleImages({
