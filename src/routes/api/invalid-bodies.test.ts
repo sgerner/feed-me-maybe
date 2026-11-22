@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { POST as articleStatePost } from './articles/state/+server';
+import { POST as articleStatePost } from './article-state/+server';
 import { POST as opmlImportPost } from './opml/import/+server';
 import { POST as redditCommentsPost } from './reddit/comments/+server';
-import { POST as savedSearchesPost } from './saved-searches/+server';
-import { PATCH as savedSearchPatch } from './saved-searches/[id]/+server';
+import {
+  DELETE as searchesDelete,
+  PATCH as searchesPatch,
+  POST as searchesPost,
+} from './searches/+server';
 import { POST as settingsPost } from './settings/+server';
 
 type Handler = (event: never) => Response | Promise<Response>;
@@ -13,11 +16,12 @@ type Handler = (event: never) => Response | Promise<Response>;
 // Routes that read a JSON object body. A JSON `null` body used to throw on the
 // first property access and surface as a 500.
 const routes: Array<[string, string, Handler]> = [
-  ['POST /api/articles/state', 'POST', articleStatePost],
+  ['POST /api/article-state', 'POST', articleStatePost],
   ['POST /api/opml/import', 'POST', opmlImportPost],
   ['POST /api/reddit/comments', 'POST', redditCommentsPost],
-  ['POST /api/saved-searches', 'POST', savedSearchesPost],
-  ['PATCH /api/saved-searches/[id]', 'PATCH', savedSearchPatch],
+  ['POST /api/searches', 'POST', searchesPost],
+  ['PATCH /api/searches', 'PATCH', searchesPatch],
+  ['DELETE /api/searches', 'DELETE', searchesDelete],
   ['POST /api/settings', 'POST', settingsPost],
 ];
 
@@ -116,21 +120,20 @@ describe('API routes with JSON object bodies', () => {
 
   it('still creates and renames a saved search with valid bodies', async () => {
     const created = await send(
-      savedSearchesPost,
+      searchesPost,
       'POST',
       JSON.stringify({ name: 'Rust', query: 'rust' }),
     );
     expect(created.status).toBe(201);
-    const { savedSearch } = await created.json();
-    expect(savedSearch).toMatchObject({ name: 'Rust', query: 'rust' });
+    const { search } = await created.json();
+    expect(search).toMatchObject({ name: 'Rust', query: 'rust' });
 
     const renamed = await send(
-      savedSearchPatch,
+      searchesPatch,
       'PATCH',
-      JSON.stringify({ name: 'Rust news' }),
-      { id: savedSearch.id },
+      JSON.stringify({ id: search.id, name: 'Rust news' }),
     );
     expect(renamed.status).toBe(200);
-    expect((await renamed.json()).savedSearch.name).toBe('Rust news');
+    expect((await renamed.json()).search.name).toBe('Rust news');
   });
 });

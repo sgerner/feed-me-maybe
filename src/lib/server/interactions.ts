@@ -268,7 +268,7 @@ export function recordInteraction(
           if (hideSetting?.value === 'true') {
             const hidden = db
               .prepare(
-                'UPDATE articles SET hidden = 1, hidden_at = COALESCE(hidden_at, ?), state_version = state_version + 1, updated_at = ? WHERE id = ? AND hidden = 0',
+                'UPDATE articles SET hidden = 1, hidden_at = COALESCE(hidden_at, ?), state_version = state_version + 1, updated_at = ? WHERE id = ? AND hidden = 0 AND saved = 0',
               )
               .run(now, now, articleId);
             if (hidden.changes > 0) {

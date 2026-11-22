@@ -1,13 +1,17 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
-import { queryGlobalArticleRanking } from '#lib/server/ranking.ts';
+import {
+  parseArticleSort,
+  queryGlobalArticleRanking,
+} from '#lib/server/ranking.ts';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   if (!locals.sessionId) throw error(401, 'Unauthorized');
 
   const db = getDb();
   const category = url.searchParams.get('category')?.trim() || '';
+  const sort = parseArticleSort(url.searchParams.get('sort'));
   const conditions = category ? ' AND TRIM(f.category) = ?' : '';
   const snapshotAt = Date.now();
   const parameters = category ? [category, snapshotAt] : [snapshotAt];
@@ -27,10 +31,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     whereClause,
     parameters,
     limit,
+    0,
+    sort,
   );
 
   return {
     category,
+    sort,
     articles,
     totalPages: Math.max(1, Math.ceil(totalResult.count / limit)),
     totalArticles: totalResult.count,

@@ -1,5 +1,9 @@
 import { getDb } from '#lib/server/db/index.ts';
-import { rankingOrderExpression } from '#lib/server/ranking.ts';
+import {
+  parseArticleSort,
+  rankingOrderExpression,
+  type ArticleSort,
+} from '#lib/server/ranking.ts';
 
 export const HIDDEN_FEED_CONTENT_LIMIT = 30;
 export const DEFAULT_FEED_PAGE_LIMIT = 25;
@@ -38,8 +42,13 @@ export type FeedArticlesQueryResult = {
 type FeedArticlesQueryOptions = {
   feedId: string;
   page?: number;
+  limit?: number;
   offset?: number;
   showHiddenContent?: boolean;
+  unreadOnly?: boolean;
+  sort?: ArticleSort;
+  snapshotAt?: number;
+  excludeIds?: string[];
 };
 
 function buildAutoHiddenWhereClause(alias: string): string {
@@ -119,26 +128,57 @@ export function getFeedArticles(
     };
   }
 
-  const limit = DEFAULT_FEED_PAGE_LIMIT;
+  const limit = Math.min(
+    200,
+    Math.max(1, Math.floor(options.limit || DEFAULT_FEED_PAGE_LIMIT)),
+  );
   const offset = options.offset ?? (page - 1) * limit;
+  const sort = parseArticleSort(options.sort);
+
+  const filterWhere = ['a.hidden = 0', 'a.feed_id = ?'];
+  const filterParams: Array<string | number> = [options.feedId];
+  if (options.unreadOnly) {
+    filterWhere.push('a.read = 0');
+  }
+  if (
+    typeof options.snapshotAt === 'number' &&
+    Number.isSafeInteger(options.snapshotAt)
+  ) {
+    filterWhere.push('a.fetched_at <= ?');
+    filterParams.push(options.snapshotAt);
+  }
 
   const countResult = db
     .prepare(
-      'SELECT COUNT(*) as count FROM articles WHERE hidden = 0 AND feed_id = ?',
+      `SELECT COUNT(*) as count FROM articles a WHERE ${filterWhere.join(' AND ')}`,
     )
-    .get(options.feedId) as { count: number };
+    .get(...filterParams) as { count: number };
+
+  const queryWhere = [...filterWhere];
+  const queryParams = [...filterParams];
+  const excludeIds = (options.excludeIds || []).filter(Boolean).slice(0, 200);
+  if (excludeIds.length > 0) {
+    queryWhere.push(`a.id NOT IN (${excludeIds.map(() => '?').join(', ')})`);
+    queryParams.push(...excludeIds);
+  }
+
+  const orderBy =
+    sort === 'newest'
+      ? 'COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC'
+      : sort === 'oldest'
+        ? 'COALESCE(a.published_at, a.fetched_at) ASC, a.id ASC'
+        : `${rankingOrderExpression('a')} DESC, COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC`;
 
   const articles = db
     .prepare(
       `
       ${buildFeedArticleSelect()}
-      WHERE a.hidden = 0 AND a.feed_id = ?
-      ORDER BY ${rankingOrderExpression('a')} DESC,
-               COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
+      WHERE ${queryWhere.join(' AND ')}
+      ORDER BY ${orderBy}
       LIMIT ? OFFSET ?
     `,
     )
-    .all(options.feedId, limit, offset) as FeedArticleRow[];
+    .all(...queryParams, limit, offset) as FeedArticleRow[];
 
   return {
     articles,

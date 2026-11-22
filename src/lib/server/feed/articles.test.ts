@@ -322,4 +322,85 @@ describe('feed article queries', () => {
     });
     expect(result.articles.map((a) => a.id)).toEqual(['auto-after-undo']);
   });
+
+  it('supports unread filtering, chronological sort, excludeIds, and honors feedId with unread=1 in GET /api/articles', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { GET } = await import('../../../routes/api/articles/+server');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run('feed-one', 'https://example.com/1', 'Feed One', now, now);
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
+    ).run('feed-two', 'https://example.com/2', 'Feed Two', now, now);
+
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, read, heuristic_score, published_at, fetched_at, created_at, updated_at)
+       VALUES ('f1-old-unread', 'feed-one', 'https://example.com/1/a', 'Old Unread', 0, 90, ?, ?, ?, ?),
+              ('f1-new-unread', 'feed-one', 'https://example.com/1/b', 'New Unread', 0, 40, ?, ?, ?, ?),
+              ('f1-read', 'feed-one', 'https://example.com/1/c', 'Read Story', 1, 95, ?, ?, ?, ?),
+              ('f2-unread', 'feed-two', 'https://example.com/2/a', 'Other Feed Unread', 0, 99, ?, ?, ?, ?)`,
+    ).run(
+      now - 10_000,
+      now - 10_000,
+      now,
+      now,
+      now - 1_000,
+      now - 1_000,
+      now,
+      now,
+      now - 500,
+      now - 500,
+      now,
+      now,
+      now - 100,
+      now - 100,
+      now,
+      now,
+    );
+
+    // GET /api/articles?feedId=feed-one&unread=1&sort=newest does not leak feed-two
+    const feedUnreadNewestRes = await GET({
+      locals: { sessionId: 'sess' },
+      url: new URL(
+        'http://localhost/api/articles?feedId=feed-one&unread=1&sort=newest',
+      ),
+    } as never);
+    const feedUnreadNewest = (await feedUnreadNewestRes.json()) as {
+      articles: Array<{ id: string }>;
+    };
+    expect(feedUnreadNewest.articles.map((a) => a.id)).toEqual([
+      'f1-new-unread',
+      'f1-old-unread',
+    ]);
+
+    // GET /api/articles?feedId=feed-one&unread=1&sort=oldest
+    const feedUnreadOldestRes = await GET({
+      locals: { sessionId: 'sess' },
+      url: new URL(
+        'http://localhost/api/articles?feedId=feed-one&unread=1&sort=oldest',
+      ),
+    } as never);
+    const feedUnreadOldest = (await feedUnreadOldestRes.json()) as {
+      articles: Array<{ id: string }>;
+    };
+    expect(feedUnreadOldest.articles.map((a) => a.id)).toEqual([
+      'f1-old-unread',
+      'f1-new-unread',
+    ]);
+
+    // GET /api/articles supports limit up to 200 and excludeIds pagination stability
+    const excludedRes = await GET({
+      locals: { sessionId: 'sess' },
+      url: new URL(
+        'http://localhost/api/articles?unread=1&sort=newest&limit=100&excludeIds=f2-unread,f1-new-unread',
+      ),
+    } as never);
+    const excluded = (await excludedRes.json()) as {
+      articles: Array<{ id: string }>;
+    };
+    expect(excluded.articles.map((a) => a.id)).toEqual(['f1-old-unread']);
+  });
 });

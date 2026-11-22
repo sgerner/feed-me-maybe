@@ -608,12 +608,12 @@ describe('ranking freshness after explicit feedback', () => {
       ageDays: 100,
     });
     const { getDb } = await import('#lib/server/db/index.ts');
-    const { POST } = await import('../../routes/api/articles/state/+server');
+    const { POST } = await import('../../routes/api/article-state/+server');
     const { getRankingFeedbackRevision } = await import('./ranking-freshness');
 
     const beforeRev = getRankingFeedbackRevision();
     const res = await POST({
-      request: new Request('http://localhost/api/articles/state', {
+      request: new Request('http://localhost/api/article-state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -728,6 +728,17 @@ describe('ranking freshness after explicit feedback', () => {
         .get('paused-art'),
     ).toBeUndefined();
     expect(fb.revision).toBeGreaterThan(0);
+
+    const { refreshRankingAfterProfileMutation } =
+      await import('./ranking-freshness');
+    refreshRankingAfterProfileMutation('paused-art');
+    expect(
+      db
+        .prepare(
+          'SELECT article_id FROM ranking_refresh_queue WHERE article_id = ?',
+        )
+        .get('paused-art'),
+    ).toBeUndefined();
 
     // Global profile mutation excludes paused feeds from refresh queue and retains older bookmark heuristic adjustments
     refreshRankingAfterGlobalProfileMutation();

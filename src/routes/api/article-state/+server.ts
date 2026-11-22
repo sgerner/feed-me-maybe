@@ -1,11 +1,9 @@
 import type { RequestHandler } from './$types';
+import { readJsonObject } from '#lib/server/request-body.ts';
 import {
   applyArticleState,
   ARTICLE_STATE_ACTIONS,
   ArticleStateError,
-  getArticleState,
-  getArticleStateCounts,
-  getArticleStateHistory,
   type ArticleStateAction,
 } from '#lib/server/article-state.ts';
 
@@ -51,49 +49,31 @@ function articleIds(body: Record<string, unknown>): string[] {
   return typeof body.articleId === 'string' ? [body.articleId] : [];
 }
 
-async function bodyObject(request: Request): Promise<Record<string, unknown>> {
-  const body: unknown = await request.json();
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    throw new Error('Request body must be an object');
-  }
-  return body as Record<string, unknown>;
-}
-
-export const GET: RequestHandler = async ({ locals, url }) => {
-  if (!locals.sessionId)
-    return Response.json({ error: 'Unauthorized' }, { status: 401 });
-  const articleId = url.searchParams.get('articleId');
-  if (articleId) {
-    const state = getArticleState(articleId);
-    return state
-      ? Response.json({
-          articleId,
-          state,
-          history: getArticleStateHistory({ articleId }),
-        })
-      : Response.json({ error: 'Article not found' }, { status: 404 });
-  }
-  return Response.json({
-    counts: getArticleStateCounts(url.searchParams.get('feedId') || undefined),
-  });
-};
-
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  const body = await readJsonObject(request);
+  if (!body) {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
   try {
-    const body = await bodyObject(request);
-    const key = body.idempotencyKey;
+    const headerKey = request.headers.get('idempotency-key') || undefined;
+    const key = body.idempotencyKey ?? headerKey;
     if (key !== undefined && (typeof key !== 'string' || key.length > 200)) {
       throw new Error(
         'idempotencyKey must be a string of at most 200 characters',
       );
     }
+    const queuedAt =
+      typeof body.queuedAt === 'number' && Number.isFinite(body.queuedAt)
+        ? body.queuedAt
+        : undefined;
     const result = applyArticleState({
       articleIds: articleIds(body),
       action: actionFromBody(body),
       visibleArticleIds: body.visibleArticleIds,
       idempotencyKey: typeof key === 'string' ? key : undefined,
+      queuedAt,
     });
     return Response.json(result);
   } catch (error: unknown) {

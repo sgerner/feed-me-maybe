@@ -190,7 +190,12 @@ export function markArticleForRankingRefresh(
 ): void {
   const db = getDb();
   const article = db
-    .prepare('SELECT ranking_refreshed_at FROM articles WHERE id = ?')
+    .prepare(
+      `SELECT a.ranking_refreshed_at
+       FROM articles a
+       JOIN feeds f ON f.id = a.feed_id
+       WHERE a.id = ? AND f.enabled = 1`,
+    )
     .get(articleId) as { ranking_refreshed_at: number | null } | undefined;
   if (!article) return;
 
@@ -234,15 +239,20 @@ function refreshTargetImmediately(articleId: string, revision: number): void {
 export function refreshRankingAfterProfileMutation(articleId: string): void {
   const existingIds = getExistingIds([articleId]);
   if (!existingIds.length) return;
+  const enabledIds = getExistingIds([articleId], true);
   const now = Date.now();
   const db = getDb();
   const transaction = db.transaction(() => {
     const revision = advanceRankingFeedbackRevision(now);
-    markArticleForRankingRefresh(existingIds[0], revision, now);
-    refreshTargetImmediately(existingIds[0], revision);
+    if (enabledIds.length > 0) {
+      markArticleForRankingRefresh(enabledIds[0], revision, now);
+      refreshTargetImmediately(enabledIds[0], revision);
+    } else {
+      updateHeuristicScore(existingIds[0]);
+    }
   });
   transaction.immediate();
-  wakePoller();
+  if (enabledIds.length > 0) wakePoller();
 }
 
 function refreshCohortTargets(input: {

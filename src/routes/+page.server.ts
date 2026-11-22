@@ -1,7 +1,10 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
-import { queryGlobalArticleRanking } from '#lib/server/ranking.ts';
+import {
+  parseArticleSort,
+  queryGlobalArticleRanking,
+} from '#lib/server/ranking.ts';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   if (!locals.sessionId) {
@@ -10,6 +13,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
   const db = getDb();
   const category = url.searchParams.get('category')?.trim() || '';
+  const sort = parseArticleSort(url.searchParams.get('sort'));
   const conditions = category ? ' AND TRIM(f.category) = ?' : '';
   const parameters = category ? [category] : [];
 
@@ -31,11 +35,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     [...parameters, snapshotAt],
     limit + 1,
     offset,
+    sort,
   );
   const articles = initialRows.slice(0, limit);
 
   return {
     category,
+    sort,
     articles,
     page,
     initialHasMore: initialRows.length > limit,

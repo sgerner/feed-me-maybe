@@ -13,7 +13,7 @@ export const load: PageServerLoad = async ({ locals }) => {
            f.title as feed_title, f.open_mode as feed_open_mode
     FROM articles a JOIN feeds f ON f.id = a.feed_id
     WHERE a.saved = 1
-    ORDER BY a.published_at DESC
+    ORDER BY COALESCE(a.saved_at, a.updated_at, a.fetched_at) DESC, a.id DESC
   `,
     )
     .all() as OfflineArticle[];

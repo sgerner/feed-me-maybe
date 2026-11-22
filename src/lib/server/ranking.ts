@@ -31,6 +31,16 @@ export function rankingScoreExpression(alias = 'a'): string {
   return `(${effective} + ${recentBoost} - ${agePenalty})`;
 }
 
+export type ArticleSort = 'ranked' | 'newest' | 'oldest';
+
+export function parseArticleSort(
+  value: string | null | undefined,
+): ArticleSort {
+  if (value === 'newest' || value === 'latest') return 'newest';
+  if (value === 'oldest') return 'oldest';
+  return 'ranked';
+}
+
 const ARTICLE_COLUMNS = `
   a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url, a.categories,
   a.published_at, a.fetched_at, a.read, a.saved, a.hidden, a.thumbs_up, a.thumbs_down,
@@ -44,7 +54,31 @@ const ARTICLE_COLUMNS = `
  * SQLite sorts while preserving the existing ranking order. Read and
  * unread articles get separate diversity ranks within each feed.
  */
-function buildGlobalArticleRankingQuery(whereClause: string): string {
+function buildGlobalArticleRankingQuery(
+  whereClause: string,
+  sort: ArticleSort = 'ranked',
+): string {
+  if (sort === 'newest' || sort === 'oldest') {
+    const dir = sort === 'oldest' ? 'ASC' : 'DESC';
+    return `
+      WITH page AS (
+        SELECT a.id, a.published_at, a.fetched_at
+        FROM articles a
+        JOIN feeds f ON f.id = a.feed_id
+        WHERE ${whereClause}
+        ORDER BY COALESCE(a.published_at, a.fetched_at) ${dir},
+                 a.id ${dir}
+        LIMIT ? OFFSET ?
+      )
+      SELECT ${ARTICLE_COLUMNS}
+      FROM page p
+      JOIN articles a ON a.id = p.id
+      JOIN feeds f ON f.id = a.feed_id
+      ORDER BY COALESCE(p.published_at, p.fetched_at) ${dir},
+               p.id ${dir}
+    `;
+  }
+
   const score = rankingScoreExpression('a');
   return `
     WITH ranked_article_ids AS (
@@ -88,9 +122,10 @@ export function queryGlobalArticleRanking(
   whereParams: unknown[],
   limit: number,
   offset = 0,
+  sort: ArticleSort = 'ranked',
 ): unknown[] {
   return db
-    .prepare(buildGlobalArticleRankingQuery(whereClause))
+    .prepare(buildGlobalArticleRankingQuery(whereClause, sort))
     .all(...whereParams, limit, offset);
 }
 
@@ -104,11 +139,25 @@ export function queryGlobalArticleRankingByIds(
   whereClause: string,
   whereParams: unknown[],
   articleIds: string[],
+  sort: ArticleSort = 'ranked',
 ): unknown[] {
   if (articleIds.length === 0) return [];
 
-  const score = rankingScoreExpression('a');
   const idPlaceholders = articleIds.map(() => '?').join(', ');
+  if (sort === 'newest' || sort === 'oldest') {
+    const dir = sort === 'oldest' ? 'ASC' : 'DESC';
+    const query = `
+      SELECT ${ARTICLE_COLUMNS}
+      FROM articles a
+      JOIN feeds f ON f.id = a.feed_id
+      WHERE (${whereClause}) AND a.id IN (${idPlaceholders})
+      ORDER BY COALESCE(a.published_at, a.fetched_at) ${dir},
+               a.id ${dir}
+    `;
+    return db.prepare(query).all(...whereParams, ...articleIds);
+  }
+
+  const score = rankingScoreExpression('a');
   const query = `
     WITH ranked_article_ids AS (
       SELECT a.id, a.feed_id, a.published_at, a.fetched_at,

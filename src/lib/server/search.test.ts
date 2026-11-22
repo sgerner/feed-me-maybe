@@ -315,4 +315,99 @@ describe('personal search engine', () => {
       'paused-quantum',
     );
   });
+
+  it('supports quoted phrases, boolean OR, term exclusions, item categories, and hidden saved bookmarks', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { searchArticles, parseSearchQuery } = await import('./search');
+    const db = getDb();
+
+    // Quoted exact phrase matches adjacent words in order, not reversed order
+    expect(parseSearchQuery('"quantum computing"').text).toBe(
+      '"quantum computing"',
+    );
+    const exactMatch = searchArticles({
+      query: '"quantum computing"',
+      sort: 'relevance',
+    });
+    expect(exactMatch.articles.map((a) => a.id)).toEqual(['article-quantum']);
+
+    const reversedMismatch = searchArticles({
+      query: '"computing quantum"',
+      sort: 'relevance',
+    });
+    expect(reversedMismatch.articles).toHaveLength(0);
+
+    // Bare boolean OR matches either side
+    expect(parseSearchQuery('quantum OR climate').text).toBe(
+      '"quantum" OR "climate"',
+    );
+    const orResult = searchArticles({
+      query: 'quantum OR climate',
+      sort: 'recent',
+    });
+    expect(orResult.articles.map((a) => a.id)).toEqual([
+      'article-quantum',
+      'article-climate',
+    ]);
+
+    // Exclusion with -term and NOT term
+    const excludedFromOr = searchArticles({
+      query: 'quantum OR climate -climate',
+      sort: 'recent',
+    });
+    expect(excludedFromOr.articles.map((a) => a.id)).toEqual([
+      'article-quantum',
+    ]);
+
+    const notKeywordResult = searchArticles({
+      query: 'quantum OR climate NOT quantum',
+      sort: 'recent',
+    });
+    expect(notKeywordResult.articles.map((a) => a.id)).toEqual([
+      'article-climate',
+    ]);
+
+    // Standalone -term exclusion works without invalid FTS5 syntax
+    const standaloneNegative = searchArticles({
+      query: '-quantum',
+      sort: 'recent',
+    });
+    expect(standaloneNegative.articles.map((a) => a.id)).toEqual([
+      'article-climate',
+    ]);
+
+    // Multi-is: composition (is:unread is:saved)
+    const unreadSaved = searchArticles({
+      query: 'is:unread is:saved',
+      sort: 'recent',
+    });
+    expect(unreadSaved.articles.map((a) => a.id)).toEqual(['article-quantum']);
+
+    // Plain-text FTS5 searches index article.categories as well as feed.category
+    const byArticleCategory = searchArticles({
+      query: 'environment',
+      sort: 'relevance',
+    });
+    expect(byArticleCategory.articles.map((a) => a.id)).toEqual([
+      'article-climate',
+    ]);
+
+    // is:saved does not exclude hidden bookmarks
+    db.prepare('UPDATE articles SET hidden = 1 WHERE id = ?').run(
+      'article-quantum',
+    );
+    const savedWhileHidden = searchArticles({
+      query: 'is:saved',
+      sort: 'recent',
+    });
+    expect(savedWhileHidden.articles.map((a) => a.id)).toContain(
+      'article-quantum',
+    );
+
+    // Trigger delete removes row from article_search via rowid lookup
+    db.prepare('DELETE FROM articles WHERE id = ?').run('article-climate');
+    expect(
+      searchArticles({ query: 'climate', sort: 'relevance' }).articles,
+    ).toHaveLength(0);
+  });
 });

@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import { readJsonObject } from '#lib/server/request-body.ts';
 import {
   createSavedSearch,
   deleteSavedSearch,
@@ -13,21 +14,6 @@ type SavedSearchInput = {
   description?: string;
   pinned?: boolean;
 };
-
-async function readBody(request: Request): Promise<Record<string, unknown>> {
-  try {
-    const body: unknown = await request.json();
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new Error('Request body must be an object');
-    }
-    return body as Record<string, unknown>;
-  } catch (error: unknown) {
-    if (error instanceof SyntaxError) {
-      throw new Error('Invalid request body', { cause: error });
-    }
-    throw error;
-  }
-}
 
 function inputFromBody(body: Record<string, unknown>): SavedSearchInput {
   return {
@@ -48,8 +34,12 @@ export const GET: RequestHandler = async ({ locals }) => {
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  const body = await readJsonObject(request);
+  if (!body) {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
   try {
-    const search = createSavedSearch(inputFromBody(await readBody(request)));
+    const search = createSavedSearch(inputFromBody(body));
     return Response.json({ search }, { status: 201 });
   } catch (error: unknown) {
     return Response.json(
@@ -64,8 +54,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 export const PATCH: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  const body = await readJsonObject(request);
+  if (!body) {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
   try {
-    const body = await readBody(request);
     if (typeof body.id !== 'string' || !body.id.trim()) {
       return Response.json({ error: 'id is required' }, { status: 400 });
     }
@@ -90,8 +83,11 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
 export const DELETE: RequestHandler = async ({ request, locals }) => {
   if (!locals.sessionId)
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  const body = await readJsonObject(request);
+  if (!body) {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
   try {
-    const body = await readBody(request);
     if (typeof body.id !== 'string' || !body.id.trim()) {
       return Response.json({ error: 'id is required' }, { status: 400 });
     }

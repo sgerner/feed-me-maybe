@@ -3,6 +3,7 @@ import type { PageServerLoad } from './$types';
 import { getDb } from '#lib/server/db/index.ts';
 import { hasConfiguredProxy } from '#lib/server/proxy.ts';
 import { getFeedArticles } from '#lib/server/feed/articles.ts';
+import { parseArticleSort } from '#lib/server/ranking.ts';
 
 export const load: PageServerLoad = async ({ locals, params, url }) => {
   if (!locals.sessionId) {
@@ -13,6 +14,9 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
   const feedId = params.id;
   const page = parseInt(url.searchParams.get('page') || '1', 10);
   const showHiddenContent = url.searchParams.get('showHidden') === '1';
+  const unreadOnly = url.searchParams.get('unread') === '1';
+  const sort = parseArticleSort(url.searchParams.get('sort'));
+  const snapshotAt = Date.now();
 
   // Verify feed exists
   const feed = db
@@ -26,6 +30,9 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     feedId,
     page,
     showHiddenContent,
+    unreadOnly,
+    sort,
+    snapshotAt,
   });
 
   return {
@@ -36,6 +43,9 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     totalArticles: articlePage.totalArticles,
     hiddenContentLimit: articlePage.hiddenContentLimit,
     showHiddenContent,
+    unreadOnly,
+    sort,
+    snapshotAt,
     feedId,
     proxyAvailable: hasConfiguredProxy(),
   };

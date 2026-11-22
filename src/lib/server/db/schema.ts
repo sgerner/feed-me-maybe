@@ -120,6 +120,15 @@ export const articles = sqliteTable(
     index('idx_articles_saved_published')
       .on(sql`${table.publishedAt} DESC`)
       .where(sql`${table.saved} = 1`),
+    index('idx_articles_saved_order')
+      .on(
+        sql`COALESCE(${table.savedAt}, ${table.updatedAt}, ${table.fetchedAt}) DESC`,
+        sql`${table.id} DESC`,
+      )
+      .where(sql`${table.saved} = 1`),
+    index('idx_articles_effective_publication').on(
+      sql`COALESCE(${table.publishedAt}, ${table.fetchedAt})`,
+    ),
     uniqueIndex('idx_articles_feed_url_noguid')
       .on(table.feedId, table.url)
       .where(sql`${table.guid} IS NULL OR ${table.guid} = ''`),
@@ -193,19 +202,30 @@ export const savedSearches = sqliteTable(
 );
 
 // ── Feed Fetch Logs ──
-export const feedFetchLogs = sqliteTable('feed_fetch_logs', {
-  id: text('id').primaryKey(),
-  feedId: text('feed_id')
-    .notNull()
-    .references(() => feeds.id, { onDelete: 'cascade' }),
-  status: text('status').notNull().default('pending'), // pending, fetching, success, error
-  articlesFound: integer('articles_found').default(0),
-  articlesNew: integer('articles_new').default(0),
-  errorMessage: text('error_message').default(''),
-  startedAt: integer('started_at', { mode: 'timestamp' }),
-  completedAt: integer('completed_at', { mode: 'timestamp' }),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-});
+export const feedFetchLogs = sqliteTable(
+  'feed_fetch_logs',
+  {
+    id: text('id').primaryKey(),
+    feedId: text('feed_id')
+      .notNull()
+      .references(() => feeds.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('pending'), // pending, fetching, success, error
+    articlesFound: integer('articles_found').default(0),
+    articlesNew: integer('articles_new').default(0),
+    errorMessage: text('error_message').default(''),
+    startedAt: integer('started_at', { mode: 'timestamp' }),
+    completedAt: integer('completed_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    index('idx_fetch_logs_feed_id').on(table.feedId),
+    index('idx_fetch_logs_feed_created').on(
+      table.feedId,
+      sql`${table.createdAt} DESC`,
+    ),
+    index('idx_fetch_logs_status').on(table.status),
+  ],
+);
 
 // ── Jobs ──
 export const jobs = sqliteTable('jobs', {
@@ -224,15 +244,25 @@ export const jobs = sqliteTable('jobs', {
 });
 
 // ── User Interactions ──
-export const userInteractions = sqliteTable('user_interactions', {
-  id: text('id').primaryKey(),
-  articleId: text('article_id')
-    .notNull()
-    .references(() => articles.id, { onDelete: 'cascade' }),
-  interactionType: text('interaction_type').notNull(), // read, hide, save, thumbs_up, thumbs_down, boost
-  timestamp: integer('timestamp', { mode: 'timestamp' }).notNull(),
-  metadata: text('metadata').default('{}'), // JSON for extra data
-});
+export const userInteractions = sqliteTable(
+  'user_interactions',
+  {
+    id: text('id').primaryKey(),
+    articleId: text('article_id')
+      .notNull()
+      .references(() => articles.id, { onDelete: 'cascade' }),
+    interactionType: text('interaction_type').notNull(), // read, hide, save, thumbs_up, thumbs_down, boost
+    timestamp: integer('timestamp', { mode: 'timestamp' }).notNull(),
+    metadata: text('metadata').default('{}'), // JSON for extra data
+  },
+  (table) => [
+    index('idx_interactions_article').on(table.articleId),
+    index('idx_user_interactions_type_article').on(
+      table.interactionType,
+      table.articleId,
+    ),
+  ],
+);
 
 // ── User Preference Memory ──
 export const userPreferenceMemory = sqliteTable('user_preference_memory', {

@@ -228,6 +228,25 @@ describe('interaction side effects', () => {
         )
         .get(),
     ).toEqual({ count: 0 });
+
+    // Saved bookmarks are never hidden by hide_on_open
+    db.prepare(
+      'INSERT OR REPLACE INTO articles (id, feed_id, url, title, saved, hidden, fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?)',
+    ).run(
+      'article-saved-open',
+      'feed-auto-hide',
+      'https://example.com/saved-open',
+      'Saved bookmark opened',
+      now,
+      now,
+      now,
+    );
+    recordInteraction('article-saved-open', 'open');
+    expect(
+      db
+        .prepare('SELECT read, saved, hidden FROM articles WHERE id = ?')
+        .get('article-saved-open'),
+    ).toEqual({ read: 1, saved: 1, hidden: 0 });
   });
 
   it('records an unchanged like or dislike only once', async () => {
