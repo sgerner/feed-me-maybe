@@ -54,13 +54,13 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "better-sqlite3": "^13.0.3",
-    "drizzle-orm": "^0.45.2",
+    "better-sqlite3": "^13.2.0",
+    "drizzle-orm": "^0.45.4",
     "linkedom": "^0.18.15",
-    "marked": "^18.0.13",
+    "marked": "^18.2.0",
     "rss-parser": "^3.13.0",
     "sanitize-html": "^2.18.2",
-    "undici": "^7.30.2",
+    "undici": "^8.12.4",
     "zod": "^4.6.7"
   },
   "imports": {
