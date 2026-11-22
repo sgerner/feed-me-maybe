@@ -299,11 +299,11 @@ describe('saved searches service, counts, and migration', () => {
     expect(deleteSavedSearch(unpinned.id)).toBe(true);
   });
 
-  it('applies migration v11 idempotently and backfills legacy saved_searches rows', () => {
+  it('applies migration v12 idempotently and backfills legacy saved_searches rows', () => {
     const db = getDb();
     const now = Date.now();
 
-    // Simulate legacy rows prior to migration 11 with invalid/mismatched sort values
+    // Simulate legacy rows prior to migration 12 with invalid/mismatched sort values
     db.prepare(
       `INSERT INTO saved_searches (id, name, query, description, sort, pinned, created_at, updated_at)
        VALUES (?, ?, ?, '', 'relevance', 1, ?, ?),
@@ -320,7 +320,7 @@ describe('saved searches service, counts, and migration', () => {
       now,
       now,
     );
-    db.prepare('DELETE FROM schema_migrations WHERE version = 11').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version = 12').run();
 
     initializeDatabase();
     initializeDatabase();

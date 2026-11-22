@@ -1,4 +1,4 @@
-import { getDb } from './index';
+import { getDb, registerDbFunctions } from './index';
 import {
   coerceText,
   normalizeTextArray,
@@ -627,6 +627,75 @@ const migrations: Migration[] = [
   },
   {
     version: 11,
+    name: 'strip_html_fts_index_and_triggers',
+    apply: (db) => {
+      db.exec(`
+        DROP TRIGGER IF EXISTS articles_search_after_insert;
+        DROP TRIGGER IF EXISTS articles_search_after_update;
+        DROP TRIGGER IF EXISTS articles_search_after_delete;
+        DROP TRIGGER IF EXISTS feeds_search_after_update;
+
+        DELETE FROM article_search;
+        INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+        SELECT a.rowid, a.id, COALESCE(a.title, ''), COALESCE(a.author, ''),
+               strip_html(COALESCE(a.summary, '')), strip_html(COALESCE(a.content, '')),
+               COALESCE(f.title, ''),
+               TRIM(COALESCE(f.category, '') || ' ' || COALESCE(a.categories, ''))
+        FROM articles a JOIN feeds f ON f.id = a.feed_id;
+
+        CREATE TRIGGER articles_search_after_insert
+        AFTER INSERT ON articles
+        BEGIN
+          INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+          SELECT NEW.rowid, NEW.id, COALESCE(NEW.title, ''), COALESCE(NEW.author, ''),
+                 strip_html(COALESCE(NEW.summary, '')), strip_html(COALESCE(NEW.content, '')),
+                 COALESCE(f.title, ''),
+                 TRIM(COALESCE(f.category, '') || ' ' || COALESCE(NEW.categories, ''))
+          FROM feeds f WHERE f.id = NEW.feed_id;
+        END;
+
+        CREATE TRIGGER articles_search_after_update
+        AFTER UPDATE OF feed_id, title, author, summary, content, categories ON articles
+        WHEN OLD.feed_id IS NOT NEW.feed_id
+          OR OLD.title IS NOT NEW.title
+          OR OLD.author IS NOT NEW.author
+          OR OLD.summary IS NOT NEW.summary
+          OR OLD.content IS NOT NEW.content
+          OR OLD.categories IS NOT NEW.categories
+        BEGIN
+          DELETE FROM article_search WHERE rowid = OLD.rowid;
+          INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+          SELECT NEW.rowid, NEW.id, COALESCE(NEW.title, ''), COALESCE(NEW.author, ''),
+                 strip_html(COALESCE(NEW.summary, '')), strip_html(COALESCE(NEW.content, '')),
+                 COALESCE(f.title, ''),
+                 TRIM(COALESCE(f.category, '') || ' ' || COALESCE(NEW.categories, ''))
+          FROM feeds f WHERE f.id = NEW.feed_id;
+        END;
+
+        CREATE TRIGGER articles_search_after_delete
+        AFTER DELETE ON articles
+        BEGIN
+          DELETE FROM article_search WHERE rowid = OLD.rowid;
+        END;
+
+        CREATE TRIGGER feeds_search_after_update
+        AFTER UPDATE OF title, category ON feeds
+        WHEN OLD.title IS NOT NEW.title OR OLD.category IS NOT NEW.category
+        BEGIN
+          DELETE FROM article_search
+          WHERE rowid IN (SELECT rowid FROM articles WHERE feed_id = OLD.id);
+          INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+          SELECT a.rowid, a.id, COALESCE(a.title, ''), COALESCE(a.author, ''),
+                 strip_html(COALESCE(a.summary, '')), strip_html(COALESCE(a.content, '')),
+                 COALESCE(NEW.title, ''),
+                 TRIM(COALESCE(NEW.category, '') || ' ' || COALESCE(a.categories, ''))
+          FROM articles a WHERE a.feed_id = NEW.id;
+        END;
+      `);
+    },
+  },
+  {
+    version: 12,
     name: 'saved_searches_sort_mode',
     apply: (db) => {
       ensureColumn(
@@ -699,6 +768,7 @@ function runVersionedMigrations(): void {
 
 export function initializeDatabase(): void {
   const db = getDb();
+  registerDbFunctions(db);
 
   db.prepare(
     "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT 'admin', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",

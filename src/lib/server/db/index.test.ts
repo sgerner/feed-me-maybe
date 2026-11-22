@@ -96,7 +96,7 @@ describe('Database initialization', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .pluck()
         .all();
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
       const articleIndexes = db
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'articles'",
@@ -132,6 +132,21 @@ describe('Database initialization', () => {
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('registers deterministic strip_html on in-memory SQLite connections', async () => {
+    const { registerDbFunctions } = await import('./index');
+    const memoryDb = new Database(':memory:');
+    try {
+      registerDbFunctions(memoryDb);
+      const stripped = memoryDb
+        .prepare('SELECT strip_html(?) AS plain')
+        .pluck()
+        .get('<p class="secret-attr">Hello &amp; <strong>world</strong></p>');
+      expect(stripped).toBe('Hello & world');
+    } finally {
+      memoryDb.close();
     }
   });
 });
