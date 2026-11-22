@@ -108,10 +108,11 @@
     onSnapshotCountDelta,
     savedOnly = false,
     feedbackMode = 'standard',
-    emptyTitle = 'No articles yet',
-    emptyMessage = 'Import some RSS feeds to get started.',
-    emptyCtaHref = '/settings',
-    emptyCtaLabel = 'Go to Settings',
+    emptyTitle,
+    emptyMessage,
+    emptyCtaHref,
+    emptyCtaLabel,
+    emptyCtaAction,
   } = $props<{
     articles: Article[];
     totalPages?: number;
@@ -133,10 +134,75 @@
     emptyMessage?: string;
     emptyCtaHref?: string | null;
     emptyCtaLabel?: string;
+    emptyCtaAction?: (() => void) | null;
   }>();
 
   const openCachedArticle =
     getContext<(article: OfflineArticle) => Promise<void>>('openCachedArticle');
+  const openAddFeed = getContext<(() => void) | undefined>('openAddFeed');
+
+  const totalFeedsCount = $derived(
+    Number(pageStore.data.totalFeeds ?? (pageStore.data.feeds?.length || 0)),
+  );
+  const pausedFeedsCount = $derived(Number(pageStore.data.pausedFeeds ?? 0));
+  const activeFeedsCount = $derived(
+    Math.max(0, totalFeedsCount - pausedFeedsCount),
+  );
+  const categoryFilter = $derived(
+    feedId ? '' : pageStore.url.searchParams.get('category')?.trim() || '',
+  );
+  const activeScopedFeedsCount = $derived.by(() => {
+    if (!categoryFilter) return activeFeedsCount;
+    const activeFeeds = Array.isArray(pageStore.data.feeds)
+      ? pageStore.data.feeds
+      : [];
+    return activeFeeds.filter(
+      (feed: { category?: string | null }) =>
+        (feed.category?.trim() || '') === categoryFilter,
+    ).length;
+  });
+  const pausedEmptyState = $derived(
+    totalFeedsCount > 0 &&
+      (activeFeedsCount === 0 ||
+        (Boolean(categoryFilter) &&
+          activeScopedFeedsCount === 0 &&
+          pausedFeedsCount > 0)),
+  );
+  const resolvedEmptyTitle = $derived(
+    emptyTitle ??
+      (totalFeedsCount === 0
+        ? 'No feeds yet'
+        : pausedEmptyState
+          ? 'All feeds are paused'
+          : 'No articles yet'),
+  );
+  const resolvedEmptyMessage = $derived(
+    emptyMessage ??
+      (totalFeedsCount === 0
+        ? 'Add an RSS, website, or Reddit feed to get started.'
+        : pausedEmptyState
+          ? 'Resume a paused feed or add a new source to see articles here.'
+          : pausedFeedsCount > 0
+            ? 'Active feeds have no visible articles yet, and some feeds are paused.'
+            : 'Your active feeds have no visible articles yet.'),
+  );
+  const resolvedEmptyCtaAction = $derived(
+    emptyCtaAction !== undefined
+      ? emptyCtaAction
+      : emptyCtaHref === undefined && totalFeedsCount === 0 && openAddFeed
+        ? openAddFeed
+        : null,
+  );
+  const resolvedEmptyCtaHref = $derived(
+    emptyCtaHref !== undefined
+      ? emptyCtaHref
+      : resolvedEmptyCtaAction
+        ? null
+        : '/feeds',
+  );
+  const resolvedEmptyCtaLabel = $derived(
+    emptyCtaLabel ?? (totalFeedsCount === 0 ? 'Add feed' : 'Manage feeds'),
+  );
 
   const LIVE_UPDATES_PAUSED_KEY = 'feed-me-maybe:live-updates-paused';
 
@@ -1185,13 +1251,13 @@
     document.addEventListener('pointerdown', onDocumentPointerDown);
     scrollContainerEl = document.querySelector('main');
 
-    if (
-      (navigator.onLine === false || articles.length === 0) &&
-      !hasMore &&
-      articles.length === 0
-    ) {
+    const isOfflineFallback =
+      navigator.onLine === false ||
+      pageStore.data.sessionId === 'offline' ||
+      pageStore.data.snapshotAt === 0;
+    if (isOfflineFallback && !hasMore && articles.length === 0) {
       void appendCachedFallbackArticles().then((loadedFromCache) => {
-        if (loadedFromCache && navigator.onLine === false) {
+        if (loadedFromCache && isOfflineFallback) {
           addToast('Showing your saved offline reading shelf', 'info');
         }
       });
@@ -1504,11 +1570,14 @@
         /><circle cx="5" cy="19" r="1" />
       </svg>
     </div>
-    <p class="text-surface-300 mb-2 text-lg font-medium">{emptyTitle}</p>
-    <p class="section-subtitle mb-6">{emptyMessage}</p>
-    {#if emptyCtaHref}
-      <a
-        href={emptyCtaHref}
+    <p class="text-surface-300 mb-2 text-lg font-medium">
+      {resolvedEmptyTitle}
+    </p>
+    <p class="section-subtitle mb-6">{resolvedEmptyMessage}</p>
+    {#if resolvedEmptyCtaAction}
+      <button
+        type="button"
+        onclick={resolvedEmptyCtaAction}
         class="btn preset-filled-primary-500 inline-flex items-center gap-2"
       >
         <svg
@@ -1519,6 +1588,7 @@
           fill="none"
           stroke="currentColor"
           stroke-width="2"
+          aria-hidden="true"
           ><line x1="12" y1="5" x2="12" y2="19" /><line
             x1="5"
             y1="12"
@@ -1526,7 +1596,30 @@
             y2="12"
           /></svg
         >
-        {emptyCtaLabel}
+        {resolvedEmptyCtaLabel}
+      </button>
+    {:else if resolvedEmptyCtaHref}
+      <a
+        href={resolvedEmptyCtaHref}
+        class="btn preset-filled-primary-500 inline-flex items-center gap-2 no-underline"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+          ><line x1="12" y1="5" x2="12" y2="19" /><line
+            x1="5"
+            y1="12"
+            x2="19"
+            y2="12"
+          /></svg
+        >
+        {resolvedEmptyCtaLabel}
       </a>
     {/if}
   </div>

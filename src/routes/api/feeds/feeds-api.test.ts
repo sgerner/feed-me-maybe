@@ -234,4 +234,164 @@ describe('POST /api/feeds discovery timeout budgets', () => {
     expect(activeFeed.health.status).toBe('healthy');
     expect(listed.totalUnread).toBe(1); // Paused feed excluded from totalUnread
   });
+
+  it('returns working candidates without creating a subscription when a webpage declares multiple feeds, then creates the chosen feed with title and category', async () => {
+    const { fetchFeed } = await import('#lib/server/feed/fetcher.ts');
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const db = getDb();
+
+    const postsResult = {
+      success: true,
+      subscriptionUrl: 'https://blog.example.com/posts.xml',
+      title: 'Blog Posts',
+      format: 'rss' as const,
+      items: [
+        {
+          guid: 'post-1',
+          url: 'https://blog.example.com/1',
+          title: 'Post 1',
+          categories: [],
+        },
+      ],
+    };
+    const commentsResult = {
+      success: true,
+      subscriptionUrl: 'https://blog.example.com/comments.atom',
+      title: 'Blog Comments',
+      format: 'atom' as const,
+      items: [],
+    };
+
+    vi.mocked(fetchFeed).mockResolvedValueOnce({
+      ...postsResult,
+      discoveredFeeds: [
+        {
+          url: 'https://blog.example.com/posts.xml',
+          linkTitle: 'Posts',
+          mimeType: 'application/rss+xml',
+          format: 'rss',
+          fetchResult: postsResult,
+        },
+        {
+          url: 'https://blog.example.com/comments.atom',
+          linkTitle: 'Comments',
+          mimeType: 'application/atom+xml',
+          format: 'atom',
+          fetchResult: commentsResult,
+        },
+      ],
+    });
+
+    const conflictRes = await POST({
+      locals: { sessionId: 'sess-1' },
+      request: new Request('http://localhost/api/feeds', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          url: 'https://blog.example.com',
+          title: 'Custom Blog Title',
+          category: 'Engineering',
+        }),
+      }),
+    } as Parameters<typeof POST>[0]);
+
+    expect(conflictRes.status).toBe(200);
+    const conflictBody = (await conflictRes.json()) as {
+      candidates: Array<{
+        url: string;
+        title: string;
+        type: string;
+        format: string;
+        alreadySubscribed: boolean;
+      }>;
+      feed?: unknown;
+    };
+    expect(conflictBody.feed).toBeUndefined();
+    expect(conflictBody.candidates).toEqual([
+      {
+        url: 'https://blog.example.com/posts.xml',
+        title: 'Posts',
+        type: 'rss',
+        format: 'rss',
+        mimeType: 'application/rss+xml',
+        alreadySubscribed: false,
+      },
+      {
+        url: 'https://blog.example.com/comments.atom',
+        title: 'Comments',
+        type: 'atom',
+        format: 'atom',
+        mimeType: 'application/atom+xml',
+        alreadySubscribed: false,
+      },
+    ]);
+    expect(db.prepare('SELECT COUNT(*) FROM feeds').pluck().get()).toBe(0);
+
+    // Selecting a candidate creates the subscription in one request with 201
+    vi.mocked(fetchFeed).mockResolvedValueOnce(postsResult);
+    const createChosenRes = await POST({
+      locals: { sessionId: 'sess-1' },
+      request: new Request('http://localhost/api/feeds', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          url: 'https://blog.example.com/posts.xml',
+          title: 'Custom Blog Title',
+          category: 'Engineering',
+        }),
+      }),
+    } as Parameters<typeof POST>[0]);
+
+    expect(createChosenRes.status).toBe(201);
+    const createdBody = (await createChosenRes.json()) as {
+      feed: {
+        url: string;
+        title: string;
+        custom_title: number;
+        category: string;
+      };
+    };
+    expect(createdBody.feed).toMatchObject({
+      url: 'https://blog.example.com/posts.xml',
+      title: 'Custom Blog Title',
+      custom_title: 1,
+      category: 'Engineering',
+    });
+  });
+
+  it.each([
+    ['Atom', 'https://example.com/atom.xml', 'atom' as const],
+    ['JSON Feed', 'https://example.com/feed.json', 'json' as const],
+  ])(
+    'creates a direct %s subscription in one request with status 201',
+    async (_label, feedUrl, format) => {
+      const { fetchFeed } = await import('#lib/server/feed/fetcher.ts');
+      vi.mocked(fetchFeed).mockResolvedValueOnce({
+        success: true,
+        subscriptionUrl: feedUrl,
+        title: `${format.toUpperCase()} Stream`,
+        format,
+        items: [],
+      });
+
+      const res = await POST({
+        locals: { sessionId: 'sess-1' },
+        request: new Request('http://localhost/api/feeds', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: feedUrl, category: 'Tech' }),
+        }),
+      } as Parameters<typeof POST>[0]);
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as {
+        feed: { url: string; title: string; category: string };
+      };
+      expect(body.feed).toMatchObject({
+        url: feedUrl,
+        title: `${format.toUpperCase()} Stream`,
+        category: 'Tech',
+      });
+    },
+  );
 });

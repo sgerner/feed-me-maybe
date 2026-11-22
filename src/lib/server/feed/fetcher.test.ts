@@ -430,4 +430,162 @@ describe('Feed Fetcher', () => {
         '<p>Body <a href="https://example.com/posts/sub/ref" target="_blank" rel="noopener noreferrer">ref</a></p>',
     });
   });
+
+  it('discovers a valid 4th feed after 3 broken links and caps alternate link scanning at 12', async () => {
+    const links = Array.from({ length: 14 }, (_, idx) => {
+      const n = idx + 1;
+      return `<link rel="alternate" type="application/rss+xml" title="Feed ${n}" href="/feed-${n}.xml">`;
+    }).join('');
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const target = String(input);
+      if (target === 'https://example.com/blog/') {
+        return new Response(
+          `<!doctype html><html><head>${links}</head></html>`,
+          {
+            headers: { 'content-type': 'text/html' },
+          },
+        );
+      }
+      if (target === 'https://example.com/feed-4.xml') {
+        return new Response(
+          '<rss version="2.0"><channel><title>Fourth Feed</title></channel></rss>',
+          { headers: { 'content-type': 'application/rss+xml' } },
+        );
+      }
+      return new Response('Not found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/blog/', {
+      discover: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.subscriptionUrl).toBe('https://example.com/feed-4.xml');
+    expect(result.discoveredFeeds).toHaveLength(1);
+    expect(result.discoveredFeeds?.[0]).toMatchObject({
+      url: 'https://example.com/feed-4.xml',
+      linkTitle: 'Feed 4',
+      format: 'rss',
+    });
+    // 1 HTML fetch + at most 12 candidate fetches (feed-13 and feed-14 skipped)
+    expect(fetchMock).toHaveBeenCalledTimes(13);
+    const requestedUrls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(requestedUrls).not.toContain('https://example.com/feed-13.xml');
+    expect(requestedUrls).not.toContain('https://example.com/feed-14.xml');
+  });
+
+  it('preserves titles and formats across multiple valid alternate feeds and skips private SSRF links', async () => {
+    const html = `<!doctype html>
+      <html>
+        <head>
+          <link rel="alternate" type="application/rss+xml" title="Internal" href="http://127.0.0.1/private.xml">
+          <link rel="alternate" type="application/rss+xml" title="Main Posts" href="/posts.xml">
+          <link rel="alternate" type="application/atom+xml" title="Comments" href="/comments.atom">
+          <link rel="alternate" type="application/feed+json" title="Releases JSON" href="/releases.json">
+        </head>
+      </html>`;
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const target = String(input);
+      if (target === 'https://example.com/') {
+        return new Response(html, { headers: { 'content-type': 'text/html' } });
+      }
+      if (target === 'https://example.com/posts.xml') {
+        return new Response(
+          '<rss version="2.0"><channel><title>Example Blog</title></channel></rss>',
+          { headers: { 'content-type': 'application/rss+xml' } },
+        );
+      }
+      if (target === 'https://example.com/comments.atom') {
+        return new Response(
+          '<feed xmlns="http://www.w3.org/2005/Atom"><title>Example Comments</title></feed>',
+          { headers: { 'content-type': 'application/atom+xml' } },
+        );
+      }
+      if (target === 'https://example.com/releases.json') {
+        return Response.json({
+          version: 'https://jsonfeed.org/version/1.1',
+          title: 'Example Releases',
+          items: [],
+        });
+      }
+      throw new Error(`Unexpected fetch to ${target}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/', { discover: true });
+
+    expect(result.success).toBe(true);
+    expect(
+      result.discoveredFeeds?.map((c) => ({
+        url: c.url,
+        linkTitle: c.linkTitle,
+        format: c.format,
+      })),
+    ).toEqual([
+      {
+        url: 'https://example.com/posts.xml',
+        linkTitle: 'Main Posts',
+        format: 'rss',
+      },
+      {
+        url: 'https://example.com/comments.atom',
+        linkTitle: 'Comments',
+        format: 'atom',
+      },
+      {
+        url: 'https://example.com/releases.json',
+        linkTitle: 'Releases JSON',
+        format: 'json',
+      },
+    ]);
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('127.0.0.1')),
+    ).toBe(false);
+  });
+
+  it('bounds concurrent candidate validation to at most 4 parallel requests', async () => {
+    const links = Array.from({ length: 9 }, (_, idx) => {
+      const n = idx + 1;
+      return `<link rel="alternate" type="application/rss+xml" title="Stream ${n}" href="/stream-${n}.xml">`;
+    }).join('');
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const target = String(input);
+      if (target === 'https://example.com/hub') {
+        return new Response(
+          `<!doctype html><html><head>${links}</head></html>`,
+          {
+            headers: { 'content-type': 'text/html' },
+          },
+        );
+      }
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      inFlight -= 1;
+      return new Response(
+        `<rss version="2.0"><channel><title>${target}</title></channel></rss>`,
+        { headers: { 'content-type': 'application/rss+xml' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { fetchFeed } = await import('./fetcher');
+    const result = await fetchFeed('https://example.com/hub', {
+      discover: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.discoveredFeeds).toHaveLength(9);
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
 });
