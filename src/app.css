@@ -817,11 +817,38 @@ main::-webkit-scrollbar-thumb,
   padding: 1rem;
   overflow-x: auto;
   margin: 1.5rem 0;
+  font-size: 0.875em;
+  line-height: 1.65;
 }
 .prose-glass table {
   display: block;
   max-width: 100%;
   overflow-x: auto;
+  border-collapse: collapse;
+  border-spacing: 0;
+  margin: 1.5rem 0;
+  font-size: 0.9375em;
+  line-height: 1.55;
+}
+.prose-glass caption {
+  caption-side: bottom;
+  padding-top: 0.5rem;
+  font-size: 0.85em;
+  color: var(--color-surface-300);
+  text-align: left;
+}
+.prose-glass th,
+.prose-glass td {
+  border: 1px solid
+    color-mix(in oklch, var(--color-surface-100) 14%, transparent);
+  padding: 0.625rem 0.875rem;
+  text-align: left;
+  vertical-align: top;
+}
+.prose-glass th {
+  background: color-mix(in oklch, var(--color-surface-100) 7%, transparent);
+  color: var(--color-surface-50);
+  font-weight: 600;
 }
 .prose-glass code {
   background: color-mix(in oklch, var(--color-surface-100) 10%, transparent);
@@ -831,6 +858,15 @@ main::-webkit-scrollbar-thumb,
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
+}
+.prose-glass pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+.prose-glass [id] {
+  scroll-margin-top: 2.5rem;
 }
 .prose-glass hr {
   border: 0;

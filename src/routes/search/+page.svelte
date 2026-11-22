@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { tick } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { goto } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import ArticleList from '#lib/components/ArticleList.svelte';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import { canTriggerSingleKeyShortcut } from '#lib/utils/keyboard-shortcuts.ts';
+  import { invalidateReaderCounts } from '#lib/client/triage.ts';
   import {
     getCachedArticles,
     matchesOfflineVisibility,
@@ -36,6 +37,17 @@
 
   type SearchSort = 'relevance' | 'recent';
 
+  type SavedSearchItem = {
+    id: string;
+    name: string;
+    query: string;
+    sort: SearchSort;
+    pinned: boolean;
+    unreadCount: number;
+    totalCount: number;
+    updatedAt?: number;
+  };
+
   type SearchResponse = {
     articles?: Article[];
     total?: number;
@@ -58,6 +70,41 @@
     { value: 'recent', label: 'Newest' },
   ];
 
+  function normalizeSavedSearchItem(
+    raw: Partial<SavedSearchItem>,
+  ): SavedSearchItem {
+    return {
+      id: String(raw.id || ''),
+      name: String(raw.name || ''),
+      query: String(raw.query || ''),
+      sort: raw.sort === 'recent' ? 'recent' : 'relevance',
+      pinned: Boolean(raw.pinned),
+      unreadCount: Number(raw.unreadCount ?? 0),
+      totalCount: Number(raw.totalCount ?? 0),
+      updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : undefined,
+    };
+  }
+
+  function sortSavedSearches(items: SavedSearchItem[]): SavedSearchItem[] {
+    return [...items].sort(
+      (left, right) =>
+        Number(right.pinned) - Number(left.pinned) ||
+        left.name.toLowerCase().localeCompare(right.name.toLowerCase()) ||
+        (right.updatedAt ?? 0) - (left.updatedAt ?? 0),
+    );
+  }
+
+  function sortLabel(value: SearchSort): string {
+    return value === 'recent' ? 'Newest' : 'Relevance';
+  }
+
+  const initialPinnedSearches = sortSavedSearches(
+    (
+      (pageStore.data.pinnedSearches as
+        Partial<SavedSearchItem>[] | undefined) || []
+    ).map(normalizeSavedSearchItem),
+  );
+
   let query = $state('');
   let activeFilter = $state<(typeof FILTERS)[number]['value']>('all');
   let sort = $state<SearchSort>('relevance');
@@ -70,11 +117,10 @@
   let searched = $state(false);
   let errorMessage = $state('');
   let statusAnnouncement = $state('');
-  let savedSearches = $state<
-    Array<{ id: string; name: string; query: string; pinned: boolean }>
-  >([]);
+  let savedSearches = $state<SavedSearchItem[]>(initialPinnedSearches);
   let showSaveSearch = $state(false);
-  let showSavedSearchDetails = $state(false);
+  let showSavedSearchDetails = $state(initialPinnedSearches.length > 0);
+  let autoExpandedSavedSearches = initialPinnedSearches.length > 0;
   let showFilters = $state(false);
   let saveSearchName = $state('');
   let savedSearchError = $state('');
@@ -82,6 +128,9 @@
   let editingSavedSearchId = $state<string | null>(null);
   let editingSavedSearchName = $state('');
   let searchInputEl = $state<HTMLInputElement | null>(null);
+  let editingSavedSearchQuery = $state('');
+  let editingSavedSearchSort = $state<SearchSort>('relevance');
+  let editingSavedSearchPinned = $state(false);
   let lastAppliedUrlSearch = $state<string | null>(null);
   let searchSequence = 0;
   let searchController: AbortController | null = null;
@@ -390,14 +439,38 @@
     }
   }
 
+  function canonicalizeQuery(rawQuery: string): string {
+    const parsed = splitPrimaryStateFilter(rawQuery);
+    const operator = operatorForFilter(parsed.primaryFilter);
+    return [parsed.textQuery, operator].filter(Boolean).join(' ').trim();
+  }
+
+  function isSavedSearchCurrentlyLoaded(
+    candidate: Pick<SavedSearchItem, 'query' | 'sort'>,
+  ): boolean {
+    if (!searched) return false;
+    return (
+      sort === candidate.sort &&
+      canonicalizeQuery(buildSearchQuery()) ===
+        canonicalizeQuery(candidate.query)
+    );
+  }
+
   async function loadSavedSearches() {
     try {
       const response = await fetch('/api/searches');
       if (response.ok) {
         const payload = (await response.json()) as {
-          searches?: typeof savedSearches;
+          searches?: Partial<SavedSearchItem>[];
         };
-        savedSearches = payload.searches || [];
+        const next = sortSavedSearches(
+          (payload.searches || []).map(normalizeSavedSearchItem),
+        );
+        savedSearches = next;
+        if (next.length > 0 && !autoExpandedSavedSearches) {
+          showSavedSearchDetails = true;
+          autoExpandedSavedSearches = true;
+        }
       }
     } catch {
       // Saved searches are an enhancement; the main search remains available.
@@ -414,7 +487,12 @@
       const response = await fetchWithCsrf('/api/searches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, query: searchQuery, pinned: true }),
+        body: JSON.stringify({
+          name,
+          query: searchQuery,
+          sort,
+          pinned: true,
+        }),
       });
       if (!response.ok) {
         throw new Error(
@@ -422,20 +500,32 @@
         );
       }
       const payload = (await response.json()) as {
-        search?: (typeof savedSearches)[number];
+        search?: Partial<SavedSearchItem>;
       };
       if (payload.search) {
-        savedSearches = [payload.search, ...savedSearches].sort(
-          (left, right) =>
-            Number(right.pinned) - Number(left.pinned) ||
-            left.name.localeCompare(right.name),
-        );
+        const created = normalizeSavedSearchItem(payload.search);
+        savedSearches = sortSavedSearches([
+          created,
+          ...savedSearches.filter((item) => item.id !== created.id),
+        ]);
+        showSavedSearchDetails = true;
+        autoExpandedSavedSearches = true;
+        if (
+          created.sort !== sort ||
+          created.sort !== preferredSort ||
+          pageStore.url.searchParams.get('sort') !== created.sort
+        ) {
+          preferredSort = created.sort;
+          sort = created.sort;
+          void runSearch(true);
+        }
       }
       saveSearchName = '';
       showSaveSearch = false;
       savedSearchError = '';
       savedSearchErrorId = null;
       statusAnnouncement = 'Search saved.';
+      invalidateReaderCounts();
     } catch (error) {
       savedSearchError =
         error instanceof Error ? error.message : 'Could not save this search.';
@@ -443,9 +533,12 @@
     }
   }
 
-  function beginRenameSavedSearch(search: (typeof savedSearches)[number]) {
+  function beginEditSavedSearch(search: SavedSearchItem) {
     editingSavedSearchId = search.id;
     editingSavedSearchName = search.name;
+    editingSavedSearchQuery = search.query;
+    editingSavedSearchSort = search.sort;
+    editingSavedSearchPinned = search.pinned;
     savedSearchError = '';
     savedSearchErrorId = null;
     void tick().then(() =>
@@ -455,8 +548,13 @@
 
   async function updateSavedSearch(
     id: string,
-    updates: { name?: string; pinned?: boolean },
-  ): Promise<boolean> {
+    updates: {
+      name?: string;
+      query?: string;
+      sort?: SearchSort;
+      pinned?: boolean;
+    },
+  ): Promise<SavedSearchItem | null> {
     savedSearchError = '';
     savedSearchErrorId = id;
     try {
@@ -471,42 +569,63 @@
         );
       }
       const payload = (await response.json()) as {
-        search?: (typeof savedSearches)[number];
+        search?: Partial<SavedSearchItem>;
       };
       if (!payload.search)
         throw new Error('Saved search update was incomplete.');
-      savedSearches = savedSearches
-        .map((search) => (search.id === id ? payload.search! : search))
-        .sort(
-          (left, right) =>
-            Number(right.pinned) - Number(left.pinned) ||
-            left.name.localeCompare(right.name),
-        );
+      const updated = normalizeSavedSearchItem(payload.search);
+      savedSearches = sortSavedSearches(
+        savedSearches.map((search) => (search.id === id ? updated : search)),
+      );
       savedSearchErrorId = null;
       statusAnnouncement = 'Saved search updated.';
-      return true;
+      invalidateReaderCounts();
+      return updated;
     } catch (error) {
       savedSearchError =
         error instanceof Error
           ? error.message
           : 'Could not update this saved search.';
       statusAnnouncement = '';
-      return false;
+      return null;
     }
   }
 
-  async function renameSavedSearch(event: SubmitEvent, id: string) {
+  async function saveEditedSavedSearch(
+    event: SubmitEvent,
+    previous: SavedSearchItem,
+  ) {
     event.preventDefault();
     const name = editingSavedSearchName.trim();
+    const nextQuery = editingSavedSearchQuery.trim();
     if (!name) {
       savedSearchError = 'Enter a name for this saved search.';
-      savedSearchErrorId = id;
+      savedSearchErrorId = previous.id;
       return;
     }
-    if (await updateSavedSearch(id, { name })) {
+    if (!nextQuery) {
+      savedSearchError = 'Enter a search word or supported filter.';
+      savedSearchErrorId = previous.id;
+      return;
+    }
+    const wasLoaded = isSavedSearchCurrentlyLoaded(previous);
+    const updated = await updateSavedSearch(previous.id, {
+      name,
+      query: nextQuery,
+      sort: editingSavedSearchSort,
+      pinned: editingSavedSearchPinned,
+    });
+    if (updated) {
       editingSavedSearchId = null;
+      if (
+        wasLoaded ||
+        previous.query !== updated.query ||
+        previous.sort !== updated.sort
+      ) {
+        loadSavedSearch(updated);
+      }
       await tick();
-      document.getElementById(`saved-search-rename-${id}`)?.focus();
+      document.getElementById(`saved-search-edit-${previous.id}`)?.focus();
     }
   }
 
@@ -527,8 +646,12 @@
         );
       }
       savedSearches = savedSearches.filter((search) => search.id !== id);
+      if (editingSavedSearchId === id) {
+        editingSavedSearchId = null;
+      }
       savedSearchErrorId = null;
       statusAnnouncement = 'Saved search deleted.';
+      invalidateReaderCounts();
       await tick();
       const openButtons = Array.from(
         document.querySelectorAll<HTMLButtonElement>(
@@ -548,10 +671,13 @@
     }
   }
 
-  function loadSavedSearch(search: { query: string }) {
+  function loadSavedSearch(search: Pick<SavedSearchItem, 'query' | 'sort'>) {
     const parsed = splitPrimaryStateFilter(search.query);
     query = parsed.textQuery;
     activeFilter = parsed.primaryFilter;
+    preferredSort = search.sort;
+    sort = search.sort;
+    showFilters = parsed.primaryFilter !== 'all' || showFilters;
     void runSearch();
   }
 
@@ -626,7 +752,8 @@
     void runSearch(false);
   });
 
-  onMount(() => {
+  $effect(() => {
+    void pageStore.data.pinnedSearches;
     void loadSavedSearches();
   });
 
@@ -840,88 +967,167 @@
       {#if savedSearches.length > 0}
         <div class="mt-3 space-y-2">
           {#each savedSearches as savedSearch (savedSearch.id)}
-            <div class="rounded-sm border border-white/10 bg-white/[0.03] p-2">
+            <div
+              class="rounded-sm border border-white/10 bg-white/[0.03] p-3"
+              data-saved-search-row={savedSearch.id}
+            >
               {#if editingSavedSearchId === savedSearch.id}
                 <form
-                  class="flex flex-wrap items-center gap-2"
-                  onsubmit={(event) => renameSavedSearch(event, savedSearch.id)}
+                  class="space-y-3"
+                  onsubmit={(event) =>
+                    void saveEditedSavedSearch(event, savedSearch)}
                 >
-                  <label
-                    class="sr-only"
-                    for="saved-search-name-{savedSearch.id}"
-                    >Name for {savedSearch.name}</label
-                  >
-                  <input
-                    id="saved-search-name-{savedSearch.id}"
-                    class="input glass-input h-9 min-w-0 flex-1 sm:max-w-xs"
-                    bind:value={editingSavedSearchName}
-                    maxlength="120"
-                    required
-                    aria-invalid={savedSearchErrorId === savedSearch.id
-                      ? 'true'
-                      : undefined}
-                    aria-describedby={savedSearchErrorId === savedSearch.id
-                      ? 'saved-search-error-{savedSearch.id}'
-                      : undefined}
-                  />
-                  <button
-                    type="submit"
-                    class="btn preset-filled-secondary-500 h-9 px-3 text-xs"
-                    disabled={!editingSavedSearchName.trim()}>Save name</button
-                  >
-                  <button
-                    type="button"
-                    class="btn preset-tonal h-9 px-3 text-xs"
-                    onclick={() => {
-                      editingSavedSearchId = null;
-                      savedSearchError = '';
-                      savedSearchErrorId = null;
-                      void tick().then(() =>
-                        document
-                          .getElementById(
-                            `saved-search-rename-${savedSearch.id}`,
-                          )
-                          ?.focus(),
-                      );
-                    }}>Cancel</button
-                  >
+                  <div class="grid gap-3 sm:grid-cols-2">
+                    <label class="block text-xs text-surface-200">
+                      <span class="mb-1 block font-medium">Name</span>
+                      <input
+                        id="saved-search-name-{savedSearch.id}"
+                        class="input glass-input h-9 w-full"
+                        bind:value={editingSavedSearchName}
+                        maxlength="120"
+                        required
+                        aria-invalid={savedSearchErrorId === savedSearch.id
+                          ? 'true'
+                          : undefined}
+                        aria-describedby={savedSearchErrorId === savedSearch.id
+                          ? `saved-search-error-${savedSearch.id}`
+                          : undefined}
+                      />
+                    </label>
+                    <label class="block text-xs text-surface-200">
+                      <span class="mb-1 block font-medium">Query</span>
+                      <input
+                        id="saved-search-query-{savedSearch.id}"
+                        class="input glass-input h-9 w-full font-mono text-xs"
+                        bind:value={editingSavedSearchQuery}
+                        maxlength="500"
+                        required
+                        aria-invalid={savedSearchErrorId === savedSearch.id
+                          ? 'true'
+                          : undefined}
+                        aria-describedby={savedSearchErrorId === savedSearch.id
+                          ? `saved-search-error-${savedSearch.id}`
+                          : undefined}
+                      />
+                    </label>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-3">
+                    <label
+                      class="inline-flex items-center gap-2 text-xs text-surface-200"
+                      for="saved-search-sort-{savedSearch.id}"
+                    >
+                      <span class="font-medium">Sort</span>
+                      <select
+                        id="saved-search-sort-{savedSearch.id}"
+                        class="select glass-input h-9 px-2.5 text-xs"
+                        bind:value={editingSavedSearchSort}
+                      >
+                        {#each SORT_OPTIONS as option (option.value)}
+                          <option value={option.value}>{option.label}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <label
+                      class="inline-flex cursor-pointer items-center gap-2 text-xs text-surface-200"
+                    >
+                      <input
+                        id="saved-search-pinned-{savedSearch.id}"
+                        type="checkbox"
+                        class="checkbox"
+                        bind:checked={editingSavedSearchPinned}
+                      />
+                      <span>Pin to sidebar</span>
+                    </label>
+                    <div class="ml-auto flex flex-wrap items-center gap-2">
+                      <button
+                        type="submit"
+                        class="btn preset-filled-secondary-500 h-9 px-3 text-xs"
+                        disabled={!editingSavedSearchName.trim() ||
+                          !editingSavedSearchQuery.trim()}>Save changes</button
+                      >
+                      <button
+                        type="button"
+                        class="btn preset-tonal h-9 px-3 text-xs"
+                        onclick={() => {
+                          editingSavedSearchId = null;
+                          savedSearchError = '';
+                          savedSearchErrorId = null;
+                          void tick().then(() =>
+                            document
+                              .getElementById(
+                                `saved-search-edit-${savedSearch.id}`,
+                              )
+                              ?.focus(),
+                          );
+                        }}>Cancel</button
+                      >
+                    </div>
+                  </div>
                 </form>
               {:else}
-                <div class="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    data-saved-search-open={savedSearch.id}
-                    class="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-left text-xs text-surface-300 transition hover:border-secondary-400/40 hover:text-secondary-200"
-                    onclick={() => loadSavedSearch(savedSearch)}
-                    >{savedSearch.name}</button
-                  >
-                  <button
-                    type="button"
-                    class="btn preset-tonal h-8 px-3 text-xs"
-                    aria-label={`Pin saved search ${savedSearch.name}`}
-                    aria-pressed={savedSearch.pinned}
-                    onclick={() =>
-                      void updateSavedSearch(savedSearch.id, {
-                        pinned: !savedSearch.pinned,
-                      })}>{savedSearch.pinned ? 'Pinned' : 'Pin'}</button
-                  >
-                  <button
-                    id="saved-search-rename-{savedSearch.id}"
-                    type="button"
-                    class="btn preset-tonal h-8 px-3 text-xs"
-                    data-saved-search-rename={savedSearch.id}
-                    aria-label={`Rename saved search ${savedSearch.name}`}
-                    onclick={() => beginRenameSavedSearch(savedSearch)}
-                    >Rename</button
-                  >
-                  <button
-                    type="button"
-                    class="btn preset-tonal h-8 px-3 text-xs"
-                    aria-label={`Delete saved search ${savedSearch.name}`}
-                    onclick={() =>
-                      void deleteSavedSearch(savedSearch.id, savedSearch.name)}
-                    >Delete</button
-                  >
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex min-w-0 flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      data-saved-search-open={savedSearch.id}
+                      class="rounded-full border px-3 py-1.5 text-left text-xs font-semibold transition {isSavedSearchCurrentlyLoaded(
+                        savedSearch,
+                      )
+                        ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
+                        : 'border-white/10 bg-white/5 text-surface-100 hover:border-secondary-400/40 hover:text-secondary-200'}"
+                      onclick={() => loadSavedSearch(savedSearch)}
+                      >{savedSearch.name}</button
+                    >
+                    <code
+                      class="rounded bg-white/5 px-2 py-0.5 font-mono text-xs text-primary-200"
+                      >{savedSearch.query}</code
+                    >
+                    <span
+                      class="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[11px] font-medium text-surface-200"
+                      >{sortLabel(savedSearch.sort)}</span
+                    >
+                    <span
+                      class={savedSearch.unreadCount > 0
+                        ? 'rounded-full bg-primary-500/15 px-2.5 py-0.5 text-[11px] font-bold text-primary-300'
+                        : 'rounded-full bg-white/5 px-2.5 py-0.5 text-[11px] font-medium text-surface-300'}
+                      >{savedSearch.unreadCount} unread</span
+                    >
+                    <span class="text-xs text-surface-300"
+                      >{savedSearch.totalCount}
+                      {savedSearch.totalCount === 1 ? 'match' : 'matches'}</span
+                    >
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      class="btn preset-tonal h-8 px-3 text-xs"
+                      aria-label={`Pin saved search ${savedSearch.name}`}
+                      aria-pressed={savedSearch.pinned}
+                      onclick={() =>
+                        void updateSavedSearch(savedSearch.id, {
+                          pinned: !savedSearch.pinned,
+                        })}>{savedSearch.pinned ? 'Pinned' : 'Pin'}</button
+                    >
+                    <button
+                      id="saved-search-edit-{savedSearch.id}"
+                      type="button"
+                      class="btn preset-tonal h-8 px-3 text-xs"
+                      data-saved-search-edit={savedSearch.id}
+                      aria-label={`Edit saved search ${savedSearch.name}`}
+                      onclick={() => beginEditSavedSearch(savedSearch)}
+                      >Edit</button
+                    >
+                    <button
+                      type="button"
+                      class="btn preset-tonal h-8 px-3 text-xs"
+                      aria-label={`Delete saved search ${savedSearch.name}`}
+                      onclick={() =>
+                        void deleteSavedSearch(
+                          savedSearch.id,
+                          savedSearch.name,
+                        )}>Delete</button
+                    >
+                  </div>
                 </div>
               {/if}
               {#if savedSearchError && savedSearchErrorId === savedSearch.id}

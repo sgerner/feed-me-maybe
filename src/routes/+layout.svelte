@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import { onMount, setContext, tick } from 'svelte';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { renderContent } from '#lib/utils/format.ts';
   import { page } from '$app/state';
   import { navigating } from '$app/state';
@@ -586,13 +587,71 @@
     ['/', '/inbox', '/search', '/saved'].includes(item.href),
   );
 
-  function isCurrentNavItem(href: string): boolean {
+  const pinnedSearches = $derived(data.pinnedSearches || []);
+
+  function canonicalizeSearchQuery(raw: string): string {
+    const tokens = raw.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+    const remaining: string[] = [];
+    let primaryFilter: string | null = null;
+    for (const token of tokens) {
+      if (token.startsWith('"') && token.endsWith('"')) {
+        remaining.push(token);
+        continue;
+      }
+      const match = token.match(/^is:(unread|saved|read|hidden|rejected)$/i);
+      if (match && primaryFilter === null) {
+        primaryFilter = `is:${match[1].toLowerCase()}`;
+        continue;
+      }
+      remaining.push(token);
+    }
+    return [...remaining, ...(primaryFilter ? [primaryFilter] : [])]
+      .join(' ')
+      .trim();
+  }
+
+  function savedSearchHref(search: {
+    query: string;
+    sort: 'relevance' | 'recent';
+  }): string {
+    const params = new SvelteURLSearchParams();
+    params.set('q', search.query);
+    params.set('sort', search.sort);
+    return `/search?${params.toString()}`;
+  }
+
+  const activePinnedSearchId = $derived.by(() => {
+    if (page.url.pathname !== '/search') return null;
+    const rawQuery = (page.url.searchParams.get('q') || '').trim();
+    if (!rawQuery) return null;
+    const currentQuery = canonicalizeSearchQuery(rawQuery);
+    const currentSort =
+      page.url.searchParams.get('sort') === 'recent' ? 'recent' : 'relevance';
+    const matched = pinnedSearches.find(
+      (search) =>
+        search.sort === currentSort &&
+        canonicalizeSearchQuery(search.query) === currentQuery,
+    );
+    return matched?.id ?? null;
+  });
+
+  function isCurrentNavItem(
+    href: string,
+    options: { ignorePinnedSearch?: boolean } = {},
+  ): boolean {
     const path = page.url.pathname;
     if (
       (href === '/' || href === '/inbox') &&
       page.url.searchParams.has('category')
     )
       return false;
+    if (
+      href === '/search' &&
+      !options.ignorePinnedSearch &&
+      activePinnedSearchId !== null
+    ) {
+      return false;
+    }
     return href === '/'
       ? path === '/'
       : path === href || path.startsWith(`${href}/`);
@@ -947,6 +1006,66 @@
                 <span class="min-w-0 flex-1 truncate">{item.label}</span>
               </a>
             {/each}
+
+            {#if pinnedSearches.length > 0}
+              <div class="mt-4 flex items-center justify-between px-3 pb-1">
+                <div
+                  class="text-[10px] font-bold uppercase tracking-widest"
+                  style="color: var(--color-surface-300);"
+                >
+                  Saved searches
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+                role="group"
+                aria-label="Pinned saved searches"
+              >
+                {#each pinnedSearches as savedSearch (savedSearch.id)}
+                  {@const isActive = activePinnedSearchId === savedSearch.id}
+                  <a
+                    href={savedSearchHref(savedSearch)}
+                    data-sveltekit-preload-data
+                    data-pinned-search-id={savedSearch.id}
+                    aria-current={isActive ? 'page' : undefined}
+                    class={'nav-item nav-item-subtle' +
+                      (isActive ? ' nav-item-active' : '')}
+                  >
+                    <span
+                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-white/5"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        style="color: var(--color-surface-300);"
+                        ><circle cx="11" cy="11" r="7" /><path
+                          d="m20 20-4-4"
+                        /></svg
+                      >
+                    </span>
+                    <span class="min-w-0 flex-1 truncate"
+                      >{savedSearch.name}</span
+                    >
+                    <span
+                      data-pinned-search-unread={savedSearch.id}
+                      class={savedSearch.unreadCount > 0
+                        ? 'rounded-full bg-primary-500/15 px-1.5 py-0.5 text-[10px] font-bold text-primary-300'
+                        : 'rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-surface-300'}
+                      >{savedSearch.unreadCount}<span class="sr-only">
+                        unread</span
+                      ></span
+                    >
+                  </a>
+                {/each}
+              </div>
+            {/if}
 
             {#if data.feeds && data.feeds.length > 0}
               <div class="mt-4 flex items-center justify-between px-3 pb-1">
@@ -1379,8 +1498,14 @@
           href={item.href}
           data-sveltekit-preload-data
           class={'mobile-core-nav-link' +
-            (isCurrentNavItem(item.href) ? ' mobile-core-nav-link-active' : '')}
-          aria-current={isCurrentNavItem(item.href) ? 'page' : undefined}
+            (isCurrentNavItem(item.href, { ignorePinnedSearch: true })
+              ? ' mobile-core-nav-link-active'
+              : '')}
+          aria-current={isCurrentNavItem(item.href, {
+            ignorePinnedSearch: true,
+          })
+            ? 'page'
+            : undefined}
         >
           <span class="mobile-core-nav-icon">{@render navIcon(item.href)}</span>
           <span>{item.label}</span>

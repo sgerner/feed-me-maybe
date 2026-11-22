@@ -60,6 +60,7 @@
       { key: 'o', description: 'Open original article' },
       { key: 'v', description: 'Open publisher page in new tab' },
       { key: 'd', description: 'Fetch full article text' },
+      { key: '[', description: 'Toggle table of contents' },
       { key: 'h', description: 'Hide or restore this article' },
       { key: 's', description: 'Toggle saved for this article' },
       { key: 'm', description: 'Toggle read / unread for this article' },
@@ -211,7 +212,7 @@
           >
           <span class="block text-xs leading-relaxed text-surface-300">
             Turn this off to disable single-key and g-chord navigation, search,
-            sync, and article triage shortcuts.
+            sync, outline, and article triage shortcuts.
           </span>
         </span>
       </label>
