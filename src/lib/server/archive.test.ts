@@ -7,6 +7,12 @@ import {
   isJinaErrorPayload,
 } from './archive';
 
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi.fn().mockResolvedValue([{ address: '8.8.8.8', family: 4 }]),
+  },
+}));
+
 describe('archive fetching safety and challenge detection', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
