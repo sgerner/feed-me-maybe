@@ -5,6 +5,7 @@
   import { page as pageStore } from '$app/state';
   import ArticleList from '#lib/components/ArticleList.svelte';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
+  import { canTriggerSingleKeyShortcut } from '#lib/utils/keyboard-shortcuts.ts';
   import {
     getCachedArticles,
     matchesOfflineVisibility,
@@ -79,6 +80,7 @@
   let savedSearchErrorId = $state<string | null>(null);
   let editingSavedSearchId = $state<string | null>(null);
   let editingSavedSearchName = $state('');
+  let searchInputEl = $state<HTMLInputElement | null>(null);
   let lastAppliedUrlSearch = $state<string | null>(null);
   let searchSequence = 0;
   let searchController: AbortController | null = null;
@@ -623,7 +625,15 @@
   $effect(() => {
     if (!showSavedSearchDetails) showSaveSearch = false;
   });
+
+  function handleSearchKeydown(event: KeyboardEvent) {
+    if (event.key !== '/' || !canTriggerSingleKeyShortcut(event)) return;
+    event.preventDefault();
+    searchInputEl?.focus();
+  }
 </script>
+
+<svelte:window onkeydown={handleSearchKeydown} />
 
 <svelte:head>
   <title>Search · Feed Me Maybe</title>
@@ -680,6 +690,7 @@
       >
       <input
         id="search-query"
+        bind:this={searchInputEl}
         class="input glass-input h-14 w-full pl-12 pr-28 text-base md:text-lg"
         type="search"
         bind:value={query}

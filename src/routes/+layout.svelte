@@ -12,11 +12,14 @@
     resumeToast,
   } from '#lib/stores/toast.svelte.ts';
   import { fade, fly } from 'svelte/transition';
-  import { afterNavigate, invalidate, refreshAll } from '$app/navigation';
+  import { afterNavigate, goto, invalidate, refreshAll } from '$app/navigation';
   import PWABanner from '#lib/components/PWABanner.svelte';
   import BrandMark from '#lib/components/BrandMark.svelte';
   import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
-  import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
+  import {
+    canTriggerSingleKeyShortcut,
+    createGChordTracker,
+  } from '#lib/utils/keyboard-shortcuts.ts';
 
   import { syncFeeds } from '#lib/feeds.ts';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
@@ -138,6 +141,7 @@
   });
 
   afterNavigate(() => {
+    gChordTracker.reset();
     showAddFeedModal = false;
     showShortcuts = false;
     if (cachedReader?.open) {
@@ -485,38 +489,88 @@
     };
   });
 
+  const G_CHORD_ROUTES: Record<string, string> = {
+    a: '/',
+    u: '/inbox',
+    b: '/saved',
+    d: '/digest',
+    f: '/feeds',
+    s: '/settings',
+  };
+
+  const gChordTracker = createGChordTracker(G_CHORD_ROUTES);
+
+  async function focusSearchFromShortcut() {
+    if (page.url.pathname !== '/search') {
+      await goto('/search');
+    }
+    await tick();
+    const searchInput = document.getElementById(
+      'search-query',
+    ) as HTMLInputElement | null;
+    if (searchInput) {
+      searchInput.focus();
+    } else {
+      requestAnimationFrame(() => {
+        document.getElementById('search-query')?.focus();
+      });
+    }
+  }
+
   $effect(() => {
-    const handleShortcutHelp = (event: KeyboardEvent) => {
-      if (event.key !== '?' || event.metaKey || event.ctrlKey || event.altKey) {
+    if (!sessionId) {
+      gChordTracker.reset();
+      return;
+    }
+
+    const handleGlobalShortcut = (event: KeyboardEvent) => {
+      if (showAddFeedModal || showShortcuts) {
+        gChordTracker.reset();
         return;
       }
 
-      // Honor the same opt-out as article shortcuts, and keep dialogs exclusive.
-      if (
-        !getSingleKeyShortcutsEnabled() ||
-        showAddFeedModal ||
-        showShortcuts ||
-        document.querySelector('dialog[open], [aria-modal="true"]')
-      ) {
+      const chordRoute = gChordTracker.handleKeydown(event);
+      if (chordRoute) {
+        const current = `${page.url.pathname}${page.url.search}`;
+        if (current !== chordRoute) {
+          void goto(chordRoute);
+        }
         return;
       }
 
-      const target = event.target as HTMLElement | null;
-      if (
-        target?.isContentEditable ||
-        target?.closest(
-          'input, textarea, select, [role="dialog"], [aria-modal="true"]',
-        )
-      ) {
+      if (!canTriggerSingleKeyShortcut(event)) {
         return;
       }
 
-      event.preventDefault();
-      showShortcuts = true;
+      if (event.key === '?') {
+        event.preventDefault();
+        showShortcuts = true;
+        return;
+      }
+
+      if (event.key === '+') {
+        event.preventDefault();
+        openAddFeedModal();
+        return;
+      }
+
+      if (event.key === 'R') {
+        event.preventDefault();
+        void handleManualSync();
+        return;
+      }
+
+      if (event.key === '/') {
+        event.preventDefault();
+        void focusSearchFromShortcut();
+      }
     };
 
-    document.addEventListener('keydown', handleShortcutHelp);
-    return () => document.removeEventListener('keydown', handleShortcutHelp);
+    document.addEventListener('keydown', handleGlobalShortcut);
+    return () => {
+      gChordTracker.reset();
+      document.removeEventListener('keydown', handleGlobalShortcut);
+    };
   });
 
   const navItems = [
