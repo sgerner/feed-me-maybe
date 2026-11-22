@@ -174,6 +174,33 @@ function extractStandaloneNegation(ftsText: string): string | null {
   return phrases.length ? phrases.join(' OR ') : null;
 }
 
+export type NormalizedFtsSearchQuery = {
+  ftsQuery: string;
+  standaloneNegation: string | null;
+  emptyMatch: boolean;
+};
+
+export function normalizeFtsSearchQuery(
+  rawQuery: string,
+): NormalizedFtsSearchQuery | null {
+  const query = rawQuery.trim();
+  if (!query) return null;
+  if (query.length > MAX_SEARCH_LENGTH) {
+    throw new SearchQueryError(
+      `Search queries are limited to ${MAX_SEARCH_LENGTH} characters`,
+    );
+  }
+  const ftsQuery = makeFtsQuery(tokenize(query));
+  if (!ftsQuery) {
+    return { ftsQuery: '', standaloneNegation: null, emptyMatch: true };
+  }
+  return {
+    ftsQuery,
+    standaloneNegation: extractStandaloneNegation(ftsQuery),
+    emptyMatch: false,
+  };
+}
+
 export function parseSearchQuery(rawQuery: string): ParsedSearchQuery {
   const query = rawQuery.trim();
   if (query.length > MAX_SEARCH_LENGTH) {
