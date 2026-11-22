@@ -74,7 +74,47 @@ const NON_TEXT_TAGS = new Set<string>([
   'math',
 ]);
 
-const GLOBAL_ATTRIBUTES = new Set<string>(['dir', 'lang', 'title']);
+const GLOBAL_ATTRIBUTES = new Set<string>(['dir', 'id', 'lang', 'title']);
+
+export const USER_CONTENT_ID_PREFIX = 'user-content-';
+
+const SAFE_ANCHOR_TOKEN_RE = /^[\p{L}\p{N}_][\p{L}\p{N}_.:-]*$/u;
+const MAX_ANCHOR_TOKEN_LENGTH = 200;
+
+export function normalizeUserContentId(
+  raw: string | null | undefined,
+): string | undefined {
+  if (!raw) return undefined;
+  let token = raw.trim();
+  while (token.toLowerCase().startsWith(USER_CONTENT_ID_PREFIX)) {
+    token = token.slice(USER_CONTENT_ID_PREFIX.length);
+  }
+  if (
+    !token ||
+    token.length > MAX_ANCHOR_TOKEN_LENGTH ||
+    !SAFE_ANCHOR_TOKEN_RE.test(token)
+  ) {
+    return undefined;
+  }
+  return `${USER_CONTENT_ID_PREFIX}${token}`;
+}
+
+export function normalizeFragmentHref(
+  rawHref: string | null | undefined,
+): string | undefined {
+  const trimmed = rawHref?.trim();
+  if (!trimmed || !trimmed.startsWith('#')) return undefined;
+  const rawFragment = trimmed.slice(1);
+  if (!rawFragment) return undefined;
+  let decoded = rawFragment;
+  try {
+    decoded = decodeURIComponent(rawFragment);
+  } catch {
+    // Keep raw fragment when percent-encoding is malformed.
+  }
+  const normalizedId = normalizeUserContentId(decoded);
+  return normalizedId ? `#${normalizedId}` : undefined;
+}
 
 const ALLOWED_ATTRIBUTES: Record<string, Set<string>> = {
   a: new Set(['href', 'target', 'rel', 'id', 'aria-label']),
@@ -419,24 +459,53 @@ export function sanitizeHtml(
 
     const attrs = parseTagAttributes(rawAttrPart.replace(/\/\s*$/, ''));
 
+    if (tagName === 'a' && !attrs.id && attrs.name) {
+      attrs.id = attrs.name;
+    }
+
+    if ('id' in attrs) {
+      const normalizedId = normalizeUserContentId(attrs.id);
+      if (normalizedId) {
+        attrs.id = normalizedId;
+      } else {
+        delete attrs.id;
+      }
+    }
+
+    if ((tagName === 'td' || tagName === 'th') && 'headers' in attrs) {
+      const normalizedHeaders = attrs.headers
+        .split(/\s+/)
+        .map((token) => normalizeUserContentId(token))
+        .filter((token): token is string => Boolean(token));
+      if (normalizedHeaders.length > 0) {
+        attrs.headers = normalizedHeaders.join(' ');
+      } else {
+        delete attrs.headers;
+      }
+    }
+
     if (tagName === 'a') {
       const rawHref = attrs.href?.trim();
       const isFragment = Boolean(rawHref && rawHref.startsWith('#'));
-      const resolvedHref = resolveUrl(rawHref);
-      if (
-        resolvedHref &&
-        (isFragment ||
-          hasAllowedScheme(resolvedHref, ['http', 'https', 'mailto', 'tel']))
-      ) {
-        attrs.href = resolvedHref;
-      } else {
-        delete attrs.href;
-      }
-
       if (isFragment) {
+        const normalizedFragment = normalizeFragmentHref(rawHref);
+        if (normalizedFragment) {
+          attrs.href = normalizedFragment;
+        } else {
+          delete attrs.href;
+        }
         delete attrs.target;
         delete attrs.rel;
       } else {
+        const resolvedHref = resolveUrl(rawHref);
+        if (
+          resolvedHref &&
+          hasAllowedScheme(resolvedHref, ['http', 'https', 'mailto', 'tel'])
+        ) {
+          attrs.href = resolvedHref;
+        } else {
+          delete attrs.href;
+        }
         attrs.target = '_blank';
         attrs.rel = 'noopener noreferrer';
       }
@@ -537,12 +606,19 @@ export function formatContent(
 
   const renderer = new marked.Renderer();
 
-  renderer.link = ({ href, title, text: linkText }) => {
+  renderer.link = function ({ href, title, tokens, text: linkText }) {
+    const renderedText = this.parser
+      ? this.parser.parseInline(tokens)
+      : linkText;
     const isFragment = Boolean(href?.trim().startsWith('#'));
-    const targetRel = isFragment
-      ? ''
-      : ' target="_blank" rel="noopener noreferrer"';
-    return `<a href="${href}"${title ? ` title="${title}"` : ''}${targetRel}>${linkText}</a>`;
+    if (isFragment) {
+      const normalizedFragment = normalizeFragmentHref(href);
+      const hrefAttr = normalizedFragment
+        ? ` href="${escapeAttribute(normalizedFragment)}"`
+        : '';
+      return `<a${hrefAttr}${title ? ` title="${escapeAttribute(title)}"` : ''}>${renderedText}</a>`;
+    }
+    return `<a href="${escapeAttribute(href ?? '')}"${title ? ` title="${escapeAttribute(title)}"` : ''} target="_blank" rel="noopener noreferrer">${renderedText}</a>`;
   };
 
   const html = marked.parse(text, {
@@ -580,4 +656,136 @@ export function renderContent(
   }
 
   return formatContent(text, baseUrl);
+}
+
+export type ReaderHeading = {
+  id: string;
+  text: string;
+  level: 1 | 2 | 3 | 4;
+};
+
+export function slugifyHeadingText(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .trim()
+    .replace(/['’]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+    .replace(/-+$/g, '');
+  return slug || 'section';
+}
+
+export function extractArticleHeadings(
+  container: ParentNode | null | undefined,
+): ReaderHeading[] {
+  if (!container) return [];
+
+  const headingSelector = 'h1, h2, h3, h4';
+  const headingNodes = Array.from(
+    container.querySelectorAll<HTMLElement>(headingSelector),
+  );
+  if (headingNodes.length === 0) return [];
+
+  const headingNodeSet = new Set<Element>(headingNodes);
+  const usedIds = new Set<string>();
+  for (const el of Array.from(container.querySelectorAll('[id]'))) {
+    if (headingNodeSet.has(el)) continue;
+    const normalized = normalizeUserContentId(el.getAttribute('id'));
+    if (normalized) {
+      usedIds.add(normalized);
+    }
+  }
+
+  const headings: ReaderHeading[] = [];
+  for (const el of headingNodes) {
+    const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+
+    const rawLevel = Number.parseInt(el.tagName.slice(1), 10);
+    const level = (
+      rawLevel >= 1 && rawLevel <= 4 ? rawLevel : 2
+    ) as ReaderHeading['level'];
+
+    const existingId = normalizeUserContentId(el.getAttribute('id'));
+    const baseId =
+      existingId ??
+      normalizeUserContentId(slugifyHeadingText(text)) ??
+      `${USER_CONTENT_ID_PREFIX}section`;
+
+    let finalId = baseId;
+    if (usedIds.has(finalId)) {
+      let suffix = 2;
+      while (usedIds.has(`${baseId}-${suffix}`)) {
+        suffix += 1;
+      }
+      finalId = `${baseId}-${suffix}`;
+    }
+    usedIds.add(finalId);
+
+    if (el.getAttribute('id') !== finalId) {
+      el.setAttribute('id', finalId);
+    }
+
+    headings.push({ id: finalId, text, level });
+  }
+
+  return headings;
+}
+
+export type ReaderOutlineShortcutContext = {
+  singleKeyShortcutsEnabled: boolean;
+  lightboxOpen: boolean;
+  isReaderMode: boolean;
+  headingCount: number;
+  hasOpenModal?: boolean;
+};
+
+const SHORTCUT_IGNORED_TARGET_SELECTOR =
+  'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="dialog"], dialog[open], [aria-modal="true"]';
+
+export function shouldToggleReaderOutline(
+  event: Pick<
+    KeyboardEvent,
+    | 'key'
+    | 'defaultPrevented'
+    | 'repeat'
+    | 'altKey'
+    | 'ctrlKey'
+    | 'metaKey'
+    | 'target'
+  >,
+  context: ReaderOutlineShortcutContext,
+): boolean {
+  if (
+    event.key !== '[' ||
+    event.defaultPrevented ||
+    event.repeat ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    !context.singleKeyShortcutsEnabled ||
+    context.lightboxOpen ||
+    !context.isReaderMode ||
+    context.headingCount < 2 ||
+    context.hasOpenModal
+  ) {
+    return false;
+  }
+
+  const target = event.target as
+    | (Partial<HTMLElement> & {
+        closest?: (selector: string) => Element | null;
+      })
+    | null;
+  if (!target) return true;
+  if (target.isContentEditable) return false;
+  if (
+    typeof target.closest === 'function' &&
+    target.closest(SHORTCUT_IGNORED_TARGET_SELECTOR)
+  ) {
+    return false;
+  }
+
+  return true;
 }

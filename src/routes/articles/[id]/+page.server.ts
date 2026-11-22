@@ -72,9 +72,21 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
       article.image_url = archived.imageUrl || article.image_url;
 
       if (archivedLength >= existingLength || !existingLength) {
+        const countUserContentIds = (html: unknown) =>
+          typeof html === 'string'
+            ? (html.match(/\bid="user-content-/gi) ?? []).length
+            : 0;
         article.title = archived.title || article.title;
+        const previousContent = article.content;
         article.content = archived.content;
-        if (archivedLength > existingLength) {
+        if (
+          archivedLength > existingLength ||
+          (archivedLength === existingLength &&
+            stripHtmlText(archived.content) ===
+              stripHtmlText(previousContent) &&
+            countUserContentIds(archived.content) >
+              countUserContentIds(previousContent))
+        ) {
           db.prepare(
             "UPDATE articles SET content = ?, image_url = COALESCE(NULLIF(image_url, ''), ?), updated_at = ? WHERE id = ?",
           ).run(
