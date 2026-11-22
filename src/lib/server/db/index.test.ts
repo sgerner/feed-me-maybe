@@ -17,11 +17,17 @@ describe('Database initialization', () => {
     }
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     // Clean up test DB
+    const { closeDb } = await import('./index');
+    closeDb();
     process.env.DATABASE_URL = originalDbUrl ?? '';
     try {
-      if (existsSync(testDbPath)) unlinkSync(testDbPath);
+      for (const suffix of ['', '-wal', '-shm']) {
+        if (existsSync(`${testDbPath}${suffix}`)) {
+          unlinkSync(`${testDbPath}${suffix}`);
+        }
+      }
     } catch {
       // ignore cleanup errors
     }
@@ -109,7 +115,7 @@ describe('Database initialization', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .pluck()
         .all();
-      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
       const articleIndexes = db
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'articles'",

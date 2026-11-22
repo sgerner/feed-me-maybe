@@ -543,6 +543,83 @@ const migrations: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 10,
+    name: 'fts_rowid_triggers_and_lookup_indexes',
+    apply: (db) => {
+      db.exec(`
+        DROP TRIGGER IF EXISTS articles_search_after_insert;
+        DROP TRIGGER IF EXISTS articles_search_after_update;
+        DROP TRIGGER IF EXISTS articles_search_after_delete;
+        DROP TRIGGER IF EXISTS feeds_search_after_update;
+
+        DELETE FROM article_search;
+        INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+        SELECT a.rowid, a.id, COALESCE(a.title, ''), COALESCE(a.author, ''),
+               COALESCE(a.summary, ''), COALESCE(a.content, ''),
+               COALESCE(f.title, ''),
+               TRIM(COALESCE(f.category, '') || ' ' || COALESCE(a.categories, ''))
+        FROM articles a JOIN feeds f ON f.id = a.feed_id;
+
+        CREATE TRIGGER articles_search_after_insert
+        AFTER INSERT ON articles
+        BEGIN
+          INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+          SELECT NEW.rowid, NEW.id, COALESCE(NEW.title, ''), COALESCE(NEW.author, ''),
+                 COALESCE(NEW.summary, ''), COALESCE(NEW.content, ''),
+                 COALESCE(f.title, ''),
+                 TRIM(COALESCE(f.category, '') || ' ' || COALESCE(NEW.categories, ''))
+          FROM feeds f WHERE f.id = NEW.feed_id;
+        END;
+
+        CREATE TRIGGER articles_search_after_update
+        AFTER UPDATE OF feed_id, title, author, summary, content, categories ON articles
+        WHEN OLD.feed_id IS NOT NEW.feed_id
+          OR OLD.title IS NOT NEW.title
+          OR OLD.author IS NOT NEW.author
+          OR OLD.summary IS NOT NEW.summary
+          OR OLD.content IS NOT NEW.content
+          OR OLD.categories IS NOT NEW.categories
+        BEGIN
+          DELETE FROM article_search WHERE rowid = OLD.rowid;
+          INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+          SELECT NEW.rowid, NEW.id, COALESCE(NEW.title, ''), COALESCE(NEW.author, ''),
+                 COALESCE(NEW.summary, ''), COALESCE(NEW.content, ''),
+                 COALESCE(f.title, ''),
+                 TRIM(COALESCE(f.category, '') || ' ' || COALESCE(NEW.categories, ''))
+          FROM feeds f WHERE f.id = NEW.feed_id;
+        END;
+
+        CREATE TRIGGER articles_search_after_delete
+        AFTER DELETE ON articles
+        BEGIN
+          DELETE FROM article_search WHERE rowid = OLD.rowid;
+        END;
+
+        CREATE TRIGGER feeds_search_after_update
+        AFTER UPDATE OF title, category ON feeds
+        WHEN OLD.title IS NOT NEW.title OR OLD.category IS NOT NEW.category
+        BEGIN
+          DELETE FROM article_search
+          WHERE rowid IN (SELECT rowid FROM articles WHERE feed_id = OLD.id);
+          INSERT INTO article_search(rowid, article_id, title, author, summary, content, feed_title, category)
+          SELECT a.rowid, a.id, COALESCE(a.title, ''), COALESCE(a.author, ''),
+                 COALESCE(a.summary, ''), COALESCE(a.content, ''),
+                 COALESCE(NEW.title, ''),
+                 TRIM(COALESCE(NEW.category, '') || ' ' || COALESCE(a.categories, ''))
+          FROM articles a WHERE a.feed_id = NEW.id;
+        END;
+
+        CREATE INDEX IF NOT EXISTS idx_user_interactions_type_article
+          ON user_interactions(interaction_type, article_id);
+        CREATE INDEX IF NOT EXISTS idx_fetch_logs_feed_created
+          ON feed_fetch_logs(feed_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_articles_saved_order
+          ON articles(COALESCE(saved_at, updated_at, fetched_at) DESC, id DESC)
+          WHERE saved = 1;
+      `);
+    },
+  },
 ];
 
 function parseStoredValue(value: string | null | undefined): unknown {
@@ -687,6 +764,12 @@ export function initializeDatabase(): void {
     'CREATE INDEX IF NOT EXISTS idx_articles_saved_published ON articles(published_at DESC) WHERE saved = 1',
   ).run();
   db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_articles_saved_order ON articles(COALESCE(saved_at, updated_at, fetched_at) DESC, id DESC) WHERE saved = 1',
+  ).run();
+  db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_articles_effective_publication ON articles(COALESCE(published_at, fetched_at))',
+  ).run();
+  db.prepare(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_feed_url_noguid ON articles(feed_id, url) WHERE guid IS NULL OR guid = ''",
   ).run();
   db.prepare(
@@ -696,6 +779,9 @@ export function initializeDatabase(): void {
     'CREATE INDEX IF NOT EXISTS idx_fetch_logs_feed_id ON feed_fetch_logs(feed_id)',
   ).run();
   db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_fetch_logs_feed_created ON feed_fetch_logs(feed_id, created_at DESC)',
+  ).run();
+  db.prepare(
     'CREATE INDEX IF NOT EXISTS idx_fetch_logs_status ON feed_fetch_logs(status)',
   ).run();
   db.prepare(
@@ -703,6 +789,9 @@ export function initializeDatabase(): void {
   ).run();
   db.prepare(
     'CREATE INDEX IF NOT EXISTS idx_interactions_article ON user_interactions(article_id)',
+  ).run();
+  db.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_user_interactions_type_article ON user_interactions(interaction_type, article_id)',
   ).run();
   db.prepare(
     'CREATE INDEX IF NOT EXISTS idx_pref_type_label ON user_preference_memory(type, label)',

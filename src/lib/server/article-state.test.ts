@@ -326,13 +326,11 @@ describe('article state foundation', () => {
     ]);
   });
 
-  it('excludes paused feeds from unread and state counts', async () => {
+  it('excludes paused feeds from unread counts', async () => {
     const { getDb } = await import('#lib/server/db/index.ts');
-    const { getUnreadCounts, getArticleStateCounts } =
-      await import('./article-state');
+    const { getUnreadCounts } = await import('./article-state');
     const db = getDb();
     const beforeUnread = getUnreadCounts();
-    const beforeState = getArticleStateCounts();
     const now = Date.now();
     db.prepare(
       'INSERT INTO feeds (id, url, title, enabled, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)',
@@ -352,9 +350,6 @@ describe('article state foundation', () => {
     const unread = getUnreadCounts();
     expect(unread.feeds.map((f) => f.feedId)).not.toContain('feed-paused');
     expect(unread.totalUnread).toBe(beforeUnread.totalUnread);
-    const stateCounts = getArticleStateCounts();
-    expect(stateCounts.total).toBe(beforeState.total);
-    expect(getArticleStateCounts('feed-paused').total).toBe(0);
   });
 
   it('reverses save and read preference memory on unsave and unread without inflating scores', async () => {
@@ -535,8 +530,6 @@ describe('article state foundation', () => {
     const { getDb } = await import('#lib/server/db/index.ts');
     const { applyArticleState, getArticleState, ArticleStateError } =
       await import('./article-state');
-    const { GET: getArticlesRecovery } =
-      await import('../../routes/api/articles/state/recovery/+server');
     const { GET: getStateRecovery } =
       await import('../../routes/api/article-state/recovery/+server');
     const db = getDb();
@@ -592,24 +585,22 @@ describe('article state foundation', () => {
     applyArticleState({ articleIds: ['state-b'], action: 'reject' });
     // state-c remains visible
 
-    const page1Res = await getArticlesRecovery({
+    const page1Res = await getStateRecovery({
       url: new URL(
-        'http://localhost/api/articles/state/recovery?kind=all&limit=1',
+        'http://localhost/api/article-state/recovery?kind=all&limit=1',
       ),
       locals: { sessionId: 'sess' },
     } as never);
     const page1 = (await page1Res.json()) as {
       articles: Array<{ id: string }>;
       nextCursor: string | null;
-      total: number;
     };
-    expect(page1.total).toBe(2);
     expect(page1.articles).toHaveLength(1);
     expect(page1.nextCursor).toBeTruthy();
 
-    const page2Res = await getArticlesRecovery({
+    const page2Res = await getStateRecovery({
       url: new URL(
-        `http://localhost/api/articles/state/recovery?kind=all&limit=1&cursor=${encodeURIComponent(page1.nextCursor!)}`,
+        `http://localhost/api/article-state/recovery?kind=all&limit=1&cursor=${encodeURIComponent(page1.nextCursor!)}`,
       ),
       locals: { sessionId: 'sess' },
     } as never);

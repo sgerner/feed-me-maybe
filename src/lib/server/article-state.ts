@@ -13,7 +13,6 @@ import {
   type PreferenceMemoryDelta,
 } from '#lib/server/preferences.ts';
 import { dispatchWebhookEvent } from '#lib/server/webhooks.ts';
-import type { SearchArticle } from '#lib/server/search.ts';
 
 export const ARTICLE_STATE_ACTIONS = [
   'read',
@@ -1351,45 +1350,6 @@ export function getUnreadCounts(): UnreadCounts {
   };
 }
 
-export type ArticleStateCounts = {
-  total: number;
-  unread: number;
-  read: number;
-  saved: number;
-  hidden: number;
-  rejected: number;
-};
-
-export function getArticleStateCounts(feedId?: string): ArticleStateCounts {
-  const db = getDb();
-  const where = feedId
-    ? 'WHERE f.enabled = 1 AND a.feed_id = ?'
-    : 'WHERE f.enabled = 1';
-  const row = db
-    .prepare(
-      `
-      SELECT COUNT(*) AS total,
-             COALESCE(SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END), 0) AS unread,
-             COALESCE(SUM(CASE WHEN a.read = 1 THEN 1 ELSE 0 END), 0) AS read,
-             COALESCE(SUM(CASE WHEN a.saved = 1 THEN 1 ELSE 0 END), 0) AS saved,
-             COALESCE(SUM(CASE WHEN a.hidden = 1 THEN 1 ELSE 0 END), 0) AS hidden,
-             COALESCE(SUM(CASE WHEN a.rejected = 1 OR a.thumbs_down = 1 THEN 1 ELSE 0 END), 0) AS rejected
-      FROM articles a
-      JOIN feeds f ON f.id = a.feed_id
-      ${where}
-    `,
-    )
-    .get(...(feedId ? [feedId] : [])) as Record<string, number>;
-  return {
-    total: Number(row.total || 0),
-    unread: Number(row.unread || 0),
-    read: Number(row.read || 0),
-    saved: Number(row.saved || 0),
-    hidden: Number(row.hidden || 0),
-    rejected: Number(row.rejected || 0),
-  };
-}
-
 export type RecoveryArticle = ArticleState & {
   id: string;
   title: string;
@@ -1490,122 +1450,4 @@ export function listRecoveryArticles(
         ).toString('base64url')
       : null;
   return { articles, nextCursor };
-}
-
-export function listRecoverySearchArticles(
-  options: {
-    limit?: number;
-    cursor?: string;
-    kind?: RecoveryKind;
-  } = {},
-): {
-  query: string;
-  sort: 'recent';
-  limit: number;
-  total: number;
-  articles: SearchArticle[];
-  nextCursor: string | null;
-} {
-  const limit = Math.min(100, Math.max(1, Math.floor(options.limit || 50)));
-  const kind = options.kind ?? 'all';
-  const db = getDb();
-  const baseWhere = `a.cleared_at IS NULL AND ${recoveryKindClause(kind)}`;
-  const expression = 'COALESCE(a.published_at, a.fetched_at, a.created_at)';
-  const params: Array<string | number> = [];
-  let cursorWhere = '';
-  if (options.cursor) {
-    const cursor = decodeRecoveryCursor(options.cursor);
-    cursorWhere = ` AND (${expression} < ? OR (${expression} = ? AND a.id < ?))`;
-    params.push(cursor.timestamp, cursor.timestamp, cursor.id);
-  }
-
-  const totalRow = db
-    .prepare(
-      `SELECT COUNT(*) AS total FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE ${baseWhere}`,
-    )
-    .get() as { total: number };
-  const rows = db
-    .prepare(
-      `
-      SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url,
-             a.categories, a.published_at, a.fetched_at, a.read, a.saved,
-             a.hidden, a.thumbs_up, a.thumbs_down, a.rejected,
-             a.read_at, a.saved_at, a.hidden_at, a.rejected_at, a.state_version,
-             a.heuristic_score, a.combined_score,
-             f.title AS feed_title, f.url AS feed_url, f.category AS feed_category,
-             f.open_mode AS feed_open_mode
-      FROM articles a JOIN feeds f ON f.id = a.feed_id
-      WHERE ${baseWhere}${cursorWhere}
-      ORDER BY ${expression} DESC, a.id DESC
-      LIMIT ?
-    `,
-    )
-    .all(...params, limit + 1) as Array<Record<string, unknown>>;
-
-  const hasMore = rows.length > limit;
-  const resultRows = hasMore ? rows.slice(0, limit) : rows;
-  const articles: SearchArticle[] = resultRows.map((row) => ({
-    id: String(row.id),
-    feedId: String(row.feed_id),
-    url: String(row.url),
-    title: String(row.title || ''),
-    author: (row.author as string | null) ?? null,
-    summary: (row.summary as string | null) ?? null,
-    imageUrl: (row.image_url as string | null) ?? null,
-    categories: (row.categories as string | null) ?? null,
-    publishedAt: (row.published_at as number | null) ?? null,
-    fetchedAt: Number(row.fetched_at),
-    read: Number(row.read),
-    saved: Number(row.saved),
-    hidden: Number(row.hidden),
-    thumbsUp: Number(row.thumbs_up),
-    thumbsDown: Number(row.thumbs_down),
-    rejected: Number(row.rejected || row.thumbs_down),
-    readAt: (row.read_at as number | null) ?? null,
-    savedAt: (row.saved_at as number | null) ?? null,
-    hiddenAt: (row.hidden_at as number | null) ?? null,
-    rejectedAt: (row.rejected_at as number | null) ?? null,
-    stateVersion: Number(row.state_version || 0),
-    heuristicScore: (row.heuristic_score as number | null) ?? null,
-    combinedScore: (row.combined_score as number | null) ?? null,
-    feedTitle: (row.feed_title as string | null) ?? null,
-    feedUrl: (row.feed_url as string | null) ?? null,
-    feedCategory: (row.feed_category as string | null) ?? null,
-    feedOpenMode: (row.feed_open_mode as string | null) ?? null,
-    relevance: null,
-    titleHighlight: null,
-    authorHighlight: null,
-    summaryHighlight: null,
-    contentHighlight: null,
-    feedTitleHighlight: null,
-    categoryHighlight: null,
-  }));
-  const last = resultRows.at(-1);
-  const nextCursor =
-    hasMore && last
-      ? Buffer.from(
-          JSON.stringify({
-            timestamp: Number(last.published_at ?? last.fetched_at ?? 0),
-            id: String(last.id),
-          }),
-        ).toString('base64url')
-      : null;
-
-  return {
-    query: '',
-    sort: 'recent',
-    limit,
-    total: totalRow.total,
-    articles,
-    nextCursor,
-  };
-}
-
-export function listStateHistory(
-  options: {
-    articleId?: string;
-    limit?: number;
-  } = {},
-): StateChange[] {
-  return getArticleStateHistory(options);
 }

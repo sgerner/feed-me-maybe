@@ -84,5 +84,31 @@ describe('ranking recency boost for undated articles', () => {
       'fresh-dated',
       'undated-archive',
     ]);
+
+    const newest = queryGlobalArticleRanking(
+      db,
+      'a.hidden = 0',
+      [],
+      10,
+      0,
+      'newest',
+    ) as Array<{ id: string }>;
+    expect(newest.map((row) => row.id)).toEqual([
+      'undated-archive',
+      'fresh-dated',
+    ]);
+
+    const oldest = queryGlobalArticleRanking(
+      db,
+      'a.hidden = 0',
+      [],
+      10,
+      0,
+      'oldest',
+    ) as Array<{ id: string }>;
+    expect(oldest.map((row) => row.id)).toEqual([
+      'fresh-dated',
+      'undated-archive',
+    ]);
   });
 });

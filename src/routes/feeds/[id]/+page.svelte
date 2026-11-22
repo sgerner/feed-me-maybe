@@ -53,9 +53,19 @@
       totalPages: number;
       hiddenContentLimit?: number | null;
       showHiddenContent?: boolean;
+      unreadOnly?: boolean;
+      sort?: 'ranked' | 'newest' | 'oldest';
+      snapshotAt?: number;
       proxyAvailable?: boolean;
     };
   }>();
+
+  type ArticleSort = 'ranked' | 'newest' | 'oldest';
+  const SORT_OPTIONS: Array<{ value: ArticleSort; label: string }> = [
+    { value: 'ranked', label: 'Ranked' },
+    { value: 'newest', label: 'Newest' },
+    { value: 'oldest', label: 'Oldest' },
+  ];
 
   let articles = $state<FeedArticle[]>([]);
   let feed = $state<FeedData>({ error_count: 0 });
@@ -78,6 +88,44 @@
   let syncing = $state(false);
   let newArticlesAvailable = $state(false);
   let newArticlesCount = $state(0);
+
+  const currentSort = $derived<ArticleSort>(pageData.sort || 'ranked');
+  const currentUnreadOnly = $derived(Boolean(pageData.unreadOnly));
+  const loadMoreSearchParams = $derived.by(() => {
+    const params: Record<string, string> = {};
+    if (pageData.snapshotAt) params.snapshotAt = String(pageData.snapshotAt);
+    if (currentUnreadOnly) params.unread = '1';
+    if (currentSort !== 'ranked') params.sort = currentSort;
+    return params;
+  });
+
+  function setUnreadFilter(nextUnreadOnly: boolean) {
+    const next = new URL(window.location.href);
+    if (nextUnreadOnly) {
+      next.searchParams.set('unread', '1');
+    } else {
+      next.searchParams.delete('unread');
+    }
+    next.searchParams.delete('page');
+    void goto(`${next.pathname}${next.search}`, {
+      replace: true,
+      reset: false,
+    });
+  }
+
+  function setSort(nextSort: ArticleSort) {
+    const next = new URL(window.location.href);
+    if (nextSort === 'ranked') {
+      next.searchParams.delete('sort');
+    } else {
+      next.searchParams.set('sort', nextSort);
+    }
+    next.searchParams.delete('page');
+    void goto(`${next.pathname}${next.search}`, {
+      replace: true,
+      reset: false,
+    });
+  }
 
   function toggleHiddenContent() {
     const next = new URL(window.location.href);
@@ -637,18 +685,71 @@
     </div>
   {/if}
 
-  <ArticleList
-    bind:articles
-    totalPages={pageData.totalPages}
-    feedId={pageData.feedId}
-    showInfiniteScroll={!pageData.showHiddenContent}
-    feedbackMode={pageData.showHiddenContent ? 'boost' : 'standard'}
-    emptyTitle={pageData.showHiddenContent
-      ? 'No auto-hidden articles yet'
-      : undefined}
-    emptyMessage={pageData.showHiddenContent
-      ? 'This feed has not produced any model-hidden items yet.'
-      : undefined}
-    emptyCtaHref={pageData.showHiddenContent ? null : undefined}
-  />
+  {#if !pageData.showHiddenContent}
+    <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+      <div
+        class="flex flex-wrap items-center gap-1.5"
+        role="group"
+        aria-label="Filter feed articles"
+      >
+        <button
+          type="button"
+          class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {!currentUnreadOnly
+            ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
+            : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+          aria-pressed={!currentUnreadOnly}
+          onclick={() => setUnreadFilter(false)}>All</button
+        >
+        <button
+          type="button"
+          class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {currentUnreadOnly
+            ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
+            : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+          aria-pressed={currentUnreadOnly}
+          onclick={() => setUnreadFilter(true)}>Unread</button
+        >
+      </div>
+      <div
+        class="flex flex-wrap items-center gap-1.5"
+        role="group"
+        aria-label="Sort feed articles"
+      >
+        {#each SORT_OPTIONS as option (option.value)}
+          <button
+            type="button"
+            class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {currentSort ===
+            option.value
+              ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
+              : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+            aria-pressed={currentSort === option.value}
+            onclick={() => setSort(option.value)}>{option.label}</button
+          >
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#key `${pageData.feedId}:${currentUnreadOnly}:${currentSort}:${Boolean(pageData.showHiddenContent)}`}
+    <ArticleList
+      bind:articles
+      totalPages={pageData.totalPages}
+      feedId={pageData.feedId}
+      {loadMoreSearchParams}
+      showInfiniteScroll={!pageData.showHiddenContent}
+      feedbackMode={pageData.showHiddenContent ? 'boost' : 'standard'}
+      emptyTitle={pageData.showHiddenContent
+        ? 'No auto-hidden articles yet'
+        : currentUnreadOnly
+          ? 'No unread articles in this feed'
+          : undefined}
+      emptyMessage={pageData.showHiddenContent
+        ? 'This feed has not produced any model-hidden items yet.'
+        : currentUnreadOnly
+          ? 'You are all caught up on this feed.'
+          : undefined}
+      emptyCtaHref={pageData.showHiddenContent || currentUnreadOnly
+        ? null
+        : undefined}
+    />
+  {/key}
 </PullToRefresh>

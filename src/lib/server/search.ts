@@ -102,18 +102,76 @@ function tokenize(value: string): string[] {
   return value.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
 }
 
+function normalizeFtsPhrase(raw: string): string {
+  const words = unquote(raw)
+    .replace(/[^\p{L}\p{N}_-]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((word) => /[\p{L}\p{N}]/u.test(word));
+  return words.length ? `"${words.join(' ').replace(/"/g, '""')}"` : '';
+}
+
 function makeFtsQuery(terms: string[]): string {
-  const normalizedTerms = terms
-    .map((term) =>
-      unquote(term)
-        .replace(/[^\p{L}\p{N}_-]+/gu, ' ')
-        .trim(),
-    )
-    .flatMap((term) => term.split(/\s+/))
-    .filter((term) => /[\p{L}\p{N}]/u.test(term));
-  return normalizedTerms
-    .map((term) => `"${term.replace(/"/g, '""')}"`)
+  const positiveParts: string[] = [];
+  const negatedPhrases: string[] = [];
+  let pendingOr = false;
+
+  for (let i = 0; i < terms.length; i += 1) {
+    const token = terms[i];
+    if (token === 'NOT' && i + 1 < terms.length) {
+      const next = terms[i + 1];
+      if (next !== 'OR' && next !== 'NOT') {
+        i += 1;
+        const phrase = normalizeFtsPhrase(next);
+        if (phrase) negatedPhrases.push(phrase);
+      }
+      pendingOr = false;
+      continue;
+    }
+
+    if (token.startsWith('-') && token.length > 1) {
+      const phrase = normalizeFtsPhrase(token.slice(1));
+      if (phrase) negatedPhrases.push(phrase);
+      pendingOr = false;
+      continue;
+    }
+
+    if (token === 'OR') {
+      if (positiveParts.length > 0) {
+        pendingOr = true;
+      }
+      continue;
+    }
+
+    const phrase = normalizeFtsPhrase(token);
+    if (!phrase) continue;
+    if (pendingOr && positiveParts.length > 0) {
+      positiveParts.push('OR', phrase);
+    } else {
+      positiveParts.push(phrase);
+    }
+    pendingOr = false;
+  }
+
+  const positiveExpr = positiveParts.join(' ');
+  const negationExpr = negatedPhrases
+    .map((phrase) => `NOT ${phrase}`)
     .join(' ');
+  if (!positiveExpr) return negationExpr;
+  if (!negationExpr) return positiveExpr;
+  const wrappedPositive = positiveParts.includes('OR')
+    ? `(${positiveExpr})`
+    : positiveExpr;
+  return `${wrappedPositive} ${negationExpr}`;
+}
+
+function extractStandaloneNegation(ftsText: string): string | null {
+  if (!ftsText.startsWith('NOT ')) return null;
+  const phrases = ftsText
+    .split(/\bNOT\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return phrases.length ? phrases.join(' OR ') : null;
 }
 
 export function parseSearchQuery(rawQuery: string): ParsedSearchQuery {
@@ -154,13 +212,19 @@ export function parseSearchQuery(rawQuery: string): ParsedSearchQuery {
         filters.after = parseDate(value, 'after');
         break;
       case 'is': {
-        const state = value.toLowerCase();
-        if (state === 'unread') filters.unread = true;
-        else if (state === 'read') filters.read = true;
-        else if (state === 'saved') filters.saved = true;
-        else if (state === 'hidden') filters.hidden = true;
-        else if (state === 'rejected') filters.rejected = true;
-        else throw new SearchQueryError(`Unsupported is:${state} filter`);
+        const states = value
+          .toLowerCase()
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+        for (const state of states) {
+          if (state === 'unread') filters.unread = true;
+          else if (state === 'read') filters.read = true;
+          else if (state === 'saved') filters.saved = true;
+          else if (state === 'hidden') filters.hidden = true;
+          else if (state === 'rejected') filters.rejected = true;
+          else throw new SearchQueryError(`Unsupported is:${state} filter`);
+        }
         break;
       }
       default:
@@ -213,36 +277,52 @@ function decodeCursor(value: string, sort: SearchSort): SearchCursor {
 }
 
 function dateExpression(): string {
-  return 'COALESCE(a.published_at, a.fetched_at, a.created_at)';
+  return 'COALESCE(a.published_at, a.fetched_at)';
 }
 
 type QueryParts = {
   from: string;
   where: string;
   params: Array<string | number>;
+  hasPositiveFts: boolean;
 };
 
 function buildQueryParts(parsed: ParsedSearchQuery): QueryParts {
   const { filters } = parsed;
   const params: Array<string | number> = [];
   const where: string[] = ['1 = 1'];
-  const from = parsed.text
-    ? 'FROM articles a JOIN feeds f ON f.id = a.feed_id JOIN article_search ON article_search.article_id = a.id'
+  const standaloneNegation = parsed.text
+    ? extractStandaloneNegation(parsed.text)
+    : null;
+  const hasPositiveFts = Boolean(parsed.text && !standaloneNegation);
+  const from = hasPositiveFts
+    ? 'FROM articles a JOIN feeds f ON f.id = a.feed_id JOIN article_search ON article_search.rowid = a.rowid'
     : 'FROM articles a JOIN feeds f ON f.id = a.feed_id';
 
-  if (parsed.text) {
+  if (hasPositiveFts) {
     where.push('article_search MATCH ?');
     params.push(parsed.text);
+  } else if (standaloneNegation) {
+    where.push(
+      'NOT EXISTS (SELECT 1 FROM article_search WHERE article_search.rowid = a.rowid AND article_search MATCH ?)',
+    );
+    params.push(standaloneNegation);
   }
   if (filters.feed) {
     where.push(
-      "(LOWER(f.id) = LOWER(?) OR LOWER(COALESCE(f.title, '')) = LOWER(?) OR LOWER(f.url) = LOWER(?))",
+      "(LOWER(TRIM(f.id)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(f.title, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(f.url)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(f.site_url, ''))) = LOWER(TRIM(?)) OR LOWER(COALESCE(f.title, '')) LIKE '%' || LOWER(TRIM(?)) || '%')",
     );
-    params.push(filters.feed, filters.feed, filters.feed);
+    params.push(
+      filters.feed,
+      filters.feed,
+      filters.feed,
+      filters.feed,
+      filters.feed,
+    );
   }
   if (filters.category) {
     where.push(
-      "(LOWER(COALESCE(f.category, '')) = LOWER(?) OR LOWER(COALESCE(a.categories, '')) LIKE '%' || LOWER(?) || '%')",
+      "(LOWER(TRIM(COALESCE(f.category, ''))) = LOWER(TRIM(?)) OR LOWER(COALESCE(a.categories, '')) LIKE '%' || LOWER(TRIM(?)) || '%')",
     );
     params.push(filters.category, filters.category);
   }
@@ -260,13 +340,15 @@ function buildQueryParts(parsed: ParsedSearchQuery): QueryParts {
   if (!filters.feed && !filters.saved && !filters.hidden && !filters.rejected) {
     where.push('f.enabled = 1');
   }
-  // Hidden articles are discoverable through an explicit state filter. A
-  // regular search should match the visible reading surfaces by default.
-  if (!filters.hidden && !filters.rejected) where.push('a.hidden = 0');
+  // Hidden articles are discoverable through an explicit state filter, and
+  // saved bookmarks remain findable under is:saved even if previously hidden.
+  if (!filters.hidden && !filters.rejected && !filters.saved) {
+    where.push('a.hidden = 0');
+  }
   if (filters.hidden) where.push('a.hidden = 1');
   if (filters.rejected) where.push('(a.rejected = 1 OR a.thumbs_down = 1)');
 
-  return { from, where: where.join(' AND '), params };
+  return { from, where: where.join(' AND '), params, hasPositiveFts };
 }
 
 function limitValue(limit: number | undefined): number {
@@ -279,38 +361,15 @@ function limitValue(limit: number | undefined): number {
   return limit;
 }
 
-function searchSelect(parsed: ParsedSearchQuery): string {
-  const highlights = parsed.text
-    ? `
-       highlight(article_search, 1, '<mark>', '</mark>') AS title_highlight,
-       highlight(article_search, 2, '<mark>', '</mark>') AS author_highlight,
-       highlight(article_search, 3, '<mark>', '</mark>') AS summary_highlight,
-       snippet(article_search, 4, '<mark>', '</mark>', '…', 32) AS content_highlight,
-       highlight(article_search, 5, '<mark>', '</mark>') AS feed_title_highlight,
-       highlight(article_search, 6, '<mark>', '</mark>') AS category_highlight,
-       bm25(article_search) AS relevance
-    `
-    : `
-       NULL AS title_highlight,
-       NULL AS author_highlight,
-       NULL AS summary_highlight,
-       NULL AS content_highlight,
-       NULL AS feed_title_highlight,
-       NULL AS category_highlight,
-       NULL AS relevance
-    `;
-
-  return `
-    SELECT a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url,
-           a.categories, a.published_at, a.fetched_at, a.read, a.saved,
-           a.hidden, a.thumbs_up, a.thumbs_down, a.rejected,
-           a.read_at, a.saved_at, a.hidden_at, a.rejected_at, a.state_version,
-           a.heuristic_score, a.combined_score,
-           f.title AS feed_title, f.url AS feed_url, f.category AS feed_category,
-           f.open_mode AS feed_open_mode,
-           ${highlights}
-  `;
-}
+const BASE_ARTICLE_COLUMNS = `
+  a.id, a.feed_id, a.url, a.title, a.author, a.summary, a.image_url,
+  a.categories, a.published_at, a.fetched_at, a.read, a.saved,
+  a.hidden, a.thumbs_up, a.thumbs_down, a.rejected,
+  a.read_at, a.saved_at, a.hidden_at, a.rejected_at, a.state_version,
+  a.heuristic_score, a.combined_score,
+  f.title AS feed_title, f.url AS feed_url, f.category AS feed_category,
+  f.open_mode AS feed_open_mode
+`;
 
 function toSearchArticle(row: Record<string, unknown>): SearchArticle {
   return {
@@ -361,7 +420,8 @@ export function searchArticles(
 ): SearchResponse {
   const rawQuery = options.query || '';
   const parsed = parseSearchQuery(rawQuery);
-  const sort = options.sort || (parsed.text ? 'relevance' : 'recent');
+  const parts = buildQueryParts(parsed);
+  const sort = options.sort || (parts.hasPositiveFts ? 'relevance' : 'recent');
   if (sort !== 'recent' && sort !== 'relevance') {
     throw new SearchQueryError('sort must be recent or relevance');
   }
@@ -369,14 +429,13 @@ export function searchArticles(
     throw new SearchQueryError('relevance sorting requires a text query');
   }
   const limit = limitValue(options.limit);
-  const parts = buildQueryParts(parsed);
   const expression = dateExpression();
   const cursorParts: string[] = [];
   const cursorParams: Array<string | number> = [];
 
   if (options.cursor) {
     const cursor = decodeCursor(options.cursor, sort);
-    if (sort === 'recent') {
+    if (sort === 'recent' || !parts.hasPositiveFts) {
       cursorParts.push(
         `(${expression} < ? OR (${expression} = ? AND a.id < ?))`,
       );
@@ -400,21 +459,76 @@ export function searchArticles(
     ? ` AND ${cursorParts.join(' AND ')}`
     : '';
   const db = getDb();
-  const totalRow = db
-    .prepare(`SELECT COUNT(*) AS total ${parts.from} WHERE ${parts.where}`)
-    .get(...parts.params) as { total: number };
+  const totalRow = options.cursor
+    ? null
+    : (db
+        .prepare(`SELECT COUNT(*) AS total ${parts.from} WHERE ${parts.where}`)
+        .get(...parts.params) as { total: number });
 
-  const rows = db
-    .prepare(
-      `${searchSelect(parsed)} ${parts.from}
-       WHERE ${parts.where}${cursorWhere}
-       ORDER BY ${sort === 'relevance' ? 'bm25(article_search) ASC, ' : ''}${expression} DESC, a.id DESC
-       LIMIT ?`,
-    )
-    .all(...parts.params, ...cursorParams, limit + 1) as Record<
-    string,
-    unknown
-  >[];
+  // Defer highlight() and snippet() evaluation until after LIMIT so FTS5 only
+  // formats the paginated page rather than every matched row entering ORDER BY.
+  const rows = parts.hasPositiveFts
+    ? (db
+        .prepare(
+          `WITH matched AS (
+             SELECT a.rowid AS article_rowid,
+                    a.id,
+                    bm25(article_search) AS relevance,
+                    ${expression} AS effective_date
+             ${parts.from}
+             WHERE ${parts.where}${cursorWhere}
+             ORDER BY ${sort === 'relevance' ? 'relevance ASC, ' : ''}effective_date DESC, a.id DESC
+             LIMIT ?
+           )
+           SELECT ${BASE_ARTICLE_COLUMNS},
+                  highlight(article_search, 1, '<mark>', '</mark>') AS title_highlight,
+                  highlight(article_search, 2, '<mark>', '</mark>') AS author_highlight,
+                  highlight(article_search, 3, '<mark>', '</mark>') AS summary_highlight,
+                  snippet(article_search, 4, '<mark>', '</mark>', '…', 32) AS content_highlight,
+                  highlight(article_search, 5, '<mark>', '</mark>') AS feed_title_highlight,
+                  highlight(article_search, 6, '<mark>', '</mark>') AS category_highlight,
+                  m.relevance AS relevance
+           FROM matched m
+           JOIN articles a ON a.rowid = m.article_rowid
+           JOIN feeds f ON f.id = a.feed_id
+           JOIN article_search ON article_search.rowid = m.article_rowid
+           WHERE article_search MATCH ?
+           ORDER BY ${sort === 'relevance' ? 'm.relevance ASC, ' : ''}m.effective_date DESC, a.id DESC`,
+        )
+        .all(
+          ...parts.params,
+          ...cursorParams,
+          limit + 1,
+          parsed.text,
+        ) as Record<string, unknown>[])
+    : (db
+        .prepare(
+          `WITH matched AS (
+             SELECT a.rowid AS article_rowid,
+                    a.id,
+                    ${expression} AS effective_date
+             ${parts.from}
+             WHERE ${parts.where}${cursorWhere}
+             ORDER BY effective_date DESC, a.id DESC
+             LIMIT ?
+           )
+           SELECT ${BASE_ARTICLE_COLUMNS},
+                  NULL AS title_highlight,
+                  NULL AS author_highlight,
+                  NULL AS summary_highlight,
+                  NULL AS content_highlight,
+                  NULL AS feed_title_highlight,
+                  NULL AS category_highlight,
+                  ${sort === 'relevance' ? '0.0' : 'NULL'} AS relevance
+           FROM matched m
+           JOIN articles a ON a.rowid = m.article_rowid
+           JOIN feeds f ON f.id = a.feed_id
+           ORDER BY m.effective_date DESC, a.id DESC`,
+        )
+        .all(...parts.params, ...cursorParams, limit + 1) as Record<
+        string,
+        unknown
+      >[]);
 
   const hasMore = rows.length > limit;
   const resultRows = hasMore ? rows.slice(0, limit) : rows;
@@ -425,7 +539,7 @@ export function searchArticles(
     hasMore && last && lastArticle
       ? encodeCursor({
           sort,
-          rank: sort === 'relevance' ? Number(last.relevance) : undefined,
+          rank: sort === 'relevance' ? Number(last.relevance ?? 0) : undefined,
           timestamp: Number(last.published_at ?? last.fetched_at ?? 0),
           id: String(last.id),
         })
@@ -436,7 +550,7 @@ export function searchArticles(
     parsed,
     sort,
     limit,
-    total: totalRow.total,
+    total: totalRow ? totalRow.total : articles.length,
     articles,
     nextCursor,
   };

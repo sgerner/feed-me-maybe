@@ -11,6 +11,7 @@
 
   type Article = {
     id: string;
+    feed_id?: string | null;
     url: string;
     title: string;
     summary?: string | null;
@@ -31,11 +32,14 @@
     thumbs_down?: boolean | null;
   };
 
+  type SearchSort = 'relevance' | 'recent';
+
   type SearchResponse = {
     articles?: Article[];
     total?: number;
     totalArticles?: number;
     nextCursor?: string | null;
+    sort?: SearchSort;
   };
 
   const FILTERS = [
@@ -47,8 +51,14 @@
     { value: 'rejected', label: 'Rejected', operator: 'is:rejected' },
   ] as const;
 
+  const SORT_OPTIONS: Array<{ value: SearchSort; label: string }> = [
+    { value: 'relevance', label: 'Relevance' },
+    { value: 'recent', label: 'Newest' },
+  ];
+
   let query = $state('');
   let activeFilter = $state<(typeof FILTERS)[number]['value']>('all');
+  let sort = $state<SearchSort>('relevance');
   let articles = $state<Article[]>([]);
   let total = $state(0);
   let nextCursor = $state<string | null>(null);
@@ -76,6 +86,10 @@
   function toListArticle(article: Record<string, unknown>): Article {
     return {
       id: String(article.id),
+      feed_id:
+        (article.feedId as string | null) ??
+        (article.feed_id as string | null) ??
+        null,
       url: String(article.url || ''),
       title: String(article.title || 'Untitled'),
       summary: (article.summary as string | null) ?? null,
@@ -127,13 +141,68 @@
     };
   }
 
+  const matchedFeeds = $derived.by(() => {
+    const seen = new Map<string, { id: string; title: string }>();
+    for (const article of articles) {
+      const feedId = article.feed_id?.trim();
+      if (!feedId || seen.has(feedId)) continue;
+      seen.set(feedId, {
+        id: feedId,
+        title: article.feed_title?.trim() || 'Feed',
+      });
+    }
+    return [...seen.values()];
+  });
+
+  function tokenizeSearchInput(raw: string): string[] {
+    return raw.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  }
+
+  function splitPrimaryStateFilter(rawQuery: string): {
+    textQuery: string;
+    primaryFilter: (typeof FILTERS)[number]['value'];
+  } {
+    const tokens = tokenizeSearchInput(rawQuery);
+    const remaining: string[] = [];
+    let primaryFilter: (typeof FILTERS)[number]['value'] | null = null;
+
+    for (const token of tokens) {
+      if (token.startsWith('"') && token.endsWith('"')) {
+        remaining.push(token);
+        continue;
+      }
+      const match = token.match(/^is:(unread|saved|read|hidden|rejected)$/i);
+      if (match && primaryFilter === null) {
+        primaryFilter =
+          match[1].toLowerCase() as (typeof FILTERS)[number]['value'];
+        continue;
+      }
+      remaining.push(token);
+    }
+
+    return {
+      textQuery: remaining.join(' ').trim(),
+      primaryFilter: primaryFilter ?? 'all',
+    };
+  }
+
   function operatorForFilter(value: string): string {
     return FILTERS.find((filter) => filter.value === value)?.operator || '';
   }
 
   function buildSearchQuery(): string {
     const operator = operatorForFilter(activeFilter);
-    return [query.trim(), operator].filter(Boolean).join(' ').trim();
+    const trimmed = query.trim();
+    if (!operator) return trimmed;
+    const tokens = tokenizeSearchInput(trimmed);
+    const alreadyPresent = tokens.some(
+      (token) =>
+        !(token.startsWith('"') && token.endsWith('"')) &&
+        token.toLowerCase() === operator.toLowerCase(),
+    );
+    return alreadyPresent
+      ? trimmed
+      : [trimmed, operator].filter(Boolean).join(' ').trim();
   }
 
   async function responseError(
@@ -164,12 +233,10 @@
 
     const searchText = query.trim();
     const searchFilter = activeFilter;
-    const searchQuery = [searchText, operatorForFilter(searchFilter)]
-      .filter(Boolean)
-      .join(' ')
-      .trim();
+    const searchQuery = buildSearchQuery();
     const params = new URLSearchParams();
     if (searchQuery) params.set('q', searchQuery);
+    if (sort === 'recent') params.set('sort', 'recent');
 
     try {
       const response = await fetch(`/api/search?${params.toString()}`, {
@@ -266,6 +333,7 @@
         q: buildSearchQuery(),
         cursor,
       });
+      if (sort === 'recent') params.set('sort', 'recent');
       const response = await fetch(`/api/search?${params}`, {
         signal: controller.signal,
       });
@@ -456,15 +524,9 @@
   }
 
   function loadSavedSearch(search: { query: string }) {
-    const operator = search.query.match(
-      /\bis:(unread|saved|read|hidden|rejected)\b/i,
-    )?.[1];
-    query = search.query
-      .replace(/\bis:(unread|saved|read|hidden|rejected)\b/gi, '')
-      .trim();
-    activeFilter = operator
-      ? (operator.toLowerCase() as typeof activeFilter)
-      : 'all';
+    const parsed = splitPrimaryStateFilter(search.query);
+    query = parsed.textQuery;
+    activeFilter = parsed.primaryFilter;
     void runSearch();
   }
 
@@ -472,6 +534,13 @@
     activeFilter = value;
     showFilters = true;
     void runSearch();
+  }
+
+  function applySort(nextSort: SearchSort) {
+    sort = nextSort;
+    if (searched || buildSearchQuery()) {
+      void runSearch();
+    }
   }
 
   $effect(() => {
@@ -488,6 +557,9 @@
     if (lastAppliedUrlSearch === urlSearch) return;
     lastAppliedUrlSearch = urlSearch;
 
+    const urlSort: SearchSort =
+      url.searchParams.get('sort') === 'recent' ? 'recent' : 'relevance';
+
     if (!url.searchParams.has('q')) {
       searchSequence += 1;
       searchController?.abort();
@@ -496,6 +568,7 @@
       loadingMore = false;
       query = '';
       activeFilter = 'all';
+      sort = urlSort;
       articles = [];
       total = 0;
       nextCursor = null;
@@ -506,19 +579,21 @@
     }
 
     const initialQuery = url.searchParams.get('q') || '';
-    const initialOperator = initialQuery.match(
-      /\bis:(unread|saved|read|hidden|rejected)\b/i,
-    )?.[1];
-    const nextQuery = initialQuery
-      .replace(/\bis:(unread|saved|read|hidden|rejected)\b/gi, '')
-      .trim();
-    const nextFilter = initialOperator
-      ? (initialOperator.toLowerCase() as typeof activeFilter)
-      : 'all';
+    const parsed = splitPrimaryStateFilter(initialQuery);
+    const nextQuery = parsed.textQuery;
+    const nextFilter = parsed.primaryFilter;
 
-    if (nextQuery === query && nextFilter === activeFilter) return;
+    if (
+      nextQuery === query &&
+      nextFilter === activeFilter &&
+      urlSort === sort &&
+      searched
+    ) {
+      return;
+    }
     query = nextQuery;
     activeFilter = nextFilter;
+    sort = urlSort;
     showFilters = nextFilter !== 'all' || showFilters;
     void runSearch(false);
   });
@@ -577,8 +652,8 @@
       void runSearch();
     }}
   >
-    <label class="relative block">
-      <span class="sr-only">Search your library</span>
+    <div class="relative block">
+      <label class="sr-only" for="search-query">Search your library</label>
       <svg
         class="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-primary-300"
         xmlns="http://www.w3.org/2000/svg"
@@ -603,7 +678,7 @@
         type="submit"
         disabled={loading}>{loading ? 'Searching…' : 'Search'}</button
       >
-    </label>
+    </div>
   </form>
 
   <div class="mb-8 flex flex-wrap items-center gap-2">
@@ -637,6 +712,23 @@
             : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
           aria-pressed={activeFilter === filter.value}
           onclick={() => applyFilter(filter.value)}>{filter.label}</button
+        >
+      {/each}
+    </div>
+    <div
+      class="flex flex-wrap items-center gap-1.5"
+      role="group"
+      aria-label="Sort search results"
+    >
+      {#each SORT_OPTIONS as option (option.value)}
+        <button
+          type="button"
+          class="rounded-full border px-3 py-1.5 text-xs font-semibold transition {sort ===
+          option.value
+            ? 'border-primary-400/40 bg-primary-500/15 text-primary-200'
+            : 'border-white/10 bg-white/5 text-surface-300 hover:border-white/20 hover:text-surface-200'}"
+          aria-pressed={sort === option.value}
+          onclick={() => applySort(option.value)}>{option.label}</button
         >
       {/each}
     </div>
@@ -781,12 +873,14 @@
                     type="button"
                     class="btn preset-tonal h-8 px-3 text-xs"
                     data-saved-search-rename={savedSearch.id}
+                    aria-label={`Rename saved search ${savedSearch.name}`}
                     onclick={() => beginRenameSavedSearch(savedSearch)}
                     >Rename</button
                   >
                   <button
                     type="button"
                     class="btn preset-tonal h-8 px-3 text-xs"
+                    aria-label={`Delete saved search ${savedSearch.name}`}
                     onclick={() =>
                       void deleteSavedSearch(savedSearch.id, savedSearch.name)}
                     >Delete</button
@@ -846,6 +940,22 @@
       </div>
     </div>
   {:else}
+    {#if matchedFeeds.length > 0}
+      <div
+        class="mb-4 flex flex-wrap items-center gap-2 text-xs text-surface-300"
+        aria-label="Matching feeds"
+      >
+        <span class="font-semibold text-surface-200">Sources:</span>
+        {#each matchedFeeds as feed (feed.id)}
+          <a
+            href="/feeds/{feed.id}"
+            class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-primary-200 no-underline transition hover:border-primary-400/40 hover:bg-primary-500/15"
+          >
+            {feed.title}
+          </a>
+        {/each}
+      </div>
+    {/if}
     <ArticleList
       bind:articles
       totalPages={1}
