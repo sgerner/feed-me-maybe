@@ -171,4 +171,51 @@ describe('POST /api/articles/[id]/content', () => {
     expect(art.content).toBe('');
     expect(art.summary).toContain('substantial multi-sentence overview');
   });
+
+  it('restores stripped user-content- footnote IDs on full-text reload when plain-text length matches', async () => {
+    const { getDb } = await import('#lib/server/db/index.ts');
+    const { fetchPublisherArticle } = await import('#lib/server/archive.ts');
+    const db = getDb();
+    const now = Date.now();
+
+    db.prepare(
+      'INSERT INTO feeds (id, url, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('feed-fn', 'https://example.com/rss', 'Footnote Feed', now, now);
+    db.prepare(
+      `INSERT INTO articles (id, feed_id, url, title, summary, content, fetched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'art-footnotes',
+      'feed-fn',
+      'https://example.com/footnotes',
+      'Footnotes Story',
+      'Short summary',
+      '<p>Body claim<a href="#fn1" target="_blank" rel="noopener noreferrer">1</a></p><ol><li>Footnote source details</li></ol>',
+      now,
+      now,
+      now,
+    );
+
+    vi.mocked(fetchPublisherArticle).mockResolvedValueOnce({
+      title: 'Footnotes Story',
+      content:
+        '<p>Body claim<a id="user-content-fnref1" href="#user-content-fn1">1</a></p><ol><li id="user-content-fn1">Footnote source details</li></ol>',
+      imageUrl: undefined,
+    });
+
+    const response = await POST({
+      locals: { sessionId: 'sess-1' },
+      params: { id: 'art-footnotes' },
+    } as Parameters<typeof POST>[0]);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { content?: string };
+    expect(body.content).toContain('id="user-content-fn1"');
+    expect(body.content).toContain('href="#user-content-fn1"');
+
+    const stored = db
+      .prepare('SELECT content FROM articles WHERE id = ?')
+      .get('art-footnotes') as { content: string };
+    expect(stored.content).toContain('id="user-content-fn1"');
+  });
 });
