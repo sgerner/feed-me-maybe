@@ -2,7 +2,10 @@
   import { fade, fly } from 'svelte/transition';
   import { onMount, tick, untrack } from 'svelte';
   import { goto } from '$app/navigation';
-  import { getSingleKeyShortcutsEnabled } from '#lib/utils/keyboard-shortcuts.ts';
+  import {
+    canTriggerSingleKeyShortcut,
+    getSingleKeyShortcutsEnabled,
+  } from '#lib/utils/keyboard-shortcuts.ts';
   import {
     extractArticleHeadings,
     formatContent,
@@ -962,115 +965,127 @@
   }
 
   function handleLightboxKeydown(event: KeyboardEvent) {
+    if (event.defaultPrevented) return;
+
+    if (lightboxOpen) {
+      if (event.key === 'Tab' && lightboxBackdropEl) {
+        const focusableElements = Array.from(
+          lightboxBackdropEl.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((element) => element.getClientRects().length > 0);
+
+        if (focusableElements.length === 0) {
+          event.preventDefault();
+          lightboxBackdropEl.focus();
+          return;
+        }
+
+        const first = focusableElements[0];
+        const last = focusableElements[focusableElements.length - 1];
+        const activeElement = document.activeElement;
+
+        if (!lightboxBackdropEl.contains(activeElement)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        } else if (
+          event.shiftKey &&
+          (activeElement === first || activeElement === lightboxBackdropEl)
+        ) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeLightbox();
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goToLightboxImage(-1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goToLightboxImage(1);
+      }
+      return;
+    }
+
     const openMenu = document.querySelector<HTMLDetailsElement>(
       '[data-reader-more][open]',
     );
     if (event.key === 'Escape' && openMenu) {
       event.preventDefault();
+      openMenu.open = false;
       readerMoreOpen = false;
       return;
     }
 
-    if (!lightboxOpen) {
-      const hasOpenModal = Boolean(
-        document.querySelector('dialog[open], [aria-modal="true"]'),
-      );
-      if (
-        shouldToggleReaderOutline(event, {
-          singleKeyShortcutsEnabled: getSingleKeyShortcutsEnabled(),
-          lightboxOpen,
-          isReaderMode,
-          headingCount: outlineHeadings.length,
-          hasOpenModal,
-        })
-      ) {
-        event.preventDefault();
-        outlineOpen = !outlineOpen;
-        return;
-      }
-      if (
-        event.defaultPrevented ||
-        event.repeat ||
-        !getSingleKeyShortcutsEnabled() ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        hasOpenModal ||
-        (event.target instanceof Element &&
-          event.target.closest(
-            'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="dialog"], dialog[open], [aria-modal="true"]',
-          ))
-      )
-        return;
-      const key = event.key.toLowerCase();
-      const destination =
-        key === 'j' ? nextId : key === 'k' ? previousId : null;
-      if (destination) {
-        event.preventDefault();
-        void goto(readerHref(destination), { replaceState: true });
-        return;
-      }
-      if (key === 'j' && !nextId && queueCanLoadMore(readerQueue)) {
-        event.preventDefault();
-        failedPrefetchKey = null;
-        void prefetchNextQueuePage().then(() => {
-          if (nextId) {
-            void goto(readerHref(nextId), { replaceState: true });
-          }
-        });
-        return;
-      }
-      if (key === 'o') {
-        event.preventDefault();
-        window.open(sourceHref, '_blank', 'noopener,noreferrer');
-      }
-      if (key === 'h' || key === 's' || key === 'm') {
-        event.preventDefault();
-        if (key === 'm') void toggleRead();
-        else void interact(key === 'h' ? 'hide' : 'save');
-      }
+    const hasOpenModal = Boolean(
+      document.querySelector('dialog[open], [aria-modal="true"]'),
+    );
+    if (!canTriggerSingleKeyShortcut(event)) return;
+
+    if (
+      shouldToggleReaderOutline(event, {
+        singleKeyShortcutsEnabled: getSingleKeyShortcutsEnabled(),
+        lightboxOpen,
+        isReaderMode,
+        headingCount: outlineHeadings.length,
+        hasOpenModal,
+      })
+    ) {
+      event.preventDefault();
+      outlineOpen = !outlineOpen;
       return;
     }
 
-    if (event.key === 'Tab' && lightboxBackdropEl) {
-      const focusableElements = Array.from(
-        lightboxBackdropEl.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((element) => element.getClientRects().length > 0);
-
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        lightboxBackdropEl.focus();
-        return;
-      }
-
-      const first = focusableElements[0];
-      const last = focusableElements[focusableElements.length - 1];
-      const activeElement = document.activeElement;
-
-      if (!lightboxBackdropEl.contains(activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (
-        event.shiftKey &&
-        (activeElement === first || activeElement === lightboxBackdropEl)
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    } else if (event.key === 'Escape') {
+    const key = event.key.toLowerCase();
+    if (key === 'u' || (event.key === 'Escape' && !event.shiftKey)) {
       event.preventDefault();
-      closeLightbox();
-    } else if (event.key === 'ArrowLeft') {
+      void goto(returnPath, { replaceState: true });
+      return;
+    }
+    const destination = key === 'j' ? nextId : key === 'k' ? previousId : null;
+    if (destination) {
       event.preventDefault();
-      goToLightboxImage(-1);
-    } else if (event.key === 'ArrowRight') {
+      void goto(readerHref(destination), { replaceState: true });
+      return;
+    }
+    if (key === 'j' && !nextId && queueCanLoadMore(readerQueue)) {
       event.preventDefault();
-      goToLightboxImage(1);
+      failedPrefetchKey = null;
+      void prefetchNextQueuePage().then(() => {
+        if (nextId) {
+          void goto(readerHref(nextId), { replaceState: true });
+        }
+      });
+      return;
+    }
+    if (key === 'o') {
+      event.preventDefault();
+      window.open(sourceHref, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (key === 'v') {
+      event.preventDefault();
+      window.open(article.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (key === 'd') {
+      event.preventDefault();
+      if (!isEmbeddedMode) void loadFullText();
+      return;
+    }
+    if (key === 'h' || key === 's' || key === 'm') {
+      event.preventDefault();
+      if (key === 'm') void toggleRead();
+      else void interact(key === 'h' ? 'hide' : 'save');
+      return;
+    }
+    if ((key === 'l' || key === 'x') && !reactionsLocked) {
+      event.preventDefault();
+      void interact(key === 'l' ? 'thumbs_up' : 'thumbs_down');
     }
   }
 
@@ -1287,6 +1302,11 @@
 
   async function loadFullText() {
     if (fetchingContent) return;
+    if (fetchedContent || fullTextConfirmed) {
+      showSummaryInstead = false;
+      addToast('Full article text is already loaded', 'info');
+      return;
+    }
     const requestedId = article.id;
     loadFullTextController?.abort();
     const controller = new AbortController();
