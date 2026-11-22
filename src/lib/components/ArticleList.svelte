@@ -54,6 +54,7 @@
     type TriageAction,
   } from '#lib/client/triage.ts';
   import {
+    canTriggerSingleKeyShortcut,
     getSingleKeyShortcutsEnabled,
     SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
   } from '#lib/utils/keyboard-shortcuts.ts';
@@ -253,8 +254,12 @@
     return '';
   }
 
-  async function openArticle(article: Article) {
-    if (navigator.onLine === false && openCachedArticle) {
+  async function openArticle(
+    article: Article,
+    options: { forceTab?: boolean } = {},
+  ) {
+    const forceTab = Boolean(options.forceTab);
+    if (!forceTab && navigator.onLine === false && openCachedArticle) {
       const nextReadArticle = article.read
         ? article
         : { ...article, read: true };
@@ -278,7 +283,7 @@
     // Determine mode: feed override or global default
     const globalMode = pageStore.data.globalSettings?.articleOpenMode || 'app';
     const hideOnOpen = Boolean(pageStore.data.globalSettings?.hideOnOpen);
-    const mode = article.feed_open_mode || globalMode;
+    const mode = forceTab ? 'tab' : article.feed_open_mode || globalMode;
     const shouldMarkOpened = !savedOnly && (mode === 'tab' || hideOnOpen);
     const articleIndex = shouldMarkOpened
       ? articles.findIndex((a: Article) => a.id === article.id)
@@ -306,7 +311,22 @@
       }, 1200);
 
       if (shouldMarkOpened && previousArticle) {
+        const card = document.getElementById(`article-${article.id}`);
+        const focusedInCard = card?.contains(document.activeElement);
         articles = articles.filter((a: Article) => a.id !== article.id);
+        if (focusedInCard) {
+          await tick();
+          const next = articles[Math.min(articleIndex, articles.length - 1)];
+          const nextLink = next
+            ? document.getElementById(`article-${next.id}`)?.querySelector('a')
+            : emptyState;
+          if (
+            document.activeElement === document.body ||
+            card?.contains(document.activeElement)
+          ) {
+            nextLink?.focus();
+          }
+        }
         if (liveOnlyArticleIds.has(article.id)) {
           onLiveArticleVisibilityChanged?.(article.id, false);
         } else {
@@ -784,7 +804,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' && !e.defaultPrevented) {
       const openMenu = document.querySelector<HTMLDetailsElement>(
         '[data-article-overflow][open]',
       );
@@ -795,29 +815,19 @@
       }
     }
 
-    const target = e.target as HTMLElement;
+    const key = e.key.toLowerCase();
     if (
-      target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      target.tagName === 'SELECT' ||
-      target.isContentEditable ||
-      target.closest('[aria-modal="true"], dialog[open]')
+      !canTriggerSingleKeyShortcut(e, {
+        allowRepeat: key === 'j' || key === 'k',
+        enabled: singleKeyShortcutsEnabled,
+      })
     ) {
       return;
     }
 
-    if (
-      !singleKeyShortcutsEnabled ||
-      e.defaultPrevented ||
-      e.altKey ||
-      e.ctrlKey ||
-      e.metaKey
-    )
-      return;
-
-    if (e.key === 'j' || e.key === 'J' || e.key === 'k' || e.key === 'K') {
+    if (key === 'j' || key === 'k') {
       e.preventDefault();
-      const direction = e.key.toLowerCase() === 'j' ? 1 : -1;
+      const direction = key === 'j' ? 1 : -1;
       focusedIndex = Math.max(
         0,
         Math.min(focusedIndex + direction, articleIds.length - 1),
@@ -827,24 +837,56 @@
       );
       card?.querySelector('a')?.focus({ preventScroll: true });
       card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
     }
-    if (e.key === 'o' || e.key === 'O') {
+    if (key === 'o') {
       e.preventDefault();
-      if (articles[focusedIndex]) openArticle(articles[focusedIndex]);
+      if (articles[focusedIndex]) void openArticle(articles[focusedIndex]);
+      return;
     }
-    if (e.key.toLowerCase() === 'h') {
+    if (key === 'v') {
       e.preventDefault();
-      if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'hide');
+      if (articles[focusedIndex]) {
+        void openArticle(articles[focusedIndex], { forceTab: true });
+      }
+      return;
     }
-    if (e.key.toLowerCase() === 's') {
+    if (key === 'h') {
       e.preventDefault();
-      if (articleIds[focusedIndex]) interact(articleIds[focusedIndex], 'save');
+      if (articleIds[focusedIndex]) {
+        void interact(articleIds[focusedIndex], 'hide');
+      }
+      return;
     }
-    if (e.key === 'm' || e.key === 'M') {
+    if (key === 's') {
+      e.preventDefault();
+      if (articleIds[focusedIndex]) {
+        void interact(articleIds[focusedIndex], 'save');
+      }
+      return;
+    }
+    if (key === 'm') {
       e.preventDefault();
       const focused = articles[focusedIndex];
       if (focused) {
-        interact(focused.id, focused.read ? 'unread' : 'read');
+        void interact(focused.id, focused.read ? 'unread' : 'read');
+      }
+      return;
+    }
+    if (key === 'l') {
+      e.preventDefault();
+      if (articleIds[focusedIndex]) {
+        void interact(
+          articleIds[focusedIndex],
+          isBoostReview ? 'boost' : 'thumbs_up',
+        );
+      }
+      return;
+    }
+    if (key === 'x' && !isBoostReview) {
+      e.preventDefault();
+      if (articleIds[focusedIndex]) {
+        void interact(articleIds[focusedIndex], 'thumbs_down');
       }
     }
   }
@@ -1273,7 +1315,7 @@
       SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
       syncShortcutPreference,
     );
-    document.addEventListener('keydown', handleKeydown);
+    window.addEventListener('keydown', handleKeydown);
     const onDocumentPointerDown = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (!target?.closest('[data-article-overflow]')) {
@@ -1421,7 +1463,7 @@
         SINGLE_KEY_SHORTCUTS_CHANGE_EVENT,
         syncShortcutPreference,
       );
-      document.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('keydown', handleKeydown);
       document.removeEventListener('pointerdown', onDocumentPointerDown);
       if (scrollContainerEl) {
         scrollContainerEl.removeEventListener('scroll', onScroll);
@@ -1745,9 +1787,16 @@
             aria-labelledby="article-title-{article.id}"
             style="touch-action: pan-y;"
             onkeydown={(event) => {
-              if (event.key !== ' ' || !singleKeyShortcutsEnabled) return;
+              if (
+                event.key !== ' ' ||
+                !canTriggerSingleKeyShortcut(event, {
+                  enabled: singleKeyShortcutsEnabled,
+                })
+              ) {
+                return;
+              }
               event.preventDefault();
-              if (!event.repeat) void openArticle(article);
+              void openArticle(article);
             }}
             onpointerdown={(e) => handlePointerDown(e, article.id)}
             onpointermove={(e) => handlePointerMove(e, article.id)}
