@@ -1164,7 +1164,6 @@
       ></iframe>
     </div>
   {:else}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <article
       class="glass-card glass-card-hover relative overflow-x-clip"
       style:touch-action="pan-y pinch-zoom"
@@ -1383,6 +1382,7 @@
                 fontScale * 0.875
               ).toFixed(3)}rem;"
             >
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html formatContent(article.ai_summary, article.url)}
             </div>
           </div>
@@ -1394,9 +1394,11 @@
           style="font-size: {(fontScale * 1.125).toFixed(3)}rem;"
         >
           {#if activeBodyContent}
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             {@html renderedArticleContent}
           {:else if article.summary}
             <div class="leading-relaxed">
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               {@html formatContent(article.summary, article.url)}
             </div>
           {:else}

@@ -7,21 +7,17 @@ export default [
   { ignores: ['build/', '.svelte-kit/', 'dist/', '.opencode/'] },
   js.configs.recommended,
   ...tsPlugin.configs.recommended,
-  ...svelte.configs.base,
+  ...svelte.configs.recommended,
   {
-    files: ['**/*.svelte', '**/*.svelte.ts'],
+    files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
     languageOptions: {
-      parserOptions: { parser: tsPlugin.parser },
+      parserOptions: {
+        extraFileExtensions: ['.svelte'],
+        parser: tsPlugin.parser,
+      },
     },
-  },
-  {
-    files: ['**/*.svelte'],
     rules: {
-      'svelte/no-dupe-else-if-blocks': 'error',
-      'svelte/no-dupe-on-directives': 'error',
-      'svelte/no-dynamic-slot-name': 'error',
-      'svelte/no-immutable-reactive-statements': 'error',
-      'svelte/valid-compile': 'error',
+      'no-undef': 'off',
     },
   },
   {
@@ -33,7 +29,14 @@ export default [
     },
     rules: {
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
       '@typescript-eslint/no-explicit-any': 'off',
     },
   },

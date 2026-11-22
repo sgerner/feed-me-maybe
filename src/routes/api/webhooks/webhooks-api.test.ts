@@ -9,8 +9,7 @@ import {
   vi,
 } from 'vitest';
 import dns from 'node:dns/promises';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 import { DELETE, PATCH, POST } from './+server';
 import { DELETE as DELETE_BY_ID, PATCH as PATCH_BY_ID } from './[id]/+server';
 import { POST as TEST_BY_ID } from './[id]/test/+server';
@@ -18,16 +17,10 @@ import { POST as TEST_BY_ID } from './[id]/test/+server';
 type Handler = typeof POST | typeof PATCH | typeof DELETE;
 
 describe('webhooks API request bodies', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-webhooks-api.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-webhooks-api-');
   });
 
   beforeEach(() => {
@@ -44,14 +37,8 @@ describe('webhooks API request bodies', () => {
     vi.unstubAllGlobals();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   function send(

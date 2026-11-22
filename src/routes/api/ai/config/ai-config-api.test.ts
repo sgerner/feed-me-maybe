@@ -7,8 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 vi.mock('#lib/server/ai/models-dev.ts', () => ({
   getProvider: vi.fn(async (id: string) =>
@@ -30,40 +29,27 @@ vi.mock('#lib/server/network.ts', () => ({
 import { GET, POST } from './+server';
 
 describe('AI configuration API', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-ai-config-api.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
   const originalAppSecret = process.env.APP_SECRET;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
+  beforeAll(() => {
     process.env.APP_SECRET = 'test-app-secret-which-is-at-least-32-characters';
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+    testDb = createTestDb('feed-me-maybe-ai-config-api-');
   });
 
-  beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM feeds').run();
-    db.prepare('DELETE FROM provider_configs').run();
-    db.prepare(
-      "DELETE FROM app_settings WHERE key IN ('ai_enabled', 'provider_cooldown_ai_process')",
-    ).run();
+  beforeEach(() => {
+    testDb.reset();
+    testDb.db
+      .prepare(
+        "DELETE FROM app_settings WHERE key IN ('ai_enabled', 'provider_cooldown_ai_process')",
+      )
+      .run();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
+  afterAll(() => {
+    testDb.cleanup();
     if (originalAppSecret === undefined) delete process.env.APP_SECRET;
     else process.env.APP_SECRET = originalAppSecret;
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
   });
 
   function post(body: unknown) {

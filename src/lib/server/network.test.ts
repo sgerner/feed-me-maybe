@@ -17,12 +17,30 @@ describe('safe server-side networking', () => {
     expect(isPrivateIpAddress('10.0.0.4')).toBe(true);
     expect(isPrivateIpAddress('127.0.0.1')).toBe(true);
     expect(isPrivateIpAddress('169.254.169.254')).toBe(true);
+    expect(isPrivateIpAddress('0.0.0.0')).toBe(true);
+    expect(isPrivateIpAddress('100.64.0.1')).toBe(true);
+    expect(isPrivateIpAddress('172.16.0.1')).toBe(true);
+    expect(isPrivateIpAddress('192.168.1.1')).toBe(true);
+    expect(isPrivateIpAddress('224.0.0.1')).toBe(true);
+    expect(isPrivateIpAddress('::')).toBe(true);
     expect(isPrivateIpAddress('::1')).toBe(true);
+    expect(isPrivateIpAddress('[::1]')).toBe(true);
     expect(isPrivateIpAddress('fc00::1')).toBe(true);
+    expect(isPrivateIpAddress('fd00::1')).toBe(true);
+    expect(isPrivateIpAddress('fe80::1')).toBe(true);
+    expect(isPrivateIpAddress('fe80::1%eth0')).toBe(true);
+    expect(isPrivateIpAddress('2001:db8::1')).toBe(true);
+    expect(isPrivateIpAddress('ff02::1')).toBe(true);
     expect(isPrivateIpAddress('::ffff:127.0.0.1')).toBe(true);
+    expect(isPrivateIpAddress('::ffff:8.8.8.8')).toBe(false);
     expect(isPrivateIpAddress('198.51.100.1')).toBe(true);
     expect(isPrivateIpAddress('198.51.101.1')).toBe(false);
+    expect(isPrivateIpAddress('198.51.0.1')).toBe(false);
     expect(isPrivateIpAddress('1.1.1.1')).toBe(false);
+    expect(isPrivateIpAddress('2606:4700:4700::1111')).toBe(false);
+    expect(isPrivateIpAddress('')).toBe(true);
+    expect(isPrivateIpAddress('not-an-ip')).toBe(true);
+    expect(isPrivateIpAddress('999.999.999.999')).toBe(true);
   });
 
   it('rejects private destinations and embedded credentials', () => {

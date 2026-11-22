@@ -7,8 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 vi.mock('#lib/server/archive.ts', () => ({
   fetchPublisherArticle: vi.fn(),
@@ -23,37 +22,20 @@ vi.mock('#lib/server/ai/runtime.ts', () => ({
 import { POST } from './+server';
 
 describe('POST /api/articles/[id]/content', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-content-api.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-content-api-');
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM ranking_refresh_queue').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM article_ai_metadata').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+    testDb.reset();
     const { fetchPublisherArticle } = await import('#lib/server/archive.ts');
     vi.mocked(fetchPublisherArticle).mockReset();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('upgrades content, resets ready AI metadata to pending, refreshes ranking, and queues AI', async () => {

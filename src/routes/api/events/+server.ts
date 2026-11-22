@@ -20,7 +20,7 @@ export const GET: RequestHandler = ({ locals }) => {
       const heartbeatInterval = setInterval(() => {
         try {
           controller.enqueue(new TextEncoder().encode(': heartbeat\n\n'));
-        } catch (err) {
+        } catch {
           cleanup();
         }
       }, 30000);

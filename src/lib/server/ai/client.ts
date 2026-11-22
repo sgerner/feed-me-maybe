@@ -112,20 +112,6 @@ function normalizeStringArray(
   return result;
 }
 
-function normalizeTagArray(value: unknown, limit: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const item of value) {
-    const tag = normalizeTag(item);
-    if (!tag || seen.has(tag)) continue;
-    seen.add(tag);
-    result.push(tag);
-    if (result.length >= limit) break;
-  }
-  return result;
-}
-
 function normalizeSignals(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
     throw new Error('AI provider returned invalid article analysis');

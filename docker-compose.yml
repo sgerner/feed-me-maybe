@@ -4,9 +4,12 @@ services:
     container_name: feed-me-maybe
     ports:
       - '${PORT:-3000}:3000'
+    env_file:
+      - path: .env
+        required: false
     environment:
       - NODE_ENV=production
-      - APP_PASSWORD=${APP_PASSWORD}
+      - APP_PASSWORD=${APP_PASSWORD:?}
       - APP_SECRET=${APP_SECRET:-}
       - ORIGIN
       - DATABASE_URL=/app/data/feed-me-maybe.db

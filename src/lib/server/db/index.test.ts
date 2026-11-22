@@ -1,51 +1,32 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { unlinkSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
-import { join } from 'path';
+import { join } from 'node:path';
+import { getDb } from './index';
+import { initializeDatabase } from './migrate';
+import { createTestDb, type TestDbHandle } from './test-db';
+
 describe('Database initialization', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-feed-me-maybe.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
   beforeAll(() => {
-    // Set test database path
-    process.env.DATABASE_URL = testDbPath;
-    // Ensure data directory exists
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) {
-      mkdirSync(dataDir, { recursive: true });
-    }
+    testDb = createTestDb('feed-me-maybe-db-index-');
   });
 
-  afterAll(async () => {
-    // Clean up test DB
-    const { closeDb } = await import('./index');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    try {
-      for (const suffix of ['', '-wal', '-shm']) {
-        if (existsSync(`${testDbPath}${suffix}`)) {
-          unlinkSync(`${testDbPath}${suffix}`);
-        }
-      }
-    } catch {
-      // ignore cleanup errors
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
-  it('should get database instance', async () => {
-    // Dynamic import to get fresh singleton with test env
-    const { getDb } = await import('./index');
+  it('should get database instance', () => {
     const db = getDb();
     expect(db).toBeDefined();
     expect(db.open).toBe(true);
   });
 
-  it('should create tables on initialization', async () => {
-    const { initializeDatabase } = await import('./migrate');
+  it('should create tables on initialization', () => {
     initializeDatabase();
 
-    const { getDb } = await import('./index');
     const db = getDb();
     expect(db.pragma('table_info(articles)')).toEqual(
       expect.arrayContaining([

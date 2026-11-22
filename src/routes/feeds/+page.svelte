@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { fade, fly } from 'svelte/transition';
   import { refreshAll } from '$app/navigation';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
@@ -93,14 +94,13 @@
   );
 
   const groupedFeeds = $derived.by(() => {
-    const groups = new Map<string, Feed[]>();
+    const groups: Record<string, Feed[]> = Object.create(null);
     for (const feed of filteredFeeds) {
       const name = feed.category?.trim() || 'Unsorted';
-      const group = groups.get(name) || [];
+      const group = groups[name] || (groups[name] = []);
       group.push(feed);
-      groups.set(name, group);
     }
-    return [...groups.entries()];
+    return Object.entries(groups);
   });
 
   const totalUnread = $derived(
@@ -146,7 +146,7 @@
       const filteredSet = new Set(filteredFeeds.map((feed) => feed.id));
       selectedIds = selectedIds.filter((id) => !filteredSet.has(id));
     } else {
-      const merged = new Set(selectedIds);
+      const merged = new SvelteSet(selectedIds);
       for (const feed of filteredFeeds) merged.add(feed.id);
       selectedIds = [...merged];
     }

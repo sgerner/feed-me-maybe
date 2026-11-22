@@ -7,8 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 vi.mock('#lib/server/feed/fetcher.ts', () => ({
   fetchFeed: vi.fn(),
@@ -31,36 +30,22 @@ vi.mock('#lib/server/poller.ts', () => ({
 import { GET, POST } from './+server';
 
 describe('POST /api/feeds discovery timeout budgets', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-feeds-api.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-feeds-api-');
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM feeds').run();
+    testDb.reset();
     const { fetchFeed } = await import('#lib/server/feed/fetcher.ts');
     const { fetchRedditSource } = await import('#lib/server/sources/reddit.ts');
     vi.mocked(fetchFeed).mockReset();
     vi.mocked(fetchRedditSource).mockReset();
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   it('gives proxy discovery an independent non-aborted timeout after direct discovery times out', async () => {

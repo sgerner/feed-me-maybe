@@ -228,6 +228,7 @@
             class="prose prose-sm prose-glass max-w-none min-w-0 overflow-x-auto break-words text-sm leading-relaxed"
             style="color: color-mix(in oklch, var(--color-surface-100) 85%, transparent);"
           >
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             {@html formatContent(comment.body, 'https://www.reddit.com')}
           </div>
           {#if comment.replies?.length}

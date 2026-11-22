@@ -7,8 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 const pollerMocks = vi.hoisted(() => ({
   wakePoller: vi.fn(),
@@ -38,24 +37,14 @@ vi.mock('#lib/server/sources/reddit.ts', () => redditMocks);
 vi.mock('#lib/server/proxy.ts', () => proxyMocks);
 
 describe('feed settings, refresh, and batch APIs', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-feeds-ops-api.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-feeds-ops-api-');
   });
 
-  beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM feed_fetch_logs').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+  beforeEach(() => {
+    testDb.reset();
     pollerMocks.wakePoller.mockReset();
     pollerMocks.scheduleNextPoll.mockReset();
     fetcherMocks.fetchFeed.mockReset();
@@ -64,14 +53,8 @@ describe('feed settings, refresh, and batch APIs', () => {
     proxyMocks.getConfiguredProxyBaseUrl.mockReset().mockReturnValue(undefined);
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    for (const suffix of ['', '-wal', '-shm']) {
-      const path = `${testDbPath}${suffix}`;
-      if (existsSync(path)) unlinkSync(path);
-    }
+  afterAll(() => {
+    testDb.cleanup();
   });
 
   function requestEvent(

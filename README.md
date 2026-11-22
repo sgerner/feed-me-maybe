@@ -29,7 +29,7 @@ publisher full-text retrieval require a connection.
 
 ## Prerequisites
 
-- **Node.js** 22.12.0 or later (CI and the Docker image use Node 24)
+- **Node.js** 22.12.0 or later (CI and the Docker image use Node 26)
 - **npm** (or any compatible package manager)
 - **Git**
 
@@ -193,9 +193,8 @@ CSRF protection to work correctly.
 | `PORT`              | No                              | `3000`                                                                    | Server port                                                                                                                                         |
 | `REDDIT_USER_AGENT` | No                              | `web:feed-me-maybe:v1.0 (by /u/sgerner)`                                  | Custom User-Agent for Reddit requests; use this to bypass 403 Forbidden blocks                                                                      |
 | `PROXY_BASE_URL`    | No                              | `https://feed-me-maybe-proxy.your-name.workers.dev`                       | Generic proxy worker used for per-feed proxying, Reddit comments, and other blocked fetches. `REDDIT_BASE_URL` is still accepted as a legacy alias. |
-| `PROVIDER`          | No                              | -                                                                         | AI provider ID, for example `openai`, `anthropic`, `openrouter`, or `groq`                                                                          |
-| `MODEL`             | No                              | -                                                                         | AI model name, for example `gpt-4o` or `claude-3-5-sonnet-20241022`                                                                                 |
-| `API_KEY`           | No                              | -                                                                         | AI provider API key                                                                                                                                 |
+
+AI providers are configured in **Settings > AI** and stored in SQLite (`provider_configs`).
 
 ### Docker Notes
 
@@ -246,7 +245,6 @@ feed-me-maybe/
 │   │   │   ├── feed/        # Feed fetching (rss-parser) and ingestion
 │   │   │   ├── interactions.ts  # User interaction recording and scoring
 │   │   │   └── poller.ts    # Background feed polling (15-min interval)
-│   │   └── index.ts         # Shared utilities
 │   ├── routes/
 │   │   ├── +layout.svelte   # App layout with sidebar navigation
 │   │   ├── +page.svelte     # Main article feed (ranked, paginated)

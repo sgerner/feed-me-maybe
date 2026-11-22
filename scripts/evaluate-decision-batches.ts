@@ -184,10 +184,6 @@ function readKeyFromFile(
   return key;
 }
 
-function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
-
 function batchQuestions(candidateKeys: string[]): JsonRecord {
   return Object.fromEntries(
     candidateKeys.map((candidateKey) => [

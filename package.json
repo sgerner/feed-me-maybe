@@ -21,7 +21,7 @@
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "node -e \"import('node:fs').then(fs => fs.mkdirSync('./data', { recursive: true }))\" && drizzle-kit migrate"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -64,7 +64,6 @@
     "zod": "^4.6.7"
   },
   "imports": {
-    "#lib": "./src/lib/index.js",
     "#lib/*": "./src/lib/*"
   }
 }

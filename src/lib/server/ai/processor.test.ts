@@ -1,7 +1,19 @@
-import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import {
+  createTestDb,
+  insertTestArticle,
+  insertTestFeed,
+  type TestDbHandle,
+} from '#lib/server/db/test-db.ts';
 
-vi.mock('#lib/server/db/index.ts', () => ({ getDb: vi.fn() }));
 vi.mock('./runtime', () => ({
   isAiProcessingConfigured: vi.fn(() => true),
   getConfiguredAiClient: vi.fn(async () => ({
@@ -13,26 +25,36 @@ vi.mock('./runtime', () => ({
 }));
 vi.mock('./jev', () => ({ isRankingProviderConfigured: () => true }));
 
-let db: Database.Database;
-afterEach(() => db?.close());
-
 describe('article enrichment', () => {
+  let testDb: TestDbHandle;
+
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-ai-processor-');
+  });
+
+  beforeEach(() => {
+    testDb.reset();
+  });
+
+  afterAll(() => {
+    testDb.cleanup();
+  });
+
   it('commits score refresh intent even when all ranking jobs are occupied', async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { processArticle } = await import('./processor');
-    db = new Database(':memory:');
-    vi.mocked(getDb).mockReturnValue(db);
-    initializeDatabase();
+    const db = testDb.db;
     const now = Date.now();
 
-    db.prepare(
-      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    ).run('feed', 'https://example.com/feed', now, now);
-    db.prepare(
-      `INSERT INTO articles (id, feed_id, url, title, content, jev_score, fetched_at, created_at, updated_at)
-       VALUES ('story', 'feed', 'https://example.com/story', 'Story', 'Now has full text', 0.6, ?, ?, ?)`,
-    ).run(now, now, now);
+    insertTestFeed(db, { id: 'feed', url: 'https://example.com/feed', now });
+    insertTestArticle(db, {
+      id: 'story',
+      feedId: 'feed',
+      url: 'https://example.com/story',
+      title: 'Story',
+      content: 'Now has full text',
+      jevScore: 0.6,
+      now,
+    });
     const enqueue = db.prepare(
       "INSERT INTO jobs (id, type, status, payload, created_at) VALUES (?, 'jev_process', 'queued', '{}', ?)",
     );
@@ -67,30 +89,47 @@ describe('article enrichment', () => {
   });
 
   it('reuses canonical URL AI metadata, skips hidden items, and aborts commit when paused mid-flight', async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { getConfiguredAiClient, isAiProcessingConfigured } =
       await import('./runtime');
     const { processArticle } = await import('./processor');
-    db = new Database(':memory:');
-    vi.mocked(getDb).mockReturnValue(db);
-    initializeDatabase();
+    const db = testDb.db;
     const now = Date.now();
 
-    db.prepare(
-      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    ).run('feed-a', 'https://example.com/a', now, now);
-    db.prepare(
-      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    ).run('feed-b', 'https://example.com/b', now, now);
-    db.prepare(
-      `INSERT INTO articles (id, feed_id, url, title, content, hidden, fetched_at, created_at, updated_at)
-       VALUES
-         ('orig', 'feed-a', 'https://shared.example/story', 'Story', 'Full body text', 0, ?, ?, ?),
-         ('copy', 'feed-b', 'https://shared.example/story', 'Story copy', 'Full body text', 0, ?, ?, ?),
-         ('hidden-item', 'feed-a', 'https://hidden.example/story', 'Hidden', 'Full body text', 1, ?, ?, ?),
-         ('paused-item', 'feed-a', 'https://paused.example/story', 'Paused', 'Full body text', 0, ?, ?, ?)`,
-    ).run(now, now, now, now, now, now, now, now, now, now, now, now);
+    insertTestFeed(db, { id: 'feed-a', url: 'https://example.com/a', now });
+    insertTestFeed(db, { id: 'feed-b', url: 'https://example.com/b', now });
+    insertTestArticle(db, {
+      id: 'orig',
+      feedId: 'feed-a',
+      url: 'https://shared.example/story',
+      title: 'Story',
+      content: 'Full body text',
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'copy',
+      feedId: 'feed-b',
+      url: 'https://shared.example/story',
+      title: 'Story copy',
+      content: 'Full body text',
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'hidden-item',
+      feedId: 'feed-a',
+      url: 'https://hidden.example/story',
+      title: 'Hidden',
+      content: 'Full body text',
+      hidden: true,
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'paused-item',
+      feedId: 'feed-a',
+      url: 'https://paused.example/story',
+      title: 'Paused',
+      content: 'Full body text',
+      now,
+    });
     db.prepare(
       `INSERT INTO article_ai_metadata
        (id, article_id, summary, topics, entities, content_type, ai_relevance_score, novelty_score, quality_score, signals, analysis_status, processed_at, created_at)
@@ -134,13 +173,9 @@ describe('article enrichment', () => {
   });
 
   it('does not re-auto-hide restored, thumbs-upped, or saved articles and bumps state_version on auto-hide', async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { getConfiguredAiClient } = await import('./runtime');
     const { processArticle } = await import('./processor');
-    db = new Database(':memory:');
-    vi.mocked(getDb).mockReturnValue(db);
-    initializeDatabase();
+    const db = testDb.db;
     const now = Date.now();
 
     vi.mocked(getConfiguredAiClient).mockResolvedValue({
@@ -152,16 +187,38 @@ describe('article enrichment', () => {
       }),
     } as never);
 
-    db.prepare(
-      'INSERT INTO feeds (id, url, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    ).run('feed-guard', 'https://example.com/guard', now, now);
-    db.prepare(
-      `INSERT INTO articles (id, feed_id, url, title, content, hidden, saved, thumbs_up, state_version, fetched_at, created_at, updated_at)
-       VALUES
-         ('restored-item', 'feed-guard', 'https://example.com/r', 'Restored', 'Obituary body text', 0, 0, 0, 2, ?, ?, ?),
-         ('liked-item', 'feed-guard', 'https://example.com/l', 'Liked', 'Obituary body text', 0, 0, 1, 1, ?, ?, ?),
-         ('fresh-item', 'feed-guard', 'https://example.com/f', 'Fresh', 'Obituary body text', 0, 0, 0, 0, ?, ?, ?)`,
-    ).run(now, now, now, now, now, now, now, now, now);
+    insertTestFeed(db, {
+      id: 'feed-guard',
+      url: 'https://example.com/guard',
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'restored-item',
+      feedId: 'feed-guard',
+      url: 'https://example.com/r',
+      title: 'Restored',
+      content: 'Obituary body text',
+      stateVersion: 2,
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'liked-item',
+      feedId: 'feed-guard',
+      url: 'https://example.com/l',
+      title: 'Liked',
+      content: 'Obituary body text',
+      thumbsUp: true,
+      stateVersion: 1,
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'fresh-item',
+      feedId: 'feed-guard',
+      url: 'https://example.com/f',
+      title: 'Fresh',
+      content: 'Obituary body text',
+      now,
+    });
     db.prepare(
       'INSERT INTO user_interactions (id, article_id, interaction_type, timestamp, metadata) VALUES (?, ?, ?, ?, ?)',
     ).run('i-restore', 'restored-item', 'restore', now, '{}');
@@ -201,28 +258,48 @@ describe('article enrichment', () => {
   });
 
   it('skips articles in paused feeds or cleared articles before calling LLM and before committing', async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
     const { getConfiguredAiClient } = await import('./runtime');
     const { processArticle } = await import('./processor');
-    db = new Database(':memory:');
-    vi.mocked(getDb).mockReturnValue(db);
-    initializeDatabase();
+    const db = testDb.db;
     const now = Date.now();
 
-    db.prepare(
-      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 0, ?, ?)',
-    ).run('feed-paused', 'https://example.com/paused', now, now);
-    db.prepare(
-      'INSERT INTO feeds (id, url, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?)',
-    ).run('feed-active', 'https://example.com/active', now, now);
-    db.prepare(
-      `INSERT INTO articles (id, feed_id, url, title, content, cleared_at, fetched_at, created_at, updated_at)
-       VALUES
-         ('paused-feed-art', 'feed-paused', 'https://example.com/pf', 'Paused Feed Story', 'Readable body text', NULL, ?, ?, ?),
-         ('cleared-art', 'feed-active', 'https://example.com/cl', 'Cleared Story', 'Readable body text', ?, ?, ?, ?),
-         ('cleared-midflight', 'feed-active', 'https://example.com/cm', 'Cleared Midflight', 'Readable body text', NULL, ?, ?, ?)`,
-    ).run(now, now, now, now, now, now, now, now, now, now);
+    insertTestFeed(db, {
+      id: 'feed-paused',
+      url: 'https://example.com/paused',
+      enabled: false,
+      now,
+    });
+    insertTestFeed(db, {
+      id: 'feed-active',
+      url: 'https://example.com/active',
+      enabled: true,
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'paused-feed-art',
+      feedId: 'feed-paused',
+      url: 'https://example.com/pf',
+      title: 'Paused Feed Story',
+      content: 'Readable body text',
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'cleared-art',
+      feedId: 'feed-active',
+      url: 'https://example.com/cl',
+      title: 'Cleared Story',
+      content: 'Readable body text',
+      clearedAt: now,
+      now,
+    });
+    insertTestArticle(db, {
+      id: 'cleared-midflight',
+      feedId: 'feed-active',
+      url: 'https://example.com/cm',
+      title: 'Cleared Midflight',
+      content: 'Readable body text',
+      now,
+    });
 
     const analyzeMock = vi.fn(async () => {
       db.prepare('UPDATE articles SET cleared_at = ? WHERE id = ?').run(

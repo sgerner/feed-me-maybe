@@ -7,11 +7,9 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
-const testDbPath = join(process.cwd(), 'data', 'test-ranking-freshness.db');
-const originalDbUrl = process.env.DATABASE_URL;
+let testDb: TestDbHandle;
 const originalJevKey = process.env.JEV_API_KEY;
 const originalTypesafeKey = process.env.TYPESAFE_API_KEY;
 const originalSubqKey = process.env.SUBQ_API_KEY;
@@ -23,27 +21,17 @@ vi.mock('node:dns/promises', () => ({
 }));
 
 describe('ranking freshness after explicit feedback', () => {
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
-    if (!existsSync(join(process.cwd(), 'data')))
-      mkdirSync(join(process.cwd(), 'data'));
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+  beforeAll(() => {
+    testDb = createTestDb('feed-me-maybe-ranking-freshness-');
   });
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.restoreAllMocks();
     process.env.JEV_API_KEY = 'test-jev-key';
     process.env.TYPESAFE_API_KEY = '';
     process.env.SUBQ_API_KEY = '';
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM ranking_refresh_queue').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM user_interactions').run();
-    db.prepare('DELETE FROM user_preference_memory').run();
-    db.prepare('DELETE FROM articles').run();
-    db.prepare('DELETE FROM feeds').run();
+    testDb.reset();
+    const db = testDb.db;
     db.prepare(
       "DELETE FROM app_settings WHERE key = 'ranking_feedback_revision'",
     ).run();
@@ -53,21 +41,15 @@ describe('ranking freshness after explicit feedback', () => {
     ).run('fresh-feed', 'https://example.com/fresh.xml', 'Fresh', now, now);
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     vi.restoreAllMocks();
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
+    testDb.cleanup();
     if (originalJevKey === undefined) delete process.env.JEV_API_KEY;
     else process.env.JEV_API_KEY = originalJevKey;
     if (originalTypesafeKey === undefined) delete process.env.TYPESAFE_API_KEY;
     else process.env.TYPESAFE_API_KEY = originalTypesafeKey;
     if (originalSubqKey === undefined) delete process.env.SUBQ_API_KEY;
     else process.env.SUBQ_API_KEY = originalSubqKey;
-    for (const suffix of ['', '-wal', '-shm']) {
-      if (existsSync(`${testDbPath}${suffix}`))
-        unlinkSync(`${testDbPath}${suffix}`);
-    }
   });
 
   async function article(

@@ -195,7 +195,7 @@
       </label>
 
       <div class="space-y-4">
-        {#each shortcuts as shortcut}
+        {#each shortcuts as shortcut (shortcut.key)}
           <div class="flex items-center justify-between">
             <span class="text-sm text-surface-300">{shortcut.description}</span>
             <kbd

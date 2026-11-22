@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext, onMount, tick } from 'svelte';
+  import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { page as pageStore } from '$app/state';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
@@ -82,7 +83,7 @@
       if (navigator.onLine === false && !append) {
         if (await loadCachedRecoveryFallback()) return;
       }
-      const params = new URLSearchParams({ limit: '50' });
+      const params = new SvelteURLSearchParams({ limit: '50' });
       if (append && nextCursor) params.set('cursor', nextCursor);
       const signal =
         typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal

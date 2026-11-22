@@ -57,7 +57,7 @@ export function broadcast(event: string, data: any) {
   for (const client of clients) {
     try {
       client.controller.enqueue(encoded);
-    } catch (err) {
+    } catch {
       // If we can't send, the connection is likely closed
       client.onClose();
     }

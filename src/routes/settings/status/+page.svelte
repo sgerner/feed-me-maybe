@@ -188,7 +188,7 @@
       </p>
     {/if}
     <p>
-      {#each pageData.jev.jobs as group}
+      {#each pageData.jev.jobs as group (group.status)}
         <span class="mr-3">{group.count} {group.status}</span>
       {/each}
     </p>
@@ -241,7 +241,7 @@
     Recent Fetches
   </h3>
   <div class="space-y-2">
-    {#each pageData.recentJobs ?? [] as job, i}
+    {#each pageData.recentJobs ?? [] as job, i (job.id)}
       <div
         class="glass-card flex items-center gap-3 p-3 text-xs"
         in:fly={{ y: 8, duration: 250, delay: Math.min(i * 40, 300) }}
@@ -312,7 +312,7 @@
     Recent Errors
   </h3>
   <div class="space-y-2">
-    {#each pageData.recentErrors ?? [] as errorRow, i}
+    {#each pageData.recentErrors ?? [] as errorRow, i (errorRow.id)}
       <div
         class="glass-card flex flex-col gap-2 p-3 text-xs"
         in:fly={{ y: 8, duration: 250, delay: Math.min(i * 40, 300) }}

@@ -1,9 +1,51 @@
+<script module lang="ts">
+  let timeAgoCache: Record<number, { bucket: string; label: string }> =
+    Object.create(null);
+  let timeAgoCacheCount = 0;
+
+  function timeAgo(date: number | null): string {
+    if (!date) return '';
+    const now = Date.now();
+    const cached = timeAgoCache[date];
+    const seconds = Math.floor((now - date) / 1000);
+    const bucket =
+      seconds < 60
+        ? 'now'
+        : seconds < 3600
+          ? `m${Math.floor(seconds / 60)}`
+          : seconds < 86400
+            ? `h${Math.floor(seconds / 3600)}`
+            : seconds < 2592000
+              ? `d${Math.floor(seconds / 86400)}`
+              : 'date';
+    if (cached?.bucket === bucket) return cached.label;
+
+    let label: string;
+    if (seconds < 60) label = 'just now';
+    else if (seconds < 3600) label = `${Math.floor(seconds / 60)}m ago`;
+    else if (seconds < 86400) label = `${Math.floor(seconds / 3600)}h ago`;
+    else if (seconds < 2592000) label = `${Math.floor(seconds / 86400)}d ago`;
+    else label = new Date(date).toLocaleDateString();
+
+    if (!cached) {
+      if (timeAgoCacheCount >= 512) {
+        timeAgoCache = Object.create(null);
+        timeAgoCacheCount = 0;
+      }
+      timeAgoCacheCount += 1;
+    }
+    timeAgoCache[date] = { bucket, label };
+    return label;
+  }
+</script>
+
 <script lang="ts">
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import { formatContent, sanitizeHtml } from '#lib/utils/format.ts';
   import { getContext, onMount, tick } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { fade } from 'svelte/transition';
-  import { afterNavigate, goto, invalidate, refreshAll } from '$app/navigation';
+  import { goto, invalidate, refreshAll } from '$app/navigation';
   import { page as pageStore } from '$app/state';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
@@ -109,7 +151,6 @@
     Article,
     { source: string; formatted: string }
   >();
-  const timeAgoCache = new Map<number, { bucket: string; label: string }>();
 
   function getFormattedSummary(article: Article): string {
     const source = article.summary;
@@ -246,21 +287,21 @@
   let loadingMore = $state(false);
   let loadMoreError = $state(false);
   let hasMore = $state(false);
-  let pendingLiveArticleIds = new Set<string>();
+  let pendingLiveArticleIds = new SvelteSet<string>();
   let queuedLiveArticles = $state<Article[]>([]);
   let liveUpdatesPaused = $state(false);
   let liveArticleFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let fetchingLiveArticles = false;
   let liveArticleRequestController: AbortController | null = null;
   let liveUpdatesDisposed = false;
-  let liveOnlyArticleIds = new Set<string>();
+  let liveOnlyArticleIds = new SvelteSet<string>();
   let lastSnapshotAt: number | null = null;
   let lastPaginationKey: string | null = null;
   let pendingArticleIds = $state<Record<string, boolean>>({});
   let sentinelEl = $state<HTMLDivElement | null>(null);
   let scrollContainerEl: HTMLElement | null = null;
   let recentVisibleArticles: Array<{ id: string; seenAt: number }> = [];
-  let currentlyVisibleArticleIds = new Set<string>();
+  let currentlyVisibleArticleIds = new SvelteSet<string>();
   let articleVisibilityObserver: IntersectionObserver | null = null;
   let openingArticle = $state<{ id: string; label: string } | null>(null);
   let openingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -432,7 +473,7 @@
     loadMoreError = false;
     queuedLiveArticles = [];
     if (snapshotAt !== lastSnapshotAt) {
-      liveOnlyArticleIds = new Set();
+      liveOnlyArticleIds.clear();
       lastSnapshotAt = snapshotAt;
     }
   });
@@ -454,35 +495,6 @@
       },
     );
   });
-
-  function timeAgo(date: number | null): string {
-    if (!date) return '';
-    const now = Date.now();
-    const cached = timeAgoCache.get(date);
-    const seconds = Math.floor((now - date) / 1000);
-    const bucket =
-      seconds < 60
-        ? 'now'
-        : seconds < 3600
-          ? `m${Math.floor(seconds / 60)}`
-          : seconds < 86400
-            ? `h${Math.floor(seconds / 3600)}`
-            : seconds < 2592000
-              ? `d${Math.floor(seconds / 86400)}`
-              : 'date';
-    if (cached?.bucket === bucket) return cached.label;
-
-    let label: string;
-    if (seconds < 60) label = 'just now';
-    else if (seconds < 3600) label = `${Math.floor(seconds / 60)}m ago`;
-    else if (seconds < 86400) label = `${Math.floor(seconds / 3600)}h ago`;
-    else if (seconds < 2592000) label = `${Math.floor(seconds / 86400)}d ago`;
-    else label = new Date(date).toLocaleDateString();
-
-    timeAgoCache.set(date, { bucket, label });
-    if (timeAgoCache.size > 512) timeAgoCache.clear();
-    return label;
-  }
 
   async function interact(articleId: string, requestedType: InteractionType) {
     if (pendingArticleIds[articleId]) return;
@@ -813,7 +825,9 @@
         savedOnly,
       });
       const unreadOnly = loadMoreSearchParams.unread === '1';
-      const seen = new Set(articles.map((article: Article) => article.id));
+      const seen = new SvelteSet(
+        articles.map((article: Article) => article.id),
+      );
       const matching = cached.filter((article) => {
         if (seen.has(article.id)) return false;
         if (!savedOnly && !matchesOfflineVisibility(article)) return false;
@@ -856,7 +870,9 @@
         if (data.articles.length === 0) {
           hasMore = false;
         } else {
-          const seen = new Set(articles.map((article: Article) => article.id));
+          const seen = new SvelteSet(
+            articles.map((article: Article) => article.id),
+          );
           const nextArticles = (data.articles as Article[]).filter(
             (article) => {
               if (seen.has(article.id)) return false;
@@ -926,7 +942,9 @@
 
   function showQueuedLiveArticles(): void {
     if (queuedLiveArticles.length === 0) return;
-    const existingIds = new Set(articles.map((article: Article) => article.id));
+    const existingIds = new SvelteSet(
+      articles.map((article: Article) => article.id),
+    );
     const toPrepend = queuedLiveArticles.filter((article) => {
       if (existingIds.has(article.id)) return false;
       existingIds.add(article.id);
@@ -990,7 +1008,7 @@
 
       const data = await response.json();
       if (liveUpdatesDisposed) return;
-      const existingIds = new Set([
+      const existingIds = new SvelteSet([
         ...articles.map((article: Article) => article.id),
         ...queuedLiveArticles.map((article: Article) => article.id),
       ]);
@@ -1193,7 +1211,7 @@
             );
             if (res.ok) {
               const data = await res.json();
-              const seen = new Set(
+              const seen = new SvelteSet(
                 articles.map((article: Article) => article.id),
               );
               const nextArticles = (data.articles as Article[]).filter(
@@ -1585,6 +1603,7 @@
                   style="background: var(--color-primary-500); border-radius: 2px;"
                 >
                   {#if article.feed_title_highlight}
+                    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                     {@html sanitizeHtml(article.feed_title_highlight)}
                   {:else}
                     {article.feed_title || 'Unknown'}
@@ -1613,6 +1632,7 @@
                 style="color: var(--color-surface-50); text-shadow: 0 2px 4px rgba(0,0,0,0.3);"
               >
                 {#if article.title_highlight}
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                   {@html sanitizeHtml(article.title_highlight)}
                 {:else}
                   {article.title}
@@ -1624,6 +1644,7 @@
                   class="line-clamp-2 text-sm leading-relaxed prose prose-sm max-w-none"
                   style="color: var(--color-surface-300);"
                 >
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                   {@html formattedSummary}
                 </div>
               {/if}

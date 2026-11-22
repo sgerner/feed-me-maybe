@@ -28,83 +28,34 @@ export class SafeFetchError extends Error {
   }
 }
 
-function isPrivateIpv4(address: string): boolean {
-  const octets = address.split('.').map(Number);
-  if (
-    octets.length !== 4 ||
-    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
-  ) {
-    return true;
-  }
-
-  const [a, b, c] = octets;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 0 && c === 0) ||
-    (a === 192 && b === 0 && c === 2) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    (a === 198 && b === 51 && c === 100) ||
-    (a === 203 && b === 0 && c === 113) ||
-    a >= 224
-  );
-}
-
-function parseIpv6Hextets(address: string): number[] | null {
-  let value = address.toLowerCase().split('%')[0];
-  if (value.includes('.')) {
-    const lastColon = value.lastIndexOf(':');
-    if (lastColon < 0) return null;
-    const ipv4 = value.slice(lastColon + 1);
-    if (net.isIP(ipv4) !== 4) return null;
-    const octets = ipv4.split('.').map(Number);
-    value = `${value.slice(0, lastColon)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
-  }
-
-  const halves = value.split('::');
-  if (halves.length > 2) return null;
-  const left = halves[0] ? halves[0].split(':') : [];
-  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
-  if ([...left, ...right].some((part) => !/^[0-9a-f]{1,4}$/.test(part))) {
-    return null;
-  }
-
-  const missing = halves.length === 2 ? 8 - left.length - right.length : 0;
-  if (missing < 0 || (halves.length === 1 && left.length !== 8)) return null;
-  return [
-    ...left.map((part) => parseInt(part, 16)),
-    ...Array.from({ length: missing }, () => 0),
-    ...right.map((part) => parseInt(part, 16)),
-  ];
-}
+const PRIVATE_IP_BLOCKLIST = new net.BlockList();
+// IPv4 non-public / reserved / test-net ranges
+PRIVATE_IP_BLOCKLIST.addSubnet('0.0.0.0', 8, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('10.0.0.0', 8, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('100.64.0.0', 10, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('127.0.0.0', 8, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('169.254.0.0', 16, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('172.16.0.0', 12, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('192.0.0.0', 24, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('192.0.2.0', 24, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('192.168.0.0', 16, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('198.18.0.0', 15, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('198.51.100.0', 24, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('203.0.113.0', 24, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('224.0.0.0', 4, 'ipv4');
+PRIVATE_IP_BLOCKLIST.addSubnet('240.0.0.0', 4, 'ipv4');
+// IPv6 unspecified, loopback, IPv4-compatible, ULA, link-local, multicast, doc
+PRIVATE_IP_BLOCKLIST.addSubnet('::', 96, 'ipv6');
+PRIVATE_IP_BLOCKLIST.addSubnet('fc00::', 7, 'ipv6');
+PRIVATE_IP_BLOCKLIST.addSubnet('fe80::', 10, 'ipv6');
+PRIVATE_IP_BLOCKLIST.addSubnet('ff00::', 8, 'ipv6');
+PRIVATE_IP_BLOCKLIST.addSubnet('2001:db8::', 32, 'ipv6');
 
 export function isPrivateIpAddress(address: string): boolean {
   const normalized = address.replace(/^\[|\]$/g, '').split('%')[0];
-  if (net.isIP(normalized) === 4) return isPrivateIpv4(normalized);
-  if (net.isIP(normalized) !== 6) return true;
-
-  const hextets = parseIpv6Hextets(normalized);
-  if (!hextets) return true;
-  const first = hextets[0];
-  const mappedIpv4 =
-    hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff
-      ? `${hextets[6] >> 8}.${hextets[6] & 255}.${hextets[7] >> 8}.${hextets[7] & 255}`
-      : null;
-
-  return (
-    (mappedIpv4 ? isPrivateIpv4(mappedIpv4) : false) ||
-    hextets.every((part) => part === 0) ||
-    hextets.slice(0, 7).every((part) => part === 0) ||
-    (first & 0xfe00) === 0xfc00 ||
-    (first & 0xffc0) === 0xfe80 ||
-    (first & 0xff00) === 0xff00 ||
-    (hextets[0] === 0x2001 && hextets[1] === 0xdb8)
-  );
+  const family = net.isIP(normalized);
+  if (family === 0) return true;
+  return PRIVATE_IP_BLOCKLIST.check(normalized, family === 4 ? 'ipv4' : 'ipv6');
 }
 
 function normalizeHostname(hostname: string): string {
@@ -183,7 +134,7 @@ async function resolvePublicNetworkUrl(
 
   let addresses: Array<{ address: string }>;
   try {
-    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+    addresses = await dns.lookup(hostname, { all: true, order: 'verbatim' });
   } catch {
     throw new SafeFetchError('Unable to resolve remote host', 'dns_failure');
   }

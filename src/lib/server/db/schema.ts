@@ -98,42 +98,54 @@ export const articles = sqliteTable(
     jevProcessedAt: integer('jev_processed_at', { mode: 'timestamp' }),
     jevError: text('jev_error').notNull().default(''),
     combinedScore: real('combined_score').default(0),
+    rankingRefreshedAt: integer('ranking_refreshed_at', { mode: 'timestamp' }),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   },
-  (table) => [
-    index('idx_articles_feed_id').on(table.feedId),
-    index('idx_articles_published_at').on(table.publishedAt),
-    index('idx_articles_visible_rank')
-      .on(
-        sql`COALESCE(NULLIF(${table.combinedScore}, 0), ${table.heuristicScore}, 0) DESC`,
-        sql`${table.publishedAt} DESC`,
-      )
-      .where(sql`${table.hidden} = 0`),
-    index('idx_articles_feed_visible_rank')
-      .on(
-        table.feedId,
-        sql`COALESCE(NULLIF(${table.combinedScore}, 0), ${table.heuristicScore}, 0) DESC`,
-        sql`${table.publishedAt} DESC`,
-      )
-      .where(sql`${table.hidden} = 0`),
-    index('idx_articles_saved_published')
-      .on(sql`${table.publishedAt} DESC`)
-      .where(sql`${table.saved} = 1`),
-    index('idx_articles_saved_order')
-      .on(
-        sql`COALESCE(${table.savedAt}, ${table.updatedAt}, ${table.fetchedAt}) DESC`,
-        sql`${table.id} DESC`,
-      )
-      .where(sql`${table.saved} = 1`),
-    index('idx_articles_effective_publication').on(
-      sql`COALESCE(${table.publishedAt}, ${table.fetchedAt})`,
-    ),
-    uniqueIndex('idx_articles_feed_url_noguid')
-      .on(table.feedId, table.url)
-      .where(sql`${table.guid} IS NULL OR ${table.guid} = ''`),
-    index('idx_articles_feed_url_lookup').on(table.feedId, table.url),
-  ],
+  (table) => {
+    const visibleRankExpr = sql`CASE WHEN ${table.combinedScore} IS NOT NULL AND ${table.combinedScore} != 0 THEN ${table.combinedScore} WHEN ${table.heuristicScore} IS NOT NULL THEN ${table.heuristicScore} ELSE 0 END DESC`;
+    const savedOrderExpr = sql`CASE WHEN ${table.savedAt} IS NOT NULL THEN ${table.savedAt} WHEN ${table.updatedAt} IS NOT NULL THEN ${table.updatedAt} ELSE ${table.fetchedAt} END DESC`;
+    const recoveryOrderExpr = sql`CASE WHEN ${table.hiddenAt} IS NOT NULL THEN ${table.hiddenAt} WHEN ${table.rejectedAt} IS NOT NULL THEN ${table.rejectedAt} ELSE ${table.fetchedAt} END DESC`;
+    return [
+      index('idx_articles_feed_id').on(table.feedId),
+      index('idx_articles_published_at').on(sql`${table.publishedAt} DESC`),
+      index('idx_articles_visible_rank')
+        .on(visibleRankExpr, sql`${table.publishedAt} DESC`)
+        .where(sql`${table.hidden} = 0`),
+      index('idx_articles_feed_visible_rank')
+        .on(table.feedId, visibleRankExpr, sql`${table.publishedAt} DESC`)
+        .where(sql`${table.hidden} = 0`),
+      index('idx_articles_saved_published')
+        .on(sql`${table.publishedAt} DESC`)
+        .where(sql`${table.saved} = 1`),
+      index('idx_articles_saved_order')
+        .on(savedOrderExpr, sql`${table.id} DESC`)
+        .where(sql`${table.saved} = 1`),
+      index('idx_articles_effective_publication').on(
+        sql`CASE WHEN ${table.publishedAt} IS NOT NULL THEN ${table.publishedAt} ELSE ${table.fetchedAt} END`,
+      ),
+      uniqueIndex('idx_articles_feed_url_noguid')
+        .on(table.feedId, table.url)
+        .where(sql`${table.guid} IS NULL OR ${table.guid} = ''`),
+      index('idx_articles_feed_url_lookup').on(table.feedId, table.url),
+      index('idx_articles_jev_backfill')
+        .on(table.fetchedAt, table.id)
+        .where(sql`${table.jevScore} IS NULL`),
+      index('idx_articles_jev_recent_scored')
+        .on(table.fetchedAt, table.id)
+        .where(sql`${table.jevScore} IS NOT NULL`),
+      index('idx_articles_recovery_order')
+        .on(recoveryOrderExpr, sql`${table.id} DESC`)
+        .where(
+          sql`${table.hidden} = 1 OR ${table.rejected} = 1 OR ${table.thumbsDown} = 1`,
+        ),
+      index('idx_articles_feed_recovery_order')
+        .on(table.feedId, recoveryOrderExpr, sql`${table.id} DESC`)
+        .where(
+          sql`${table.hidden} = 1 OR ${table.rejected} = 1 OR ${table.thumbsDown} = 1`,
+        ),
+    ];
+  },
 );
 
 // ── Article AI Metadata ──
@@ -154,7 +166,7 @@ export const articleAiMetadata = sqliteTable('article_ai_metadata', {
   signals: text('signals').default('[]'),
   explanation: text('explanation').default(''),
   analysisStatus: text('analysis_status').notNull().default('pending'),
-  analysisError: text('analysis_error').default(''),
+  analysisError: text('analysis_error').notNull().default(''),
   processedAt: integer('processed_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });
@@ -228,20 +240,65 @@ export const feedFetchLogs = sqliteTable(
 );
 
 // ── Jobs ──
-export const jobs = sqliteTable('jobs', {
-  id: text('id').primaryKey(),
-  type: text('type').notNull(), // feed_fetch, ai_process, memory_summarize
-  status: text('status').notNull().default('queued'), // queued, processing, completed, failed
-  payload: text('payload').default('{}'), // JSON
-  result: text('result').default('{}'), // JSON
-  errorMessage: text('error_message').default(''),
-  attempts: integer('attempts').notNull().default(0),
-  maxAttempts: integer('max_attempts').notNull().default(3),
-  scheduledAt: integer('scheduled_at', { mode: 'timestamp' }),
-  startedAt: integer('started_at', { mode: 'timestamp' }),
-  completedAt: integer('completed_at', { mode: 'timestamp' }),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-});
+export const jobs = sqliteTable(
+  'jobs',
+  {
+    id: text('id').primaryKey(),
+    type: text('type').notNull(), // feed_fetch, ai_process, memory_summarize
+    status: text('status').notNull().default('queued'), // queued, processing, completed, failed
+    payload: text('payload').default('{}'), // JSON
+    result: text('result').default('{}'), // JSON
+    errorMessage: text('error_message').default(''),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    scheduledAt: integer('scheduled_at', { mode: 'timestamp' }),
+    startedAt: integer('started_at', { mode: 'timestamp' }),
+    completedAt: integer('completed_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => {
+    const jobArticleIdExpr = sql`CASE WHEN json_valid(${table.payload}) = 1 THEN ${table.payload} ->> '$.articleId' END`;
+    const jobFeedIdExpr = sql`CASE WHEN json_valid(${table.payload}) = 1 THEN ${table.payload} ->> '$.feedId' END`;
+    return [
+      index('idx_jobs_status').on(table.status, table.scheduledAt),
+      index('idx_jobs_jev_article_id')
+        .on(jobArticleIdExpr)
+        .where(sql`${table.type} = 'jev_process'`),
+      index('idx_jobs_active_type_status')
+        .on(table.type, table.status)
+        .where(sql`${table.status} IN ('queued', 'processing')`),
+      index('idx_jobs_active_article_lookup')
+        .on(table.type, jobArticleIdExpr, table.status, table.createdAt)
+        .where(sql`${table.status} IN ('queued', 'processing')`),
+      index('idx_jobs_active_feed_lookup')
+        .on(table.type, jobFeedIdExpr, table.status, table.createdAt)
+        .where(sql`${table.status} IN ('queued', 'processing')`),
+      index('idx_jobs_queue_claim')
+        .on(table.status, table.scheduledAt, table.createdAt)
+        .where(sql`${table.status} = 'queued'`),
+      index('idx_jobs_queued_next_due')
+        .on(
+          sql`CASE WHEN ${table.scheduledAt} IS NOT NULL THEN ${table.scheduledAt} ELSE ${table.createdAt} END`,
+        )
+        .where(sql`${table.status} = 'queued'`),
+      index('idx_jobs_processing_lease')
+        .on(table.startedAt)
+        .where(
+          sql`${table.status} = 'processing' AND ${table.startedAt} IS NOT NULL`,
+        ),
+      index('idx_jobs_feed_latest').on(
+        table.type,
+        jobFeedIdExpr,
+        sql`${table.createdAt} DESC`,
+      ),
+      index('idx_jobs_prunable_completed')
+        .on(table.completedAt)
+        .where(
+          sql`${table.type} IN ('feed_fetch', 'ai_process') AND ${table.status} IN ('completed', 'failed')`,
+        ),
+    ];
+  },
+);
 
 // ── User Interactions ──
 export const userInteractions = sqliteTable(
@@ -265,17 +322,69 @@ export const userInteractions = sqliteTable(
 );
 
 // ── User Preference Memory ──
-export const userPreferenceMemory = sqliteTable('user_preference_memory', {
+export const userPreferenceMemory = sqliteTable(
+  'user_preference_memory',
+  {
+    id: text('id').primaryKey(),
+    label: text('label').notNull(),
+    type: text('type').notNull(), // topic, entity, signal, author, content_type, negative_filter
+    polarity: text('polarity').notNull().default('positive'), // positive, negative
+    strength: real('strength').notNull().default(0.5),
+    evidenceCount: integer('evidence_count').notNull().default(1),
+    lastReinforced: integer('last_reinforced', { mode: 'timestamp' }).notNull(),
+    explanation: text('explanation').default(''),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    index('idx_pref_type_label').on(table.type, table.label),
+    index('idx_pref_last_reinforced').on(table.lastReinforced),
+  ],
+);
+
+export const userPreferenceMemoryArchive = sqliteTable(
+  'user_preference_memory_archive',
+  {
+    originalId: text('original_id').primaryKey(),
+    label: text('label').notNull(),
+    type: text('type').notNull(),
+    polarity: text('polarity').notNull(),
+    strength: real('strength').notNull(),
+    evidenceCount: integer('evidence_count').notNull(),
+    lastReinforced: integer('last_reinforced', { mode: 'timestamp' }).notNull(),
+    explanation: text('explanation').default(''),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    archiveReason: text('archive_reason').notNull(),
+    archivedAt: integer('archived_at', { mode: 'timestamp' }).notNull(),
+  },
+);
+
+export const providerConfigs = sqliteTable('provider_configs', {
   id: text('id').primaryKey(),
-  label: text('label').notNull(),
-  type: text('type').notNull(), // topic, entity, signal, author, content_type, negative_filter
-  polarity: text('polarity').notNull().default('positive'), // positive, negative
-  strength: real('strength').notNull().default(0.5),
-  evidenceCount: integer('evidence_count').notNull().default(1),
-  lastReinforced: integer('last_reinforced', { mode: 'timestamp' }).notNull(),
-  explanation: text('explanation').default(''),
+  providerId: text('provider_id').notNull(),
+  modelId: text('model_id').notNull(),
+  apiKeyEncrypted: text('api_key_encrypted').default(''),
+  apiKeyNonce: text('api_key_nonce').default(''),
+  customBaseUrl: text('custom_base_url'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 });
+
+export const rankingRefreshQueue = sqliteTable(
+  'ranking_refresh_queue',
+  {
+    articleId: text('article_id')
+      .primaryKey()
+      .references(() => articles.id, { onDelete: 'cascade' }),
+    requestedRevision: integer('requested_revision').notNull(),
+    heuristicRevision: integer('heuristic_revision'),
+    notBefore: integer('not_before', { mode: 'timestamp' }).notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [
+    index('idx_ranking_refresh_due').on(table.notBefore, table.createdAt),
+  ],
+);
 
 // ── Webhooks ──
 export const webhooks = sqliteTable('webhooks', {
@@ -289,13 +398,17 @@ export const webhooks = sqliteTable('webhooks', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 });
 
-export const appErrorLogs = sqliteTable('app_error_logs', {
-  id: text('id').primaryKey(),
-  source: text('source').notNull(),
-  message: text('message').notNull(),
-  details: text('details').default('{}'),
-  path: text('path').default(''),
-  method: text('method').default(''),
-  stack: text('stack').default(''),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
-});
+export const appErrorLogs = sqliteTable(
+  'app_error_logs',
+  {
+    id: text('id').primaryKey(),
+    source: text('source').notNull(),
+    message: text('message').notNull(),
+    details: text('details').default('{}'),
+    path: text('path').default(''),
+    method: text('method').default(''),
+    stack: text('stack').default(''),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => [index('idx_app_error_logs_created').on(table.createdAt)],
+);

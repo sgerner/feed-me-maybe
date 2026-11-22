@@ -19,33 +19,21 @@ import {
   validatePublicUrlWithDns,
 } from './webhooks';
 import { recordInteraction } from './interactions';
-import { closeDb, getDb } from './db';
-import { initializeDatabase } from './db/migrate';
-import { unlinkSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { getDb } from './db';
+import { createTestDb, type TestDbHandle } from './db/test-db';
 
 describe('Webhooks', () => {
   let receivedRequest: any = null;
   let fetchMock: ReturnType<typeof vi.fn>;
   const WEBHOOK_URL = 'https://1.1.1.1/webhook';
-  const testDbPath = join(process.cwd(), 'data', 'test-webhooks.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
 
   beforeAll(() => {
-    closeDb();
-    process.env.DATABASE_URL = testDbPath;
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) {
-      mkdirSync(dataDir, { recursive: true });
-    }
-    initializeDatabase();
+    testDb = createTestDb('feed-me-maybe-webhooks-');
   });
 
   beforeEach(() => {
-    closeDb();
-    const db = getDb();
-    db.prepare('DELETE FROM webhooks').run();
-    db.prepare('DELETE FROM app_error_logs').run();
+    testDb.reset();
     receivedRequest = null;
     fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       receivedRequest = {
@@ -61,14 +49,10 @@ describe('Webhooks', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    closeDb();
   });
 
   afterAll(() => {
-    process.env.DATABASE_URL = originalDbUrl ?? '';
-    if (existsSync(testDbPath)) {
-      unlinkSync(testDbPath);
-    }
+    testDb.cleanup();
   });
 
   it('should register and dispatch a webhook event', async () => {

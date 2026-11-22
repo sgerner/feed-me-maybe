@@ -57,14 +57,16 @@
   let addFeedPreviouslyFocused: HTMLElement | null = null;
   const toasts = getToasts();
   const sidebarFeedGroups = $derived.by(() => {
-    const groups = new Map<string, typeof data.feeds>();
+    type SidebarFeed = NonNullable<typeof data.feeds>[number];
+    const groups: Record<string, SidebarFeed[]> = Object.create(null);
     for (const feed of data.feeds || []) {
       const group = feed.category?.trim() || '';
-      const entries = groups.get(group) || [];
+      const entries = groups[group] || (groups[group] = []);
       entries.push(feed);
-      groups.set(group, entries);
     }
-    return [...groups].sort(([left], [right]) => left.localeCompare(right));
+    return Object.entries(groups).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
   });
   let stopOfflineSync: (() => void) | null = null;
   let { children, data } = $props();
@@ -518,36 +520,12 @@
   });
 
   const navItems = [
-    {
-      href: '/',
-      label: 'All',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>',
-    },
-    {
-      href: '/inbox',
-      label: 'Unread',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v14H4z"/><path d="M4 14h4l2 3h4l2-3h4"/><path d="M8 8h8"/></svg>',
-    },
-    {
-      href: '/search',
-      label: 'Search',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
-    },
-    {
-      href: '/saved',
-      label: 'Saved',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>',
-    },
-    {
-      href: '/digest',
-      label: 'Briefing',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><path d="M8 2v4"/><path d="M16 2v4"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/></svg>',
-    },
-    {
-      href: '/feeds',
-      label: 'Feeds',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>',
-    },
+    { href: '/', label: 'All' },
+    { href: '/inbox', label: 'Unread' },
+    { href: '/search', label: 'Search' },
+    { href: '/saved', label: 'Saved' },
+    { href: '/digest', label: 'Briefing' },
+    { href: '/feeds', label: 'Feeds' },
   ];
 
   const mobileCoreItems = navItems.filter((item) =>
@@ -566,13 +544,7 @@
       : path === href || path.startsWith(`${href}/`);
   }
 
-  const adminItems = [
-    {
-      href: '/settings',
-      label: 'Settings',
-      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
-    },
-  ];
+  const adminItems = [{ href: '/settings', label: 'Settings' }];
 
   let secondaryOpen = $state(false);
 
@@ -715,6 +687,115 @@
   });
 </script>
 
+{#snippet navIcon(href: string)}
+  {#if href === '/'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><circle cx="12" cy="12" r="5" /><path
+        d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
+      /></svg
+    >
+  {:else if href === '/inbox'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><path d="M4 4h16v14H4z" /><path d="M4 14h4l2 3h4l2-3h4" /><path
+        d="M8 8h8"
+      /></svg
+    >
+  {:else if href === '/search'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg
+    >
+  {:else if href === '/saved'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" /></svg
+    >
+  {:else if href === '/digest'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><path
+        d="M8 2v4"
+      /><path d="M16 2v4" /><path d="M3 10h18" /><path d="M8 14h.01" /><path
+        d="M12 14h.01"
+      /><path d="M16 14h.01" /><path d="M8 18h.01" /><path
+        d="M12 18h.01"
+      /></svg
+    >
+  {:else if href === '/feeds'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><path
+        d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"
+      /><path d="M8 7h8M8 11h8M8 15h5" /></svg
+    >
+  {:else if href === '/settings'}
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      ><path
+        d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+      /><circle cx="12" cy="12" r="3" /></svg
+    >
+  {/if}
+{/snippet}
+
 <!-- Cinematic Background -->
 <a class="skip-link" href="#main-content">Skip to content</a>
 
@@ -807,7 +888,7 @@
                 aria-current={isCurrentNavItem(item.href) ? 'page' : undefined}
               >
                 <span class="flex h-5 w-5 items-center justify-center"
-                  >{@html item.icon}</span
+                  >{@render navIcon(item.href)}</span
                 >
                 <span class="min-w-0 flex-1 truncate">{item.label}</span>
               </a>
@@ -1082,7 +1163,7 @@
                     : undefined}
                 >
                   <span class="flex h-5 w-5 items-center justify-center"
-                    >{@html item.icon}</span
+                    >{@render navIcon(item.href)}</span
                   >
                   <span>{item.label}</span>
                 </a>
@@ -1247,7 +1328,7 @@
             (isCurrentNavItem(item.href) ? ' mobile-core-nav-link-active' : '')}
           aria-current={isCurrentNavItem(item.href) ? 'page' : undefined}
         >
-          <span class="mobile-core-nav-icon">{@html item.icon}</span>
+          <span class="mobile-core-nav-icon">{@render navIcon(item.href)}</span>
           <span>{item.label}</span>
         </a>
       {/each}
@@ -1331,6 +1412,7 @@
         </h1>
         {#if cachedArticle.content || cachedArticle.summary}
           <div class="prose-glass overflow-x-auto">
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             {@html renderContent(
               cachedArticle.content || cachedArticle.summary,
               cachedArticle.url,

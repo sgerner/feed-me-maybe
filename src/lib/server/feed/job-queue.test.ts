@@ -7,8 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { createTestDb, type TestDbHandle } from '#lib/server/db/test-db.ts';
 
 const jevMocks = vi.hoisted(() => ({
   isRankingProviderConfigured: vi.fn(() => true),
@@ -22,27 +21,17 @@ vi.mock('#lib/server/ai/jev.ts', () => jevMocks);
 vi.mock('#lib/server/ai/processor.ts', () => aiMocks);
 
 describe('feed job queue', () => {
-  const testDbPath = join(process.cwd(), 'data', 'test-feed-job-queue.db');
-  const originalDbUrl = process.env.DATABASE_URL;
+  let testDb: TestDbHandle;
   const originalAppSecret = process.env.APP_SECRET;
 
-  beforeAll(async () => {
-    process.env.DATABASE_URL = testDbPath;
+  beforeAll(() => {
     process.env.APP_SECRET = 'test-app-secret-which-is-at-least-32-characters';
-    const dataDir = join(process.cwd(), 'data');
-    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-    const { initializeDatabase } = await import('#lib/server/db/migrate.ts');
-    initializeDatabase();
+    testDb = createTestDb('feed-me-maybe-job-queue-');
   });
 
   beforeEach(async () => {
-    const { getDb } = await import('#lib/server/db/index.ts');
-    const db = getDb();
-    db.prepare('DELETE FROM feed_fetch_logs').run();
-    db.prepare('DELETE FROM jobs').run();
-    db.prepare('DELETE FROM feeds').run();
-    db.prepare('DELETE FROM app_error_logs').run();
-    db.prepare('DELETE FROM provider_configs').run();
+    testDb.reset();
+    const db = testDb.db;
     db.prepare(
       "DELETE FROM app_settings WHERE key LIKE 'provider_cooldown_%' OR key = 'ai_enabled'",
     ).run();
@@ -64,16 +53,10 @@ describe('feed job queue', () => {
     aiMocks.processArticle.mockReset().mockResolvedValue(undefined);
   });
 
-  afterAll(async () => {
-    const { closeDb } = await import('#lib/server/db/index.ts');
-    closeDb();
-    process.env.DATABASE_URL = originalDbUrl ?? '';
+  afterAll(() => {
+    testDb.cleanup();
     if (originalAppSecret === undefined) delete process.env.APP_SECRET;
     else process.env.APP_SECRET = originalAppSecret;
-    for (const suffix of ['', '-wal', '-shm']) {
-      const path = `${testDbPath}${suffix}`;
-      if (existsSync(path)) unlinkSync(path);
-    }
   });
 
   it('calculates capped exponential retry delays', async () => {

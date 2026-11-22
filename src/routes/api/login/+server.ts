@@ -1,21 +1,13 @@
 import type { RequestHandler } from './$types';
 import { verifyPassword } from '#lib/server/auth/password.ts';
-import {
-  createSession,
-  setSessionCookie,
-  getSessionCookieName,
-} from '#lib/server/auth/session.ts';
+import { createSession, setSessionCookie } from '#lib/server/auth/session.ts';
 import {
   consumeLoginAttempt,
   getClientAddress as getSafeClientAddress,
   resetLoginAttempts,
 } from '#lib/server/auth/rate-limit.ts';
 
-export const POST: RequestHandler = async ({
-  request,
-  cookies,
-  getClientAddress,
-}) => {
+export const POST: RequestHandler = async ({ request, getClientAddress }) => {
   const address = getSafeClientAddress(getClientAddress);
   const rate = consumeLoginAttempt(address);
   if (!rate.allowed) {
