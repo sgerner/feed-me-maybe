@@ -732,7 +732,13 @@
               void invalidate('app:reader-counts');
               window.dispatchEvent(
                 new CustomEvent('feed-me-maybe:new-articles', {
-                  detail: { ids },
+                  detail: {
+                    ids,
+                    feedId:
+                      typeof payload.feedId === 'string'
+                        ? payload.feedId
+                        : null,
+                  },
                 }),
               );
             }

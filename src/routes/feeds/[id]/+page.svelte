@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { addToast } from '#lib/stores/toast.svelte.ts';
   import PullToRefresh from '#lib/components/PullToRefresh.svelte';
   import ArticleList from '#lib/components/ArticleList.svelte';
@@ -92,8 +91,6 @@
   let cssSelector = $state('');
 
   let syncing = $state(false);
-  let newArticlesAvailable = $state(false);
-  let newArticlesCount = $state(0);
 
   const currentSort = $derived<ArticleSort>(pageData.sort || 'ranked');
   const currentUnreadOnly = $derived(Boolean(pageData.unreadOnly));
@@ -189,47 +186,17 @@
     cssSelector = String(pageData.feed.css_selector ?? '');
   });
 
-  onMount(() => {
-    const handleNewArticles = () => {
-      newArticlesAvailable = true;
-    };
-    window.addEventListener('feed-me-maybe:new-articles', handleNewArticles);
-    return () => {
-      window.removeEventListener(
-        'feed-me-maybe:new-articles',
-        handleNewArticles,
-      );
-    };
-  });
-
-  async function loadNewArticles() {
-    newArticlesAvailable = false;
-    newArticlesCount = 0;
-    if (pageData.page > 1) {
-      await goto(`/feeds/${pageData.feedId}`, { replaceState: false });
-    }
-    await refreshAll();
-  }
-
   async function handleSync() {
     if (syncing) return;
     syncing = true;
-    newArticlesAvailable = false;
-    newArticlesCount = 0;
-    const previousIds = new Set(articles.map((article) => article.id));
     try {
       const result = await syncFeed(pageData.feedId);
       if (result === 'completed') {
-        await refreshAll();
-        const added = pageData.articles.filter(
-          (article: FeedArticle) => !previousIds.has(article.id),
-        ).length;
-        if (added > 0 || pageData.page > 1) {
-          newArticlesCount = added;
-          newArticlesAvailable = added > 0;
+        if (pageData.page > 1) {
+          await goto(`/feeds/${pageData.feedId}`, { replaceState: false });
+        } else {
+          await refreshAll();
         }
-      } else if (result === 'pending') {
-        newArticlesAvailable = true;
       }
     } finally {
       syncing = false;
@@ -744,27 +711,6 @@
           </button>
         </div>
       </div>
-    </div>
-  {/if}
-
-  {#if newArticlesAvailable}
-    <div
-      class="glass-card mb-6 flex flex-wrap items-center justify-between gap-3 p-4"
-      role="status"
-      aria-live="polite"
-    >
-      <span class="text-sm text-surface-100">
-        {newArticlesCount > 0
-          ? `${newArticlesCount} new ${newArticlesCount === 1 ? 'article' : 'articles'} synced.`
-          : 'New articles may be ready for this feed.'}
-      </span>
-      <button
-        type="button"
-        class="btn preset-filled-primary-500 px-3 py-1.5 text-xs"
-        onclick={() => void loadNewArticles()}
-      >
-        Load new articles
-      </button>
     </div>
   {/if}
 
