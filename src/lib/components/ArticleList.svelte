@@ -49,6 +49,10 @@
   import { page as pageStore } from '$app/state';
   import { fetchWithCsrf } from '#lib/client/csrf.ts';
   import {
+    extractLiveArticleIds,
+    mergeLiveArticles,
+  } from '#lib/client/live-articles.ts';
+  import {
     executeArticleTriage,
     shareArticleLink,
     type TriageAction,
@@ -380,6 +384,7 @@
           openingArticle = null;
         }
         isRestoringScroll = false;
+        scheduleLiveArticleFetch(50);
       }
     }
   }
@@ -390,7 +395,6 @@
   let loadMoreError = $state(false);
   let hasMore = $state(false);
   let pendingLiveArticleIds = new SvelteSet<string>();
-  let queuedLiveArticles = $state<Article[]>([]);
   let liveArticleFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let fetchingLiveArticles = false;
   let liveArticleRequestController: AbortController | null = null;
@@ -557,12 +561,16 @@
     }
   }
 
-  $effect(() => {
+  function buildPaginationKey(): string {
     const sortedParams = Object.entries(loadMoreSearchParams)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => `${key}=${value}`)
       .join('&');
-    const paginationKey = `${feedId ?? ''}|${initialPage}|${sortedParams}`;
+    return `${feedId ?? ''}|${initialPage}|${sortedParams}`;
+  }
+
+  $effect(() => {
+    const paginationKey = buildPaginationKey();
     if (paginationKey === lastPaginationKey) return;
     lastPaginationKey = paginationKey;
 
@@ -572,7 +580,6 @@
     page = initialPage;
     removedFromPage = 0;
     loadMoreError = false;
-    queuedLiveArticles = [];
     if (snapshotAt !== lastSnapshotAt) {
       liveOnlyArticleIds.clear();
       lastSnapshotAt = snapshotAt;
@@ -1107,6 +1114,7 @@
       liveUpdatesDisposed ||
       liveArticleFetchTimer ||
       fetchingLiveArticles ||
+      isRestoringScroll ||
       pendingLiveArticleIds.size === 0
     )
       return;
@@ -1117,48 +1125,18 @@
     }, delay);
   }
 
-  function showQueuedLiveArticles(): void {
-    if (queuedLiveArticles.length === 0) return;
-    const existingIds = new SvelteSet(
-      articles.map((article: Article) => article.id),
-    );
-    const toPrepend = queuedLiveArticles.filter((article) => {
-      if (existingIds.has(article.id)) return false;
-      existingIds.add(article.id);
-      return true;
-    });
-    queuedLiveArticles = [];
-    if (toPrepend.length === 0) return;
-
-    const snapshotAt = Number(loadMoreSearchParams.snapshotAt);
-    const addedAfterSnapshot: string[] = [];
-    for (const article of toPrepend) {
-      if (
-        Number.isFinite(snapshotAt) &&
-        typeof article.fetched_at === 'number' &&
-        article.fetched_at > snapshotAt
-      ) {
-        liveOnlyArticleIds.add(article.id);
-        addedAfterSnapshot.push(article.id);
-      }
-    }
-    if (addedAfterSnapshot.length > 0) {
-      onLiveArticlesAdded?.(addedAfterSnapshot);
-    }
-    focusedIndex += toPrepend.length;
-    articles = [...toPrepend, ...articles];
-  }
-
   async function fetchLiveArticles(): Promise<void> {
     if (
       !liveUpdates ||
       liveUpdatesDisposed ||
       fetchingLiveArticles ||
+      isRestoringScroll ||
       pendingLiveArticleIds.size === 0
     )
       return;
 
     fetchingLiveArticles = true;
+    const requestPaginationKey = buildPaginationKey();
     const controller = new AbortController();
     liveArticleRequestController = controller;
     const ids = Array.from(pendingLiveArticleIds).slice(0, 100);
@@ -1178,27 +1156,62 @@
           ? AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
           : controller.signal;
       const response = await fetch(url.toString(), { signal });
-      if (liveUpdatesDisposed) return;
+      if (liveUpdatesDisposed || requestPaginationKey !== buildPaginationKey())
+        return;
       if (!response.ok)
         throw new Error(`Live article request failed: ${response.status}`);
 
       const data = await response.json();
-      if (liveUpdatesDisposed) return;
-      const existingIds = new SvelteSet([
-        ...articles.map((article: Article) => article.id),
-        ...queuedLiveArticles.map((article: Article) => article.id),
-      ]);
-      const newArticles = (data.articles as Article[]).filter((article) => {
-        if (existingIds.has(article.id)) return false;
-        existingIds.add(article.id);
-        return true;
+      if (liveUpdatesDisposed || requestPaginationKey !== buildPaginationKey())
+        return;
+
+      const activeArticleId = articleIds[focusedIndex];
+      const preserveFocusedArticle =
+        focusedIndex > 0 ||
+        Boolean(
+          activeArticleId &&
+          document
+            .getElementById(`article-${activeArticleId}`)
+            ?.contains(document.activeElement),
+        );
+      const merged = mergeLiveArticles({
+        existingArticles: articles,
+        incomingArticles: data.articles as Article[],
+        snapshotAt: Number(loadMoreSearchParams.snapshotAt),
+        focusedIndex,
+        preserveFocusedArticle,
       });
 
-      if (newArticles.length > 0) {
-        queuedLiveArticles = [...newArticles, ...queuedLiveArticles];
+      if (merged.newArticles.length > 0) {
+        for (const id of merged.addedAfterSnapshot) {
+          liveOnlyArticleIds.add(id);
+        }
+        if (merged.addedAfterSnapshot.length > 0) {
+          onLiveArticlesAdded?.(merged.addedAfterSnapshot);
+        }
+
+        const previousScrollTop = scrollContainerEl?.scrollTop ?? 0;
+        const previousScrollHeight = scrollContainerEl?.scrollHeight ?? 0;
+        focusedIndex = merged.focusedIndex;
+        articles = merged.articles;
+        await tick();
+
+        if (
+          !liveUpdatesDisposed &&
+          scrollContainerEl &&
+          !isRestoringScroll &&
+          previousScrollTop > 0
+        ) {
+          scrollContainerEl.scrollTop =
+            previousScrollTop +
+            (scrollContainerEl.scrollHeight - previousScrollHeight);
+        }
       }
     } catch (error) {
-      if (!liveUpdatesDisposed) {
+      if (
+        !liveUpdatesDisposed &&
+        requestPaginationKey === buildPaginationKey()
+      ) {
         console.error('Failed to load live articles', error);
         for (const id of ids) pendingLiveArticleIds.add(id);
         nextBatchDelay = 2000;
@@ -1215,13 +1228,14 @@
   }
 
   function handleNewArticles(event: Event): void {
-    const detail = (event as CustomEvent<{ ids?: unknown }>).detail;
-    if (!Array.isArray(detail?.ids)) return;
+    const ids = extractLiveArticleIds(
+      (event as CustomEvent<{ ids?: unknown; feedId?: unknown }>).detail,
+      feedId,
+    );
+    if (ids.length === 0) return;
 
-    for (const id of detail.ids) {
-      if (typeof id === 'string' && id.length > 0 && id.length <= 128) {
-        pendingLiveArticleIds.add(id);
-      }
+    for (const id of ids) {
+      pendingLiveArticleIds.add(id);
     }
     scheduleLiveArticleFetch();
   }
@@ -1408,6 +1422,7 @@
       } finally {
         isRestoringScroll = false;
         maybeLoadMore();
+        scheduleLiveArticleFetch(50);
       }
     };
 
@@ -1571,20 +1586,6 @@
     }
   }
 </script>
-
-{#if liveUpdates && queuedLiveArticles.length > 0}
-  <div class="mb-2 flex justify-center md:mb-4">
-    <button
-      type="button"
-      class="btn preset-filled-primary-500 px-3 py-1.5 text-xs font-semibold"
-      onclick={showQueuedLiveArticles}
-    >
-      Show {queuedLiveArticles.length} new {queuedLiveArticles.length === 1
-        ? 'article'
-        : 'articles'}
-    </button>
-  </div>
-{/if}
 
 {#if articles.length === 0 && !loadingMore && !hasMore}
   <div
